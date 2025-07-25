@@ -11,7 +11,7 @@ const verifyGoogleToken = async (req, res, next) => {
   try {
     const { token } = req.body;
     console.log('Received Google token:', token);
-    const audience = [ process.env.GOOGLE_CLIENT_ID ].filter(Boolean);
+    const audience = [ process.env.GOOGLE_CLIENT_ID, process.env.ANDROID_CLIENT_ID].filter(Boolean);
     console.log('Audience for Google verification:', audience);
     if (!token) {
       return res.status(400).json({
