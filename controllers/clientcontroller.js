@@ -1,7 +1,6 @@
 const Client = require("../models/Client");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const User = require("../models/User");
 const { getobject, putobject } = require("../utils/s3");
 const { GoogleAuth } = require("google-auth-library");
 
@@ -123,7 +122,8 @@ const loginClient = async (req, res) => {
         address: client.address,
         city: client.city,
         pincode: client.pincode,
-        websiteUrl: client.websiteUrl
+        websiteUrl: client.websiteUrl,
+        isApproved: client.isApproved || false
       }
     });
   } catch (error) {
@@ -171,7 +171,8 @@ const googleLogin = async (req, res) => {
             isGoogleUser: client.isGoogleUser,
             googlePicture: client.googlePicture,
             emailVerified: client.emailVerified,
-            userId: client.userId
+            userId: client.userId,
+            isApproved: client.isApproved || false
           }
         });
       } 
@@ -184,7 +185,9 @@ const googleLogin = async (req, res) => {
           isprofileCompleted: false,
           id: client._id,
           email: client.email,
-          name: client.name
+          name: client.name,
+          isApproved: client.isApproved || false
+          
         });
       }
     } else {
@@ -197,7 +200,8 @@ const googleLogin = async (req, res) => {
         googleId,
         googlePicture: picture,
         emailVerified,
-        isprofileCompleted: false
+        isprofileCompleted: false,
+        isApproved: false
       });
       const token = generateToken(newClient._id)
 
@@ -208,7 +212,8 @@ const googleLogin = async (req, res) => {
         isprofileCompleted: false,
         id: newClient._id,
         email: newClient.email,
-        name: newClient.name
+        name: newClient.name,
+        isApproved: newClient.isApproved || false
       });
     }
   } catch (error) {
