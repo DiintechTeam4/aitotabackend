@@ -297,4 +297,21 @@ const getClientToken = async (req, res) => {
   }
 };
 
-module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken };
+// Approve client (set isApproved to true)
+const approveClient = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    client.isApproved = true;
+    await client.save();
+    res.status(200).json({ success: true, message: 'Client approved successfully', client });
+  } catch (error) {
+    console.error('Error approving client:', error);
+    res.status(500).json({ success: false, message: 'Failed to approve client' });
+  }
+};
+
+module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient };

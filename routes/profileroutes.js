@@ -1,18 +1,21 @@
 const express = require('express');
 const router = express.Router();
 const profileController = require('../controllers/profilecontroller');
-const { verifyClientToken } = require('../middlewares/authmiddleware');
+const { verifyClientToken, verifyAdminToken } = require('../middlewares/authmiddleware');
 
-//create profile
+// Create profile for authenticated client
 router.post('/', verifyClientToken, profileController.createProfile);
 
-//Get current client Profile
+// Get profile by clientId (for authenticated client)
 router.get('/:clientId', verifyClientToken, profileController.getProfile);
 
-//update profile
+// Update profile by clientId (for authenticated client)
 router.put('/:clientId', verifyClientToken, profileController.updateProfile);
 
-//delete profile
+// Delete profile by clientId (for authenticated client)
 router.delete('/:clientId', verifyClientToken, profileController.deleteProfile);
+
+// Get all profiles with pagination and search (for admin purposes)
+router.get('/', verifyAdminToken, profileController.getAllProfiles);
 
 module.exports = router; 

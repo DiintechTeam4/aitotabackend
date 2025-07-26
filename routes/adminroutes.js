@@ -1,5 +1,5 @@
 const express = require("express");
-const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken } = require("../controllers/admincontroller");
+const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient } = require("../controllers/admincontroller");
 const { authMiddleware } = require("../middlewares/authmiddleware");
 const router = express.Router();
 
@@ -17,5 +17,7 @@ router.get("/getclientbyid/:id", getClientById);
 router.delete('/deleteclient/:id', deleteclient);
 
 router.get('/get-client-token/:clientId', authMiddleware, getClientToken);
+
+router.post('/approve-client/:clientId', authMiddleware, approveClient);
 
 module.exports=router;

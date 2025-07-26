@@ -1,17 +1,88 @@
 const mongoose = require('mongoose');
 
 const ProfileSchema = new mongoose.Schema({
-  clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' , required: true},
-  businessName: { type: String, required: true },
-  businessType: { type: String, required: true },
-  contactNumber: { type: String, required: true },
-  contactName: { type: String, required: true },
-  address: { type: String, required: true },
-  website: { type: String },
-  pancard: { type: String },
-  gst: { type: String },
-  annualTurnover: { type: String },
-  isProfileCompleted: { type: Boolean, default: false, required: true },
-}, { timestamps: true });
+  clientId: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'Client', 
+    required: true,
+    unique: true // Prevent duplicate profiles for same client
+  },
+  businessName: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 100
+  },
+  businessType: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 50
+  },
+  contactNumber: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 20
+  },
+  contactName: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 100
+  },
+  address: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 500
+  },
+  website: { 
+    type: String,
+    trim: true,
+    maxlength: 200
+  },
+  pancard: { 
+    type: String,
+    trim: true,
+    maxlength: 10,
+    uppercase: true
+  },
+  gst: { 
+    type: String,
+    trim: true,
+    maxlength: 15,
+    uppercase: true
+  },
+  annualTurnover: { 
+    type: String,
+    trim: true,
+    maxlength: 50
+  },
+  isProfileCompleted: { 
+    type: Boolean, 
+    default: false, 
+    required: true 
+  },
+}, { 
+  timestamps: true,
+  // Add compound index for better performance
+  indexes: [
+    { clientId: 1 }
+  ]
+});
+
+// Pre-save middleware to ensure clientId is unique
+ProfileSchema.pre('save', async function(next) {
+  if (this.isNew) {
+    const existingProfile = await this.constructor.findOne({ clientId: this.clientId });
+    if (existingProfile) {
+      const error = new Error('Profile already exists for this client');
+      error.name = 'DuplicateProfileError';
+      return next(error);
+    }
+  }
+  next();
+});
 
 module.exports = mongoose.model('Profile', ProfileSchema); 
