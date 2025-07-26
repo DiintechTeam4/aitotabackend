@@ -8,7 +8,9 @@ function checkProfileCompleted(profile) {
     profile.businessType &&
     profile.contactNumber &&
     profile.contactName &&
-    profile.address &&
+    profile.pincode &&
+    profile.city &&
+    profile.state &&
     profile.website &&
     profile.pancard &&
     profile.gst &&
@@ -36,8 +38,16 @@ function validateProfileData(data) {
     errors.push('Contact name is required');
   }
   
-  if (!data.address || data.address.trim().length === 0) {
-    errors.push('Address is required');
+  if (!data.pincode || data.pincode.trim().length === 0) {
+    errors.push('Pincode is required');
+  }
+  
+  if (!data.city || data.city.trim().length === 0) {
+    errors.push('City is required');
+  }
+  
+  if (!data.state || data.state.trim().length === 0) {
+    errors.push('State is required');
   }
   
   return errors;

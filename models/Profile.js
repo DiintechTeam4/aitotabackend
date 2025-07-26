@@ -5,7 +5,7 @@ const ProfileSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Client', 
     required: true,
-    unique: true // Prevent duplicate profiles for same client
+    unique: true 
   },
   businessName: { 
     type: String, 
@@ -31,11 +31,23 @@ const ProfileSchema = new mongoose.Schema({
     trim: true,
     maxlength: 100
   },
-  address: { 
+  pincode: { 
     type: String, 
     required: true,
     trim: true,
-    maxlength: 500
+    maxlength: 10
+  },
+  city: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 100
+  },
+  state: { 
+    type: String, 
+    required: true,
+    trim: true,
+    maxlength: 100
   },
   website: { 
     type: String,
