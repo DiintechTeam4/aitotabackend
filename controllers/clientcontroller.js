@@ -108,15 +108,15 @@ const loginClient = async (req, res) => {
 
     console.log('Login successful for client email:', email);
 
-    let responseStatus = 200; 
+    // let responseStatus = 200; 
     
-    if (client.isprofileCompleted && client.isApproved) {
-      responseStatus = 202;  
-    } else if (client.isprofileCompleted && !client.isApproved) {
-      responseStatus = 203; 
-    }
+    // if (client.isprofileCompleted && client.isApproved) {
+    //   responseStatus = 202;  
+    // } else if (client.isprofileCompleted && !client.isApproved) {
+    //   responseStatus = 203; 
+    // }
 
-    res.status(responseStatus).json({
+    res.status(200).json({
       success: true,
       token: jwtToken,
       client: {
@@ -159,14 +159,14 @@ const googleLogin = async (req, res) => {
 
       if (client.isprofileCompleted === true || client.isprofileCompleted === "true") {
         // Profile completed, proceed with login
-        let responseStatus = 200; 
+    //     let responseStatus = 200; 
     
-    if (client.isprofileCompleted && client.isApproved) {
-      responseStatus = 202; 
-    } else if (client.isprofileCompleted && !client.isApproved) {
-      responseStatus = 203; 
-    }
-        return res.status(responseStatus).json({
+    // if (client.isprofileCompleted && client.isApproved) {
+    //   responseStatus = 202; 
+    // } else if (client.isprofileCompleted && !client.isApproved) {
+    //   responseStatus = 203; 
+    // }
+        return res.status(200).json({
           success: true,
           token,
           client: {
@@ -193,15 +193,15 @@ const googleLogin = async (req, res) => {
         });
       } 
       else {
-        let responseStatus = 200; 
+    //     let responseStatus = 200; 
     
-    if (client.isprofileCompleted && client.isApproved) {
-      responseStatus = 202; 
-    } else if (client.isprofileCompleted && !client.isApproved) {
-      responseStatus = 203; 
-    }
+    // if (client.isprofileCompleted && client.isApproved) {
+    //   responseStatus = 202; 
+    // } else if (client.isprofileCompleted && !client.isApproved) {
+    //   responseStatus = 203; 
+    // }
         // Profile not completed
-        return res.status(responseStatus).json({
+        return res.status(200).json({
           success: true,
           message: "Profile incomplete",
           token,
