@@ -10,14 +10,38 @@ const VoiceService = require('../services/voiceService');
 const voiceService = new VoiceService();
 const CallLog = require('../models/CallLog');
 const AgentSettings = require('../models/AgentSettings');
+const jwt = require('jsonwebtoken');
 
 const clientApiService = new ClientApiService()
 
-// Middleware to extract client ID
+// Middleware to extract client ID from token or fallback to headers/query
 const extractClientId = (req, res, next) => {
-  const clientId = req.headers["x-client-id"] || req.query.clientId || "default-client"
-  req.clientId = clientId
-  next()
+  try {
+    // First try to extract from JWT token
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      const token = req.headers.authorization.split(' ')[1];
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.userType === 'client' && decoded.id) {
+          req.clientId = decoded.id;
+          next();
+          return;
+        }
+      } catch (tokenError) {
+        console.log('Token verification failed, falling back to other methods');
+      }
+    }
+    
+    // Fallback to headers or query parameters
+    const clientId = req.headers["x-client-id"] || req.query.clientId || "default-client";
+    req.clientId = clientId;
+    next();
+  } catch (error) {
+    console.error('Error in extractClientId middleware:', error);
+    // Fallback to default
+    req.clientId = "default-client";
+    next();
+  }
 }
 
 // Get or create client
@@ -203,6 +227,24 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
   }
 });
 
+router.delete('/agents/:id', extractClientId, async (req, res)=>{
+  try{
+    const { id } = req.params;
+    const agent = await Agent.findOneAndDelete({ 
+      _id: id, 
+      clientId: req.clientId 
+    });
+    if(!agent)
+    {
+      return res.status(404).json({error:"Agent not found"});
+    }
+    res.json({message:"Agent deleted successfully"})
+  }catch(error){
+    console.error('❌ Error deleting agent:', error);
+    res.status(500).json({error:"Failed to delete agent"})
+  }
+});
+
 // Get all agents for client
 router.get('/agents', extractClientId, async (req, res) => {
   try {
@@ -213,6 +255,37 @@ router.get('/agents', extractClientId, async (req, res) => {
   } catch (error) {
     console.error("Error fetching agents:", error);
     res.status(500).json({ error: "Failed to fetch agents" });
+  }
+});
+
+// Get agent audio
+router.get('/agents/:id/audio', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const agent = await Agent.findOne({ _id: id, clientId: req.clientId });
+    
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    if (!agent.audioBytes) {
+      return res.status(404).json({ error: 'No audio available for this agent' });
+    }
+
+    // Convert base64 to buffer
+    const audioBuffer = Buffer.from(agent.audioBytes, 'base64');
+    
+    // Set appropriate headers
+    res.set({
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': audioBuffer.length,
+      'Cache-Control': 'public, max-age=3600'
+    });
+    
+    res.send(audioBuffer);
+  } catch (error) {
+    console.error('Error fetching agent audio:', error);
+    res.status(500).json({ error: 'Failed to fetch agent audio' });
   }
 });
 
@@ -255,7 +328,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
     const totalNotConnected = logs.filter(l => l.leadStatus === 'not_connected').length;
     const totalConversationTime = logs.reduce((sum, l) => sum + (l.duration || 0), 0);
     const avgCallDuration = totalCalls ? totalConversationTime / totalCalls : 0;
-    res.json({ totalCalls, totalConnected, totalNotConnected, totalConversationTime, avgCallDuration });
+    res.json({ success:true, data:{totalCalls, totalConnected, totalNotConnected, totalConversationTime, avgCallDuration} });
   } catch (error) {
     console.error('Error in /inbound/report:', error);
     res.status(500).json({ error: 'Failed to fetch report' });
@@ -267,7 +340,7 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const logs = await CallLog.find({ clientId });
-    res.json(logs);
+    res.json({success:'true' ,data:logs});
   } catch (error) {
     console.error('Error in /inbound/logs:', error);
     res.status(500).json({ error: 'Failed to fetch logs' });
