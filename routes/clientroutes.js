@@ -337,6 +337,17 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
           $lte: endOfDay
         }
       };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
     } else if (filter === 'last7days') {
       const today = new Date();
       const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
@@ -346,19 +357,10 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
           $lte: today
         }
       };
-    } else if (filter === 'last30days') {
-      const today = new Date();
-      const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
-      dateFilter = {
-        time: {
-          $gte: thirtyDaysAgo,
-          $lte: today
-        }
-      };
     } else if (startDate && endDate) {
       const start = new Date(startDate);
       const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999); // End of the day
+      end.setHours(23, 59, 59, 999);
       dateFilter = {
         time: {
           $gte: start,
@@ -420,7 +422,8 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
     const leads = {
       veryInterested: logs.filter(l => l.leadStatus === 'very_interested'),
       medium: logs.filter(l => l.leadStatus === 'medium'),
-      notInterested: logs.filter(l => l.leadStatus === 'not_interested')
+      notInterested: logs.filter(l => l.leadStatus === 'not_interested'),
+      notConnected: logs.filter(l => l.leadStatus === 'not_connected')
     };
     res.json(leads);
   } catch (error) {
