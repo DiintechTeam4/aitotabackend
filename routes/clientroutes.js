@@ -19,6 +19,9 @@ const clientApiService = new ClientApiService()
 // Middleware to extract client ID from token or fallback to headers/query
 const extractClientId = (req, res, next) => {
   try {
+    console.log('extractClientId middleware called');
+    console.log('Authorization header:', req.headers.authorization ? 'Present' : 'Missing');
+    
     // First try to extract from JWT token
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
       const token = req.headers.authorization.split(' ')[1];
@@ -26,6 +29,7 @@ const extractClientId = (req, res, next) => {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         if (decoded.userType === 'client' && decoded.id) {
           req.clientId = decoded.id;
+          console.log('Using clientId from token:', req.clientId);
           next();
           return;
         } else {
@@ -40,11 +44,13 @@ const extractClientId = (req, res, next) => {
     // Fallback to headers or query parameters (only if no Bearer token provided)
     const clientId = req.headers["x-client-id"] || req.query.clientId || "default-client";
     req.clientId = clientId;
+    console.log('Using fallback clientId:', req.clientId);
     next();
   } catch (error) {
     console.error('Error in extractClientId middleware:', error);
     // Fallback to default
     req.clientId = "default-client";
+    console.log('Using default clientId due to error');
     next();
   }
 }
