@@ -322,13 +322,78 @@ router.post('/voice/synthesize', extractClientId, async (req, res) => {
 router.get('/inbound/report', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
-    const logs = await CallLog.find({ clientId });
+    const { filter, startDate, endDate } = req.query;
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        time: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (filter === 'last30days') {
+      const today = new Date();
+      const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        time: {
+          $gte: thirtyDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999); // End of the day
+      dateFilter = {
+        time: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query
+    const query = { clientId, ...dateFilter };
+    
+    console.log('Query:', JSON.stringify(query, null, 2)); // Debug log
+    
+    const logs = await CallLog.find(query);
     const totalCalls = logs.length;
     const totalConnected = logs.filter(l => l.leadStatus !== 'not_connected').length;
     const totalNotConnected = logs.filter(l => l.leadStatus === 'not_connected').length;
     const totalConversationTime = logs.reduce((sum, l) => sum + (l.duration || 0), 0);
     const avgCallDuration = totalCalls ? totalConversationTime / totalCalls : 0;
-    res.json({ success:true, data:{totalCalls, totalConnected, totalNotConnected, totalConversationTime, avgCallDuration} });
+    
+    res.json({ 
+      success: true, 
+      data: {
+        totalCalls, 
+        totalConnected, 
+        totalNotConnected, 
+        totalConversationTime, 
+        avgCallDuration 
+      },
+      filter: {
+        applied: filter || 'all',
+        startDate: dateFilter.time?.$gte,
+        endDate: dateFilter.time?.$lte,
+      }
+    });
   } catch (error) {
     console.error('Error in /inbound/report:', error);
     res.status(500).json({ error: 'Failed to fetch report' });
