@@ -324,6 +324,17 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
     const clientId = req.clientId;
     const { filter, startDate, endDate } = req.query;
     
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
     // Build date filter based on parameters
     let dateFilter = {};
     
@@ -393,7 +404,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
       filter: {
         applied: filter || 'all',
         startDate: dateFilter.time?.$gte,
-        endDate: dateFilter.time?.$lte,
+        endDate: dateFilter.time?.$lte
       }
     });
   } catch (error) {
