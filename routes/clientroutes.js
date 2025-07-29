@@ -10,6 +10,8 @@ const VoiceService = require('../services/voiceService');
 const voiceService = new VoiceService();
 const CallLog = require('../models/CallLog');
 const AgentSettings = require('../models/AgentSettings');
+const Group = require('../models/Group');
+const Campaign = require('../models/Campaign');
 const jwt = require('jsonwebtoken');
 
 const clientApiService = new ClientApiService()
@@ -26,13 +28,16 @@ const extractClientId = (req, res, next) => {
           req.clientId = decoded.id;
           next();
           return;
+        } else {
+          return res.status(401).json({ error: 'Invalid token: userType must be client' });
         }
       } catch (tokenError) {
-        console.log('Token verification failed, falling back to other methods');
+        console.log('Token verification failed:', tokenError.message);
+        return res.status(401).json({ error: 'Token expired or invalid' });
       }
     }
     
-    // Fallback to headers or query parameters
+    // Fallback to headers or query parameters (only if no Bearer token provided)
     const clientId = req.headers["x-client-id"] || req.query.clientId || "default-client";
     req.clientId = clientId;
     next();
@@ -426,17 +431,17 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
 });
 
 // Inbound Leads
-router.get('/inbound/leads', extractClientId, async (req, res) => {
+router.get('/inbound/leads',   extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const logs = await CallLog.find({ clientId });
     const leads = {
-      veryInterested: logs.filter(l => l.leadStatus === 'very_interested'),
-      medium: logs.filter(l => l.leadStatus === 'medium'),
+      vvi: logs.filter(l => l.leadStatus === 'very_interested'),
+      maybe: logs.filter(l => l.leadStatus === 'medium'),
       notInterested: logs.filter(l => l.leadStatus === 'not_interested'),
       notConnected: logs.filter(l => l.leadStatus === 'not_connected')
     };
-    res.json(leads);
+    res.json({success:true,data:leads});
   } catch (error) {
     console.error('Error in /inbound/leads:', error);
     res.status(500).json({ error: 'Failed to fetch leads' });
@@ -463,6 +468,339 @@ router.put('/inbound/settings', extractClientId, async (req, res) => {
   } catch (error) {
     console.error('Error in /inbound/settings PUT:', error);
     res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// ==================== GROUPS API ====================
+
+// Get all groups for client
+router.get('/groups', extractClientId, async (req, res) => {
+  try {
+    const groups = await Group.find({ clientId: req.clientId }).sort({ createdAt: -1 });
+    res.json({ success: true, data: groups });
+  } catch (error) {
+    console.error('Error fetching groups:', error);
+    res.status(500).json({ error: 'Failed to fetch groups' });
+  }
+});
+
+// Create new group
+router.post('/groups', extractClientId, async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Group name is required' });
+    }
+
+    const group = new Group({
+      name: name.trim(),
+      description: description?.trim() || '',
+      clientId: req.clientId,
+      contacts: []
+    });
+
+    await group.save();
+    res.status(201).json({ success: true, data: group });
+  } catch (error) {
+    console.error('Error creating group:', error);
+    res.status(500).json({ error: 'Failed to create group' });
+  }
+});
+
+// Get single group by ID
+router.get('/groups/:id', extractClientId, async (req, res) => {
+  try {
+    const group = await Group.findOne({ _id: req.params.id, clientId: req.clientId });
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    res.json({ success: true, data: group });
+  } catch (error) {
+    console.error('Error fetching group:', error);
+    res.status(500).json({ error: 'Failed to fetch group' });
+  }
+});
+
+// Update group
+router.put('/groups/:id', extractClientId, async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Group name is required' });
+    }
+
+    const group = await Group.findOneAndUpdate(
+      { _id: req.params.id, clientId: req.clientId },
+      { 
+        name: name.trim(), 
+        description: description?.trim() || '',
+        updatedAt: new Date()
+      },
+      { new: true }
+    );
+
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    res.json({ success: true, data: group });
+  } catch (error) {
+    console.error('Error updating group:', error);
+    res.status(500).json({ error: 'Failed to update group' });
+  }
+});
+
+// Delete group
+router.delete('/groups/:id', extractClientId, async (req, res) => {
+  try {
+    const group = await Group.findOneAndDelete({ _id: req.params.id, clientId: req.clientId });
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+    res.json({ success: true, message: 'Group deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting group:', error);
+    res.status(500).json({ error: 'Failed to delete group' });
+  }
+});
+
+// Add contact to group
+router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
+  try {
+    const { name, phone, email } = req.body;
+    
+    if (!name || !name.trim() || !phone || !phone.trim()) {
+      return res.status(400).json({ error: 'Name and phone are required' });
+    }
+
+    const group = await Group.findOne({ _id: req.params.id, clientId: req.clientId });
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const contact = {
+      name: name.trim(),
+      phone: phone.trim(),
+      email: email?.trim() || '',
+      createdAt: new Date()
+    };
+
+    group.contacts.push(contact);
+    await group.save();
+
+    res.status(201).json({ success: true, data: contact });
+  } catch (error) {
+    console.error('Error adding contact:', error);
+    res.status(500).json({ error: 'Failed to add contact' });
+  }
+});
+
+// Delete contact from group
+router.delete('/groups/:groupId/contacts/:contactId', extractClientId, async (req, res) => {
+  try {
+    const { groupId, contactId } = req.params;
+    
+    const group = await Group.findOne({ _id: groupId, clientId: req.clientId });
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    group.contacts = group.contacts.filter(contact => contact._id.toString() !== contactId);
+    await group.save();
+
+    res.json({ success: true, message: 'Contact deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting contact:', error);
+    res.status(500).json({ error: 'Failed to delete contact' });
+  }
+});
+
+// ==================== CAMPAIGNS API ====================
+
+// Get all campaigns for client
+router.get('/campaigns', extractClientId, async (req, res) => {
+  try {
+    const campaigns = await Campaign.find({ clientId: req.clientId })
+      .populate('groupIds', 'name description')
+      .sort({ createdAt: -1 });
+    
+    // Update status for each campaign based on current date
+    const updatedCampaigns = campaigns.map(campaign => {
+      campaign.updateStatus();
+      return campaign;
+    });
+    
+    res.json({ success: true, data: updatedCampaigns });
+  } catch (error) {
+    console.error('Error fetching campaigns:', error);
+    res.status(500).json({ error: 'Failed to fetch campaigns' });
+  }
+});
+
+// Create new campaign
+router.post('/campaigns', extractClientId, async (req, res) => {
+  try {
+    const { name, description, groupIds, startDate, endDate } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Campaign name is required' });
+    }
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'Start date and end date are required' });
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format' });
+    }
+
+    if (start >= end) {
+      return res.status(400).json({ error: 'End date must be after start date' });
+    }
+
+    const campaign = new Campaign({
+      name: name.trim(),
+      description: description?.trim() || '',
+      groupIds: groupIds || [],
+      clientId: req.clientId,
+      startDate: start,
+      endDate: end
+    });
+
+    await campaign.save();
+    res.status(201).json({ success: true, data: campaign });
+  } catch (error) {
+    console.error('Error creating campaign:', error);
+    res.status(500).json({ error: 'Failed to create campaign' });
+  }
+});
+
+// Get single campaign by ID
+router.get('/campaigns/:id', extractClientId, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.clientId })
+      .populate('groupIds', 'name description contacts');
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error('Error fetching campaign:', error);
+    res.status(500).json({ error: 'Failed to fetch campaign' });
+  }
+});
+
+// Update campaign
+router.put('/campaigns/:id', extractClientId, async (req, res) => {
+  try {
+    const { name, description, groupIds, startDate, endDate } = req.body;
+    
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Campaign name is required' });
+    }
+
+    const updateData = {
+      name: name.trim(),
+      description: description?.trim() || '',
+      updatedAt: new Date()
+    };
+
+    if (groupIds !== undefined) {
+      updateData.groupIds = groupIds;
+    }
+
+    // Handle date updates
+    if (startDate) {
+      const start = new Date(startDate);
+      if (isNaN(start.getTime())) {
+        return res.status(400).json({ error: 'Invalid start date format' });
+      }
+      updateData.startDate = start;
+    }
+
+    if (endDate) {
+      const end = new Date(endDate);
+      if (isNaN(end.getTime())) {
+        return res.status(400).json({ error: 'Invalid end date format' });
+      }
+      updateData.endDate = end;
+    }
+
+    // Validate date range if both dates are provided
+    if (updateData.startDate && updateData.endDate && updateData.startDate >= updateData.endDate) {
+      return res.status(400).json({ error: 'End date must be after start date' });
+    }
+
+    const campaign = await Campaign.findOneAndUpdate(
+      { _id: req.params.id, clientId: req.clientId },
+      updateData,
+      { new: true }
+    ).populate('groupIds', 'name description');
+
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    // Update status based on new dates
+    campaign.updateStatus();
+    await campaign.save();
+
+    res.json({ success: true, data: campaign });
+  } catch (error) {
+    console.error('Error updating campaign:', error);
+    res.status(500).json({ error: 'Failed to update campaign' });
+  }
+});
+
+// Delete campaign
+router.delete('/campaigns/:id', extractClientId, async (req, res) => {
+  try {
+    const campaign = await Campaign.findOneAndDelete({ _id: req.params.id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    res.json({ success: true, message: 'Campaign deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting campaign:', error);
+    res.status(500).json({ error: 'Failed to delete campaign' });
+  }
+});
+
+// Add groups to campaign
+router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
+  try {
+    const { groupIds } = req.body;
+    
+    if (!groupIds || !Array.isArray(groupIds)) {
+      return res.status(400).json({ error: 'groupIds array is required' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    // Verify all groups belong to the client
+    const groups = await Group.find({ _id: { $in: groupIds }, clientId: req.clientId });
+    if (groups.length !== groupIds.length) {
+      return res.status(400).json({ error: 'Some groups not found or don\'t belong to client' });
+    }
+
+    campaign.groupIds = groupIds;
+    await campaign.save();
+
+    const updatedCampaign = await Campaign.findById(campaign._id)
+      .populate('groupIds', 'name description');
+
+    res.json({ success: true, data: updatedCampaign });
+  } catch (error) {
+    console.error('Error adding groups to campaign:', error);
+    res.status(500).json({ error: 'Failed to add groups to campaign' });
   }
 });
 
