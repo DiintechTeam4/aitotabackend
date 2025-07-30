@@ -48,9 +48,7 @@ campaignSchema.virtual('currentStatus').get(function() {
   const start = new Date(this.startDate);
   const end = new Date(this.endDate);
   
-  if (now < start) {
-    return 'draft';
-  } else if (now >= start && now <= end) {
+   if (now >= start && now <= end) {
     return 'active';
   } else {
     return 'expired';
@@ -63,9 +61,7 @@ campaignSchema.methods.updateStatus = function() {
   const start = new Date(this.startDate);
   const end = new Date(this.endDate);
   
-  if (now < start) {
-    this.status = 'draft';
-  } else if (now >= start && now <= end) {
+   if (now >= start && now <= end) {
     this.status = 'active';
   } else {
     this.status = 'expired';

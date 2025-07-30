@@ -20,7 +20,10 @@ const clientApiService = new ClientApiService()
 const extractClientId = (req, res, next) => {
   try {
     console.log('extractClientId middleware called');
-    console.log('Authorization header:', req.headers.authorization ? 'Present' : 'Missing');
+    if(!req.headers.authorization)
+    {
+      return res.status(401).json({ success: false, error: 'Authorization header is required' });
+    }
     
     // First try to extract from JWT token
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -40,18 +43,9 @@ const extractClientId = (req, res, next) => {
         return res.status(401).json({ error: 'Token expired or invalid' });
       }
     }
-    
-    // Fallback to headers or query parameters (only if no Bearer token provided)
-    const clientId = req.headers["x-client-id"] || req.query.clientId || "default-client";
-    req.clientId = clientId;
-    console.log('Using fallback clientId:', req.clientId);
-    next();
   } catch (error) {
     console.error('Error in extractClientId middleware:', error);
-    // Fallback to default
-    req.clientId = "default-client";
-    console.log('Using default clientId due to error');
-    next();
+    return res.status(401).json({ error: 'Token expired or invalid' });
   }
 }
 
@@ -262,10 +256,10 @@ router.get('/agents', extractClientId, async (req, res) => {
     const agents = await Agent.find({ clientId: req.clientId })
       .select('-audioBytes') // Don't send audio bytes in list view
       .sort({ createdAt: -1 });
-    res.json(agents);
+    res.json({success: true, data: agents});
   } catch (error) {
     console.error("Error fetching agents:", error);
-    res.status(500).json({ error: "Failed to fetch agents" });
+    res.status(500).json({ success: false, error: "Failed to fetch agents" });
   }
 });
 
@@ -406,6 +400,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
     res.json({ 
       success: true, 
       data: {
+        clientId,
         totalCalls, 
         totalConnected, 
         totalNotConnected, 
@@ -437,17 +432,36 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
 });
 
 // Inbound Leads
-router.get('/inbound/leads',   extractClientId, async (req, res) => {
+router.get('/inbound/leads', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const logs = await CallLog.find({ clientId });
+    
+    // Group leads according to the new leadStatus structure
     const leads = {
-      vvi: logs.filter(l => l.leadStatus === 'very_interested'),
-      maybe: logs.filter(l => l.leadStatus === 'medium'),
-      notInterested: logs.filter(l => l.leadStatus === 'not_interested'),
+      // Connected - Interested
+      vvi: logs.filter(l => l.leadStatus === 'vvi'),
+      maybe: logs.filter(l => l.leadStatus === 'maybe'),
+      enrolled: logs.filter(l => l.leadStatus === 'enrolled'),
+      
+      // Connected - Not Interested
+      junkLead: logs.filter(l => l.leadStatus === 'junk_lead'),
+      notRequired: logs.filter(l => l.leadStatus === 'not_required'),
+      enrolledOther: logs.filter(l => l.leadStatus === 'enrolled_other'),
+      decline: logs.filter(l => l.leadStatus === 'decline'),
+      notEligible: logs.filter(l => l.leadStatus === 'not_eligible'),
+      wrongNumber: logs.filter(l => l.leadStatus === 'wrong_number'),
+      
+      // Connected - Followup
+      hotFollowup: logs.filter(l => l.leadStatus === 'hot_followup'),
+      coldFollowup: logs.filter(l => l.leadStatus === 'cold_followup'),
+      schedule: logs.filter(l => l.leadStatus === 'schedule'),
+      
+      // Not Connected
       notConnected: logs.filter(l => l.leadStatus === 'not_connected')
     };
-    res.json({success:true,data:leads});
+    
+    res.json({success: true, data: leads});
   } catch (error) {
     console.error('Error in /inbound/leads:', error);
     res.status(500).json({ error: 'Failed to fetch leads' });
@@ -465,6 +479,7 @@ router.get('/inbound/settings', extractClientId, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch settings' });
   }
 });
+
 router.put('/inbound/settings', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
