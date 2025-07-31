@@ -250,7 +250,31 @@ router.put('/agents/mob/:id', extractClientId, async(req,res)=>{
     }
     
     if (startingMessages !== undefined) {
-      updateData.startingMessages = startingMessages;
+      // Get the current agent to access existing startingMessages
+      const currentAgent = await Agent.findOne({ _id: id, clientId: clientId });
+      
+      if (!currentAgent) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+      
+      // Get existing startingMessages or initialize empty array
+      const existingMessages = currentAgent.startingMessages || [];
+      
+      // Transform new startingMessages to proper format if they're strings
+      const newMessages = startingMessages.map(msg => {
+        if (typeof msg === 'string') {
+          return {
+            text: msg,
+            audioBase64: null
+          };
+        }
+        return msg;
+      });
+      
+      // Combine existing and new messages
+      const combinedMessages = [...existingMessages, ...newMessages];
+      
+      updateData.startingMessages = combinedMessages;
     }
     
     // Find and update the agent
