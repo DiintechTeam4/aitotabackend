@@ -185,12 +185,12 @@ const googleLogin = async (req, res) => {
             city: client.city,
             pincode: client.pincode,
             websiteUrl: client.websiteUrl,
-            isprofileCompleted: client.isprofileCompleted,
             isGoogleUser: client.isGoogleUser,
             googlePicture: client.googlePicture,
             emailVerified: client.emailVerified,
             userId: client.userId,
-            isApproved: client.isApproved || false
+            isApproved: client.isApproved || false,
+            isprofileCompleted: client.isprofileCompleted || false
           }
         });
       } 
@@ -296,52 +296,100 @@ const registerClient = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     let businessLogoUrl = "";
-    if(businessLogoKey)
-    {
+    if(businessLogoKey) {
       businessLogoUrl = await getobject(businessLogoKey);
     }
 
-    // Create new client
-    const client = await Client.create({
-      name,
-      email,
-      password: hashedPassword,
-      businessName,
-      businessLogoKey,
-      businessLogoUrl,
-      gstNo,
-      panNo,
-      mobileNo,
-      address,
-      city,
-      pincode,
-      websiteUrl,
-      isprofileCompleted:true
-    });
+    // Check if the token is from admin
+    if (req.admin) {
+      // Admin is creating the client - auto approve
+      const client = await Client.create({
+        name,
+        email,
+        password: hashedPassword,
+        businessName,
+        businessLogoKey,
+        businessLogoUrl,
+        gstNo,
+        panNo,
+        mobileNo,
+        address,
+        city,
+        pincode,
+        websiteUrl,
+        isprofileCompleted: true,
+        isApproved: true
+      });
 
-    // Generate token
-    const token = generateToken(client._id);
+      // Generate token
+      const token = generateToken(client._id);
 
-    res.status(201).json({
-      success: true,
-      token,
-      client: {
-        _id: client._id,
-        name: client.name,
-        email: client.email,
-        businessName: client.businessName,
-        businesslogoKey:client.businessLogoKey,
-        businessLogoUrl:client.businessLogoUrl,
-        gstNo: client.gstNo,
-        panNo: client.panNo,
-        mobileNo: client.mobileNo,
-        address: client.address,
-        city: client.city,
-        pincode: client.pincode,
-        websiteUrl: client.websiteUrl,
-        isprofileCompleted:true
-      }
-    });
+      res.status(201).json({
+        success: true,
+        token,
+        client: {
+          _id: client._id,
+          name: client.name,
+          email: client.email,
+          businessName: client.businessName,
+          businesslogoKey: client.businessLogoKey,
+          businessLogoUrl: client.businessLogoUrl,
+          gstNo: client.gstNo,
+          panNo: client.panNo,
+          mobileNo: client.mobileNo,
+          address: client.address,
+          city: client.city,
+          pincode: client.pincode,
+          websiteUrl: client.websiteUrl,
+          isprofileCompleted: true,
+          isApproved: true
+        }
+      });
+    } else {
+      // Non-admin registration - requires approval
+      const client = await Client.create({
+        name,
+        email,
+        password: hashedPassword,
+        businessName,
+        businessLogoKey,
+        businessLogoUrl,
+        gstNo,
+        panNo,
+        mobileNo,
+        address,
+        city,
+        pincode,
+        websiteUrl,
+        isprofileCompleted: true,
+        isApproved: false
+      });
+
+      // Generate token
+      const token = generateToken(client._id);
+
+      res.status(201).json({
+        success: true,
+        token,
+        client: {
+          _id: client._id,
+          name: client.name,
+          email: client.email,
+          businessName: client.businessName,
+          businesslogoKey: client.businessLogoKey,
+          businessLogoUrl: client.businessLogoUrl,
+          gstNo: client.gstNo,
+          panNo: client.panNo,
+          mobileNo: client.mobileNo,
+          address: client.address,
+          city: client.city,
+          pincode: client.pincode,
+          websiteUrl: client.websiteUrl,
+          isprofileCompleted: true,
+          isApproved: false
+        }
+      });
+    }
   } catch (error) {
     res.status(500).json({
       success: false,

@@ -124,8 +124,33 @@ const verifyAdminToken = async (req, res, next) => {
     req.admin = admin;
     next();
   } catch (error) {
+    next();
     console.error('Admin token verification error:', error);
     return res.status(401).json({ success: false, message: 'Invalid token' });
+  }
+};
+// Verify admin token
+const verifyAdminTokenOnlyForRegister = async (req, res, next) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    
+    const token = authHeader.split(' ')[1];
+    
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Find admin by id
+    const admin = await Admin.findById(decoded.id).select('-password');
+    if (!admin) {
+      return res.status(401).json({ success: false, message: 'Invalid token' });
+    }
+    
+    // Add admin to request object
+    req.admin = admin;
+    next();
+  } catch (error) {
+    next();
   }
 };
 
@@ -247,4 +272,4 @@ const ensureUserBelongsToClient = async (req, res, next) => {
     });
   }
 };
-module.exports = { verifyClientToken, verifyAdminToken, verifyUserToken, authMiddleware, checkClientAccess, ensureUserBelongsToClient}; 
+module.exports = { verifyClientToken, verifyAdminToken, verifyAdminTokenOnlyForRegister, verifyUserToken, authMiddleware, checkClientAccess, ensureUserBelongsToClient}; 

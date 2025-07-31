@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin } = require('../controllers/clientcontroller');
-const { authMiddleware } = require('../middlewares/authmiddleware');
+const { authMiddleware, verifyAdminTokenOnlyForRegister } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
@@ -163,7 +163,7 @@ router.post('/login', loginClient);
 
 router.post('/google-login',verifyGoogleToken, googleLogin);
 
-router.post('/register', registerClient);
+router.post('/register',verifyAdminTokenOnlyForRegister, registerClient);
 
 router.get('/profile', authMiddleware, getClientProfile);
 
@@ -440,25 +440,64 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
     // Group leads according to the new leadStatus structure
     const leads = {
       // Connected - Interested
-      vvi: logs.filter(l => l.leadStatus === 'vvi'),
-      maybe: logs.filter(l => l.leadStatus === 'maybe'),
-      enrolled: logs.filter(l => l.leadStatus === 'enrolled'),
+      vvi: {
+        data: logs.filter(l => l.leadStatus === 'vvi'),
+        count: logs.filter(l => l.leadStatus === 'vvi').length
+      },
+      maybe: {
+        data: logs.filter(l => l.leadStatus === 'maybe'),
+        count: logs.filter(l => l.leadStatus === 'maybe').length
+      },
+      enrolled: {
+        data: logs.filter(l => l.leadStatus === 'enrolled'),
+        count: logs.filter(l => l.leadStatus === 'enrolled').length
+      },
       
       // Connected - Not Interested
-      junkLead: logs.filter(l => l.leadStatus === 'junk_lead'),
-      notRequired: logs.filter(l => l.leadStatus === 'not_required'),
-      enrolledOther: logs.filter(l => l.leadStatus === 'enrolled_other'),
-      decline: logs.filter(l => l.leadStatus === 'decline'),
-      notEligible: logs.filter(l => l.leadStatus === 'not_eligible'),
-      wrongNumber: logs.filter(l => l.leadStatus === 'wrong_number'),
+      junkLead: {
+        data: logs.filter(l => l.leadStatus === 'junk_lead'),
+        count: logs.filter(l => l.leadStatus === 'junk_lead').length
+      },
+      notRequired: {
+        data: logs.filter(l => l.leadStatus === 'not_required'),
+        count: logs.filter(l => l.leadStatus === 'not_required').length
+      },
+      enrolledOther: {
+        data: logs.filter(l => l.leadStatus === 'enrolled_other'),
+        count: logs.filter(l => l.leadStatus === 'enrolled_other').length
+      },
+      decline: {
+        data: logs.filter(l => l.leadStatus === 'decline'),
+        count: logs.filter(l => l.leadStatus === 'decline').length
+      },
+      notEligible: {
+        data: logs.filter(l => l.leadStatus === 'not_eligible'),
+        count: logs.filter(l => l.leadStatus === 'not_eligible').length
+      },
+      wrongNumber: {
+        data: logs.filter(l => l.leadStatus === 'wrong_number'),
+        count: logs.filter(l => l.leadStatus === 'wrong_number').length
+      },
       
       // Connected - Followup
-      hotFollowup: logs.filter(l => l.leadStatus === 'hot_followup'),
-      coldFollowup: logs.filter(l => l.leadStatus === 'cold_followup'),
-      schedule: logs.filter(l => l.leadStatus === 'schedule'),
+      hotFollowup: {
+        data: logs.filter(l => l.leadStatus === 'hot_followup'),
+        count: logs.filter(l => l.leadStatus === 'hot_followup').length
+      },
+      coldFollowup: {
+        data: logs.filter(l => l.leadStatus === 'cold_followup'),
+        count: logs.filter(l => l.leadStatus === 'cold_followup').length
+      },
+      schedule: {
+        data: logs.filter(l => l.leadStatus === 'schedule'),
+        count: logs.filter(l => l.leadStatus === 'schedule').length
+      },
       
       // Not Connected
-      notConnected: logs.filter(l => l.leadStatus === 'not_connected')
+      notConnected: {
+        data: logs.filter(l => l.leadStatus === 'not_connected'),
+        count: logs.filter(l => l.leadStatus === 'not_connected').length
+      }
     };
     
     res.json({success: true, data: leads});
