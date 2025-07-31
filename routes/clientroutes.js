@@ -232,6 +232,48 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
   }
 });
 
+router.put('/agents/mob/:id', extractClientId, async(req,res)=>{
+  try{
+    const clientId = req.clientId;
+    const { id } = req.params;
+    const { firstMessage, voiceSelection, startingMessages } = req.body;
+    
+    // Only allow updating firstMessage, voiceSelection, and startingMessages
+    const updateData = {};
+    
+    if (firstMessage !== undefined) {
+      updateData.firstMessage = firstMessage;
+    }
+    
+    if (voiceSelection !== undefined) {
+      updateData.voiceSelection = voiceSelection;
+    }
+    
+    if (startingMessages !== undefined) {
+      updateData.startingMessages = startingMessages;
+    }
+    
+    // Find and update the agent
+    const agent = await Agent.findOneAndUpdate(
+      { _id: id, clientId: clientId },
+      updateData,
+      { new: true, runValidators: true }
+    );
+    
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+    
+    const responseAgent = agent.toObject();
+    delete responseAgent.audioBytes; // Don't send audio bytes in response
+    
+    res.json(responseAgent);
+  }catch(error){
+    console.error('❌ Error updating agent:', error);
+    res.status(500).json({ error: 'Failed to update agent' });
+  }
+});
+
 router.delete('/agents/:id', extractClientId, async (req, res)=>{
   try{
     const { id } = req.params;
@@ -307,7 +349,7 @@ router.post('/voice/synthesize', extractClientId, async (req, res) => {
     }
     // Return both for frontend: buffer for playback, base64 for DB
     res.set({
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     });
     res.json({
       audioBase64: audioResult.audioBase64,
