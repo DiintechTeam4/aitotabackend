@@ -387,9 +387,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
     
     // Build the complete query
     const query = { clientId, ...dateFilter };
-    
-    console.log('Query:', JSON.stringify(query, null, 2)); // Debug log
-    
+        
     const logs = await CallLog.find(query);
     const totalCalls = logs.length;
     const totalConnected = logs.filter(l => l.leadStatus !== 'not_connected').length;
@@ -423,8 +421,9 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
 router.get('/inbound/logs', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
+    const clientName = await Client.findOne({ _id: clientId }).select('name');
     const logs = await CallLog.find({ clientId });
-    res.json({success:'true' ,data:logs});
+    res.json({success:'true', clientName: clientName ,data:logs});
   } catch (error) {
     console.error('Error in /inbound/logs:', error);
     res.status(500).json({ error: 'Failed to fetch logs' });
@@ -435,18 +434,78 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
 router.get('/inbound/leads', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
-    const logs = await CallLog.find({ clientId });
+    const { filter, startDate, endDate } = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        time: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query
+    const query = { clientId, ...dateFilter };    
+    const logs = await CallLog.find(query);
     
     // Group leads according to the new leadStatus structure
     const leads = {
       // Connected - Interested
-      vvi: {
-        data: logs.filter(l => l.leadStatus === 'vvi'),
-        count: logs.filter(l => l.leadStatus === 'vvi').length
+      veryInterested: {
+        data: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'very_interested'),
+        count: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'very_interested').length
       },
       maybe: {
-        data: logs.filter(l => l.leadStatus === 'maybe'),
-        count: logs.filter(l => l.leadStatus === 'maybe').length
+        data: logs.filter(l => l.leadStatus === 'maybe' || l.leadStatus === 'medium'),
+        count: logs.filter(l => l.leadStatus === 'maybe' || l.leadStatus === 'medium').length
       },
       enrolled: {
         data: logs.filter(l => l.leadStatus === 'enrolled'),
@@ -499,8 +558,16 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
         count: logs.filter(l => l.leadStatus === 'not_connected').length
       }
     };
-    
-    res.json({success: true, data: leads});
+
+    res.json({ 
+      success: true, 
+      data: leads,
+      filter: {
+        applied: filter || 'all',
+        startDate: dateFilter.time?.$gte,
+        endDate: dateFilter.time?.$lte
+      }
+    });
   } catch (error) {
     console.error('Error in /inbound/leads:', error);
     res.status(500).json({ error: 'Failed to fetch leads' });
