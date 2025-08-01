@@ -38,16 +38,6 @@ const groupSchema = new mongoose.Schema({
     required: true,
     index: true
   },
-  agentId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Agent',
-    required: true
-  },
-  campaignId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Campaign',
-    required: true
-  },
   createdAt: {
     type: Date,
     default: Date.now
