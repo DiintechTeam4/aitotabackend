@@ -165,6 +165,7 @@ exports.getProfile = async (req, res) => {
     }
 
     const profile = await Profile.findOne({ clientId: req.params.clientId });
+    const clientEmail = await Client.findOne({ _id: req.params.clientId }).select('email');
     
     if (!profile) {
       return res.status(404).json({
@@ -184,6 +185,7 @@ exports.getProfile = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Profile retrieved successfully',
+      email: clientEmail.email,
       profile,
       statusCode: 200
     });

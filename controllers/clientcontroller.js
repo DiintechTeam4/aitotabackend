@@ -1,4 +1,5 @@
 const Client = require("../models/Client");
+const HumanAgent = require("../models/HumanAgent");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { getobject, putobject } = require("../utils/s3");
@@ -398,10 +399,255 @@ const registerClient = async (req, res) => {
   }
 };
 
+// ==================== HUMAN AGENT FUNCTIONS ====================
+
+// Get all human agents for a client
+const getHumanAgents = async (req, res) => {
+  try {
+    // Extract clientId from token
+    const clientId = req.clientId;
+    
+    // Verify client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Client not found" 
+      });
+    }
+
+    const humanAgents = await HumanAgent.find({ clientId })
+      .populate('agentId', 'agentName description')
+      .sort({ createdAt: -1 });
+
+    res.json({ 
+      success: true, 
+      data: humanAgents 
+    });
+  } catch (error) {
+    console.error("Error fetching human agents:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch human agents" 
+    });
+  }
+};
+
+// Create new human agent
+const createHumanAgent = async (req, res) => {
+  try {
+    // Extract clientId from token
+    const clientId = req.clientId;
+    const { humanAgentName, gmail } = req.body;
+
+    // Validate required fields
+    if (!humanAgentName || !gmail) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Human agent name and gmail are required" 
+      });
+    }
+
+    console.log(clientId);
+
+    // Verify client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Client not found" 
+      });
+    }
+
+    // Check if human agent with same name already exists for this client
+    const existingAgent = await HumanAgent.findOne({ 
+      clientId, 
+      humanAgentName: humanAgentName.trim() 
+    });
+    
+    if (existingAgent) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Human agent with this name already exists for this client" 
+      });
+    }
+
+    // Check if gmail already exists
+    const existingEmail = await HumanAgent.findOne({ gmail: gmail.toLowerCase() });
+    if (existingEmail) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Gmail already registered" 
+      });
+    }
+
+    const humanAgent = new HumanAgent({
+      clientId,
+      humanAgentName: humanAgentName.trim(),
+      gmail: gmail.toLowerCase().trim(),
+      isprofileTrue: true,
+      isApproved: true,
+      agentId: [] // Initially empty array
+    });
+
+    await humanAgent.save();
+
+    res.status(201).json({ 
+      success: true, 
+      data: humanAgent,
+      message: "Human agent created successfully" 
+    });
+  } catch (error) {
+    console.error("Error creating human agent:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to create human agent" 
+    });
+  }
+};
+
+// Update human agent
+const updateHumanAgent = async (req, res) => {
+  try {
+    // Extract clientId from token
+    const clientId = req.user.id;
+    const { agentId } = req.params;
+    const { humanAgentName, gmail, isprofileTrue, isApproved } = req.body;
+
+    // Verify client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Client not found" 
+      });
+    }
+
+    // Find and update human agent
+    const humanAgent = await HumanAgent.findOneAndUpdate(
+      { _id: agentId, clientId },
+      {
+        humanAgentName: humanAgentName?.trim(),
+        gmail: gmail?.toLowerCase().trim(),
+        isprofileTrue,
+        isApproved,
+        updatedAt: new Date()
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!humanAgent) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Human agent not found" 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      data: humanAgent,
+      message: "Human agent updated successfully" 
+    });
+  } catch (error) {
+    console.error("Error updating human agent:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to update human agent" 
+    });
+  }
+};
+
+// Delete human agent
+const deleteHumanAgent = async (req, res) => {
+  try {
+    // Extract clientId from token
+    const clientId = req.user.id;
+    const { agentId } = req.params;
+
+    // Verify client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Client not found" 
+      });
+    }
+
+    const humanAgent = await HumanAgent.findOneAndDelete({ 
+      _id: agentId, 
+      clientId 
+    });
+
+    if (!humanAgent) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Human agent not found" 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      message: "Human agent deleted successfully" 
+    });
+  } catch (error) {
+    console.error("Error deleting human agent:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to delete human agent" 
+    });
+  }
+};
+
+// Get single human agent
+const getHumanAgentById = async (req, res) => {
+  try {
+    // Extract clientId from token
+    const clientId = req.clientId;
+    const { agentId } = req.query;
+
+    // Verify client exists
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Client not found" 
+      });
+    }
+
+    const humanAgent = await HumanAgent.findOne({ 
+      _id: agentId, 
+      clientId 
+    }).populate('agentId', 'agentName description');
+
+    if (!humanAgent) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Human agent not found" 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      data: humanAgent 
+    });
+  } catch (error) {
+    console.error("Error fetching human agent:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch human agent" 
+    });
+  }
+};
+
 module.exports = { 
   getUploadUrl,
   loginClient, 
   googleLogin,
   registerClient,
   getClientProfile,
+  getHumanAgents,
+  createHumanAgent,
+  updateHumanAgent,
+  deleteHumanAgent,
+  getHumanAgentById
 };

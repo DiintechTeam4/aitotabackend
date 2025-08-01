@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin } = require('../controllers/clientcontroller');
-const { authMiddleware, verifyAdminTokenOnlyForRegister } = require('../middlewares/authmiddleware');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById } = require('../controllers/clientcontroller');
+const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
@@ -1089,6 +1089,23 @@ router.get('/business-info',extractClientId, async(req,res)=>{
     res.status(404).json({success: false, message: "Business info not found"})
   }
 });
+
+// ==================== HUMAN AGENT ROUTES ====================
+
+// Get all human agents for a client
+router.get('/human-agents', extractClientId,  getHumanAgents);
+
+// Create new human agent
+router.post('/human-agents', extractClientId,  createHumanAgent);
+
+// Get single human agent
+router.get('/human-agents/:agentId', extractClientId,  getHumanAgentById);
+
+// Update human agent
+router.put('/human-agents/:agentId', extractClientId,  updateHumanAgent);
+
+// Delete human agent
+router.delete('/human-agents/:agentId', extractClientId,  deleteHumanAgent);
 
 module.exports = router;
 
