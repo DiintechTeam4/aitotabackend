@@ -13,6 +13,7 @@ const AgentSettings = require('../models/AgentSettings');
 const Group = require('../models/Group');
 const Campaign = require('../models/Campaign');
 const jwt = require('jsonwebtoken');
+const BusinessInfo = require('../models/BusinessInfo');
 
 const clientApiService = new ClientApiService()
 
@@ -487,8 +488,69 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
 router.get('/inbound/logs', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
+    const { filter, startDate, endDate } = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        time: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query
+    const query = { clientId, ...dateFilter };
+    
     const clientName = await Client.findOne({ _id: clientId }).select('name');
-    const logs = await CallLog.find({ clientId });
+    const logs = await CallLog.find(query);
     res.json({success:'true', clientName: clientName ,data:logs});
   } catch (error) {
     console.error('Error in /inbound/logs:', error);
@@ -997,6 +1059,36 @@ router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
   }
 });
 
+// ==================== BUSINESS INFO API ====================
+
+router.post('/business-info', extractClientId, async(req,res)=>{
+  try{
+    const clientId = req.clientId;
+    const {text} = req.body;
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({success: false, message: "Text is required"});
+    }
+
+    const businessInfo = await BusinessInfo.create({clientId: clientId, text: text.trim()});
+    res.status(201).json({success: true, data: businessInfo});
+  }catch(error){
+    console.error('Error creating business info:', error);
+    res.status(500).json({success: false, message: "Failed to create business info"});
+  }
+});
+
+router.get('/business-info',extractClientId, async(req,res)=>{
+  try{
+    const clientId = req.clientId;
+
+    const businessInfo = await BusinessInfo.find({clientId: clientId});
+    res.status(200).json({success: true, data: businessInfo})
+  }catch(error){
+    console.error('Error fetching business info:', error);
+    res.status(404).json({success: false, message: "Business info not found"})
+  }
+});
 
 module.exports = router;
 
