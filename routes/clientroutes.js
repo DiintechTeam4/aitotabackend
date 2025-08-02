@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, loginHumanAgentGoogle } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -163,8 +163,6 @@ router.get('/upload-url',getUploadUrl)
 router.post('/login', loginClient);
 
 router.post('/human-agent/login', loginHumanAgent);
-
-router.post('/human-agent/google-login', loginHumanAgentGoogle);
 
 router.post('/google-login',verifyGoogleToken, googleLogin);
 

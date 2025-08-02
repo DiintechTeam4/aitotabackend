@@ -3,7 +3,10 @@ const HumanAgent = require("../models/HumanAgent");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { getobject, putobject } = require("../utils/s3");
-const { GoogleAuth } = require("google-auth-library");
+const { OAuth2Client } = require("google-auth-library");
+
+// Initialize Google OAuth2 client
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // Generate JWT Token
 const generateToken = (id) => {
@@ -151,11 +154,69 @@ const googleLogin = async (req, res) => {
   try {
     // googleUser is set by verifyGoogleToken middleware
     const { email, name, picture, emailVerified, googleId } = req.googleUser;
+    const userEmail = email.toLowerCase();
+    console.log('Google login attempt for email:', userEmail);
 
-    // Find client by email
-    let client = await Client.findOne({ email });
+    // Step 1: Check if email exists as human agent FIRST (Priority)
+    const humanAgent = await HumanAgent.findOne({ 
+      email: userEmail 
+    }).populate('clientId');
+
+    if (humanAgent) {
+      console.log('Human agent found:', humanAgent._id);
+      
+      // Check if human agent is approved
+      if (!humanAgent.isApproved) {
+        console.log('Human agent not approved:', humanAgent._id);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Your human agent account is not yet approved. Please contact your administrator." 
+        });
+      }
+
+      // Get client information
+      const client = await Client.findById(humanAgent.clientId);
+      if (!client) {
+        console.log('Client not found for human agent:', humanAgent._id);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Associated client not found" 
+        });
+      }
+
+      console.log('Human agent Google login successful:', humanAgent._id);
+
+      // Generate token for human agent
+      const jwtToken = jwt.sign(
+        { 
+          id: humanAgent._id, 
+          userType: 'humanAgent',
+          clientId: client._id,
+          email: humanAgent.email
+        }, 
+        process.env.JWT_SECRET, 
+        { expiresIn: "7d" }
+      );
+
+      // Return response in the exact format you specified
+      return res.status(200).json({
+        success: true,
+        message: "Profile incomplete",
+        token: jwtToken,
+        userType: 'humanAgent',
+        isprofileCompleted: humanAgent.isprofileCompleted || false,
+        id: humanAgent._id,
+        email: humanAgent.email,
+        name: humanAgent.humanAgentName,
+        isApproved: humanAgent.isApproved || false
+      });
+    }
+
+    // Step 2: If not human agent, check if email exists as client
+    let client = await Client.findOne({ email: userEmail });
 
     if (client) {
+      console.log('Client found:', client._id);
       // Existing client
       const token = generateToken(client._id);
 
@@ -163,11 +224,11 @@ const googleLogin = async (req, res) => {
         // Profile completed, proceed with login
         let code; 
     
-    if (client.isprofileCompleted && client.isApproved) {
-      code = 202; 
-    } else if (client.isprofileCompleted && !client.isApproved) {
-      code = 203; 
-    }
+        if (client.isprofileCompleted && client.isApproved) {
+          code = 202; 
+        } else if (client.isprofileCompleted && !client.isApproved) {
+          code = 203; 
+        }
         return res.status(200).json({
           success: true,
           token,
@@ -194,31 +255,31 @@ const googleLogin = async (req, res) => {
             isprofileCompleted: client.isprofileCompleted || false
           }
         });
-      } 
-      else {
+      } else {
         let code; 
     
-    if (client.isprofileCompleted && client.isApproved) {
-      code = 202; 
-    } else if (client.isprofileCompleted && !client.isApproved) {
-      code = 203; 
-    }
-        // Profile not completed
+        if (client.isprofileCompleted && client.isApproved) {
+          code = 202; 
+        } else if (client.isprofileCompleted && !client.isApproved) {
+          code = 203; 
+        }
+        // Profile not completed - return in exact format you specified
         return res.status(200).json({
           success: true,
           message: "Profile incomplete",
           token,
+          userType: 'client',
           code: code,
           isprofileCompleted: false,
           id: client._id,
           email: client.email,
           name: client.name,
           isApproved: client.isApproved || false
-          
         });
       }
     } else {
-      // New client, create with Google info, isprofileCompleted: false
+      // Step 3: New client, create with Google info
+      console.log('Creating new client for email:', userEmail);
       const newClient = await Client.create({
         name,
         email,
@@ -236,6 +297,7 @@ const googleLogin = async (req, res) => {
         success: true,
         message: "Profile incomplete",
         token,
+        userType: 'client',
         isprofileCompleted: false,
         id: newClient._id,
         email: newClient.email,
@@ -747,87 +809,105 @@ const loginHumanAgentGoogle = async (req, res) => {
     }
 
     // Verify Google token and extract email
-    const { verifyGoogleToken } = require('../middlewares/googleAuth');
-    const googleUser = await verifyGoogleToken(token);
-    
-    if (!googleUser || !googleUser.email) {
-      console.log('Invalid Google token or missing email');
-      return res.status(401).json({ 
-        success: false, 
-        message: "Invalid Google token" 
+    try {
+      const audience = [process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_ANDROID_CLIENT_ID].filter(Boolean);
+      console.log('Audience for Google verification:', audience);
+      
+      // Verify the Google ID token
+      const ticket = await googleClient.verifyIdToken({
+        idToken: token,
+        audience: audience,
       });
-    }
 
-    const humanAgentEmail = googleUser.email.toLowerCase();
-    console.log('Looking for human agent with email:', humanAgentEmail);
-
-    // Find human agent with this email
-    const humanAgent = await HumanAgent.findOne({ 
-      email: humanAgentEmail 
-    }).populate('clientId');
-
-    if (!humanAgent) {
-      console.log('Human agent not found for email:', humanAgentEmail);
-      return res.status(401).json({ 
-        success: false, 
-        message: "Human agent not found. Please contact your administrator to register your email." 
-      });
-    }
-
-    // Check if human agent is approved
-    if (!humanAgent.isApproved) {
-      console.log('Human agent not approved:', humanAgent._id);
-      return res.status(401).json({ 
-        success: false, 
-        message: "Your account is not yet approved. Please contact your administrator." 
-      });
-    }
-
-    // Get client information
-    const client = await Client.findById(humanAgent.clientId);
-    if (!client) {
-      console.log('Client not found for human agent:', humanAgent._id);
-      return res.status(401).json({ 
-        success: false, 
-        message: "Associated client not found" 
-      });
-    }
-
-    console.log('Human agent Google login successful:', humanAgent._id);
-
-    // Generate token for human agent
-    const jwtToken = jwt.sign(
-      { 
-        id: humanAgent._id, 
-        userType: 'humanAgent',
-        clientId: client._id,
-        email: humanAgent.email
-      }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: "7d" }
-    );
-
-    res.json({
-      success: true,
-      message: "Human agent Google login successful",
-      token: jwtToken,
-      humanAgent: {
-        _id: humanAgent._id,
-        humanAgentName: humanAgent.humanAgentName,
-        email: humanAgent.email,
-        mobileNumber: humanAgent.mobileNumber,
-        did: humanAgent.did,
-        isprofileCompleted: humanAgent.isprofileCompleted,
-        isApproved: humanAgent.isApproved,
-        clientId: humanAgent.clientId,
-        agentIds: humanAgent.agentIds
-      },
-      client: {
-        _id: client._id,
-        clientName: client.clientName,
-        email: client.email
+      const payload = ticket.getPayload();
+      console.log('Google token verified, payload:', payload);
+      
+      if (!payload || !payload.email) {
+        console.log('Invalid Google token or missing email');
+        return res.status(401).json({ 
+          success: false, 
+          message: "Invalid Google token" 
+        });
       }
-    });
+
+      const humanAgentEmail = payload.email.toLowerCase();
+      console.log('Looking for human agent with email:', humanAgentEmail);
+
+      // Find human agent with this email
+      const humanAgent = await HumanAgent.findOne({ 
+        email: humanAgentEmail 
+      }).populate('clientId');
+
+          if (!humanAgent) {
+        console.log('Human agent not found for email:', humanAgentEmail);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Human agent not found. Please contact your administrator to register your email." 
+        });
+      }
+
+      // Check if human agent is approved
+      if (!humanAgent.isApproved) {
+        console.log('Human agent not approved:', humanAgent._id);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Your account is not yet approved. Please contact your administrator." 
+        });
+      }
+
+      // Get client information
+      const client = await Client.findById(humanAgent.clientId);
+      if (!client) {
+        console.log('Client not found for human agent:', humanAgent._id);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Associated client not found" 
+        });
+      }
+
+      console.log('Human agent Google login successful:', humanAgent._id);
+
+      // Generate token for human agent
+      const jwtToken = jwt.sign(
+        { 
+          id: humanAgent._id, 
+          userType: 'humanAgent',
+          clientId: client._id,
+          email: humanAgent.email
+        }, 
+        process.env.JWT_SECRET, 
+        { expiresIn: "7d" }
+      );
+
+      res.json({
+        success: true,
+        message: "Human agent Google login successful",
+        token: jwtToken,
+        humanAgent: {
+          _id: humanAgent._id,
+          humanAgentName: humanAgent.humanAgentName,
+          email: humanAgent.email,
+          mobileNumber: humanAgent.mobileNumber,
+          did: humanAgent.did,
+          isprofileCompleted: humanAgent.isprofileCompleted,
+          isApproved: humanAgent.isApproved,
+          clientId: humanAgent.clientId,
+          agentIds: humanAgent.agentIds
+        },
+        client: {
+          _id: client._id,
+          clientName: client.clientName,
+          email: client.email
+        }
+      });
+
+    } catch (googleError) {
+      console.error('Google token verification error:', googleError);
+      return res.status(401).json({
+        success: false,
+        message: "Invalid Google token"
+      });
+    }
 
   } catch (error) {
     console.error("Error in human agent Google login:", error);
