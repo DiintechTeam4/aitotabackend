@@ -33,6 +33,10 @@ const groupSchema = new mongoose.Schema({
     trim: true
   },
   contacts: [contactSchema],
+  agentIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Agent'
+  }],
   clientId: {
     type: String,
     required: true,

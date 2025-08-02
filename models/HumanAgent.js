@@ -27,7 +27,6 @@ const humanAgentSchema = new mongoose.Schema({
   },
   did:{
     type:String,
-    required: true
   },
 
   // Status flags

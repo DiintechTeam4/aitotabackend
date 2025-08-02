@@ -203,7 +203,7 @@ const googleLogin = async (req, res) => {
         success: true,
         message: "Profile incomplete",
         token: jwtToken,
-        userType: 'humanAgent',
+        userType: "humanAgent",
         isprofileCompleted: humanAgent.isprofileCompleted || false,
         id: humanAgent._id,
         email: humanAgent.email,
@@ -222,54 +222,24 @@ const googleLogin = async (req, res) => {
 
       if (client.isprofileCompleted === true || client.isprofileCompleted === "true") {
         // Profile completed, proceed with login
-        let code; 
-    
-        if (client.isprofileCompleted && client.isApproved) {
-          code = 202; 
-        } else if (client.isprofileCompleted && !client.isApproved) {
-          code = 203; 
-        }
         return res.status(200).json({
           success: true,
+          message: "Profile incomplete",
           token,
-          client: {
-            id: client._id,
-            name: client.name,
-            email: client.email,
-            code: code,
-            businessName: client.businessName,
-            businessLogoKey: client.businessLogoKey,
-            businessLogoUrl: client.businessLogoUrl,
-            gstNo: client.gstNo,
-            panNo: client.panNo,
-            mobileNo: client.mobileNo,
-            address: client.address,
-            city: client.city,
-            pincode: client.pincode,
-            websiteUrl: client.websiteUrl,
-            isGoogleUser: client.isGoogleUser,
-            googlePicture: client.googlePicture,
-            emailVerified: client.emailVerified,
-            userId: client.userId,
-            isApproved: client.isApproved || false,
-            isprofileCompleted: client.isprofileCompleted || false
-          }
+          userType: "client",
+          isprofileCompleted: true,
+          id: client._id,
+          email: client.email,
+          name: client.name,
+          isApproved: client.isApproved || false
         });
       } else {
-        let code; 
-    
-        if (client.isprofileCompleted && client.isApproved) {
-          code = 202; 
-        } else if (client.isprofileCompleted && !client.isApproved) {
-          code = 203; 
-        }
         // Profile not completed - return in exact format you specified
         return res.status(200).json({
           success: true,
           message: "Profile incomplete",
           token,
-          userType: 'client',
-          code: code,
+          userType: "client",
           isprofileCompleted: false,
           id: client._id,
           email: client.email,
@@ -297,7 +267,7 @@ const googleLogin = async (req, res) => {
         success: true,
         message: "Profile incomplete",
         token,
-        userType: 'client',
+        userType: "client",
         isprofileCompleted: false,
         id: newClient._id,
         email: newClient.email,
@@ -500,13 +470,13 @@ const createHumanAgent = async (req, res) => {
   try {
     // Extract clientId from token
     const clientId = req.clientId;
-    const { humanAgentName, email } = req.body;
+    const { humanAgentName, email, mobileNumber, did } = req.body;
 
     // Validate required fields
-    if (!humanAgentName || !email) {
+    if (!humanAgentName || !email || !mobileNumber || !did) {
       return res.status(400).json({ 
         success: false, 
-        message: "Human agent name and email are required" 
+        message: "Human agent name, email, mobile number, and DID are required" 
       });
     }
 
@@ -547,6 +517,8 @@ const createHumanAgent = async (req, res) => {
       clientId,
       humanAgentName: humanAgentName.trim(),
       email: email.toLowerCase().trim(),
+      mobileNumber: mobileNumber.trim(),
+      did: did.trim(),
       isprofileCompleted: true,
       isApproved: true,
       agentIds: [] // Initially empty array
@@ -574,7 +546,7 @@ const updateHumanAgent = async (req, res) => {
     // Extract clientId from token
     const clientId = req.clientId;
     const { agentId } = req.params;
-    const { humanAgentName, email} = req.body;
+    const { humanAgentName, email, mobileNumber, did} = req.body;
 
     // Verify client exists
     const client = await Client.findById(clientId);
@@ -591,7 +563,8 @@ const updateHumanAgent = async (req, res) => {
       {
         humanAgentName: humanAgentName?.trim(),
         email: email?.toLowerCase().trim(),
-        
+        mobileNumber: mobileNumber?.trim(),
+        did: did?.trim(),
         updatedAt: new Date()
       },
       { new: true, runValidators: true }

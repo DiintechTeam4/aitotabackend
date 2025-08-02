@@ -82,6 +82,8 @@ const agentSchema = new mongoose.Schema({
     enum: ["twilio", "vonage", "plivo", "bandwidth", "other"],
   },
   taskDidNumber: { type: String },
+  callerId: { type: String },
+  X_API_KEY: { type: String },
 
   // Audio storage - Store as base64 string instead of Buffer
   audioFile: { type: String }, // File path (legacy support)
