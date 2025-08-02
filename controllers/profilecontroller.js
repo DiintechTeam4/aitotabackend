@@ -76,20 +76,34 @@ exports.createProfile = async (req, res) => {
       });
     }
 
-    // Check if profile already exists for this client
-    const existingProfile = await Profile.findOne({ clientId: req.client._id });
-    if (existingProfile) {
-      return res.status(409).json({
-        success: false,
-        message: 'Profile already exists for this client. Use update endpoint to modify existing profile.',
-        statusCode: 409
-      });
+    // Check if profile already exists for this client or human agent
+    let existingProfile;
+    if (req.body.humanAgentId) {
+      // Check for human agent profile
+      existingProfile = await Profile.findOne({ humanAgentId: req.body.humanAgentId });
+      if (existingProfile) {
+        return res.status(409).json({
+          success: false,
+          message: 'Profile already exists for this human agent. Use update endpoint to modify existing profile.',
+          statusCode: 409
+        });
+      }
+    } else {
+      // Check for client profile
+      existingProfile = await Profile.findOne({ clientId: req.client._id });
+      if (existingProfile) {
+        return res.status(409).json({
+          success: false,
+          message: 'Profile already exists for this client. Use update endpoint to modify existing profile.',
+          statusCode: 409
+        });
+      }
     }
 
     // Prepare profile data
     const profileData = {
       ...req.body,
-      clientId: req.client._id
+      clientId: req.body.humanAgentId ? undefined : req.client._id // Only set clientId if not human agent
     };
 
     // Check if all fields are filled
@@ -99,12 +113,14 @@ exports.createProfile = async (req, res) => {
     const profile = new Profile(profileData);
     await profile.save();
 
-    // Sync Client's isprofileCompleted field
-    await Client.findByIdAndUpdate(
-      req.client._id,
-      { isprofileCompleted: profile.isProfileCompleted },
-      { new: true }
-    );
+    // Sync Client's isprofileCompleted field (only for client profiles)
+    if (!req.body.humanAgentId) {
+      await Client.findByIdAndUpdate(
+        req.client._id,
+        { isprofileCompleted: profile.isProfileCompleted },
+        { new: true }
+      );
+    }
 
     res.status(201).json({
       success: true,
