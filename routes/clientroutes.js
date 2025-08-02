@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, loginHumanAgentGoogle } = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -161,6 +161,10 @@ router.get("/providers", (req, res) => {
 router.get('/upload-url',getUploadUrl)
 
 router.post('/login', loginClient);
+
+router.post('/human-agent/login', loginHumanAgent);
+
+router.post('/human-agent/google-login', loginHumanAgentGoogle);
 
 router.post('/google-login',verifyGoogleToken, googleLogin);
 
@@ -1060,7 +1064,7 @@ router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
 });
 
 // ==================== BUSINESS INFO API ====================
-
+//create client business id
 router.post('/business-info', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
@@ -1078,15 +1082,50 @@ router.post('/business-info', extractClientId, async(req,res)=>{
   }
 });
 
-router.get('/business-info',extractClientId, async(req,res)=>{
+//Get client's business id
+router.get('/business-info/:id', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
+    const { id } = req.params;
 
-    const businessInfo = await BusinessInfo.find({clientId: clientId});
-    res.status(200).json({success: true, data: businessInfo})
+    const businessInfo = await BusinessInfo.findOne({ _id: id, clientId: clientId });
+    
+    if (!businessInfo) {
+      return res.status(404).json({success: false, message: "Business info not found"});
+    }
+
+    res.status(200).json({success: true, data: businessInfo});
   }catch(error){
     console.error('Error fetching business info:', error);
-    res.status(404).json({success: false, message: "Business info not found"})
+    res.status(500).json({success: false, message: "Failed to fetch business info"});
+  }
+});
+
+//update client's business id
+router.put('/business-info/:id', extractClientId, async(req,res)=>{
+  try{
+    const clientId = req.clientId;
+    const { id } = req.params;
+    const { text } = req.body;
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({success: false, message: "Text is required"});
+    }
+
+    const businessInfo = await BusinessInfo.findOneAndUpdate(
+      { _id: id, clientId: clientId },
+      { text: text.trim(), updatedAt: Date.now() },
+      { new: true, runValidators: true }
+    );
+
+    if (!businessInfo) {
+      return res.status(404).json({success: false, message: "Business info not found"});
+    }
+
+    res.status(200).json({success: true, data: businessInfo});
+  }catch(error){
+    console.error('Error updating business info:', error);
+    res.status(500).json({success: false, message: "Failed to update business info"});
   }
 });
 

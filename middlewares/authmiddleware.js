@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const Admin = require('../models/Admin');
 const Client = require('../models/Client');
 const User = require('../models/User');
+const HumanAgent = require('../models/HumanAgent');
 
 const authMiddleware = async (req, res, next) => {
   try {
@@ -38,6 +39,8 @@ const authMiddleware = async (req, res, next) => {
         user = await Client.findById(decoded.id).select('-password');
       } else if (decoded.userType === 'admin') {
         user = await Admin.findById(decoded.id).select('-password');
+      } else if (decoded.userType === 'humanAgent') {
+        user = await HumanAgent.findById(decoded.id);
       }
 
       if (!user) {
@@ -272,4 +275,58 @@ const ensureUserBelongsToClient = async (req, res, next) => {
     });
   }
 };
-module.exports = { verifyClientToken, verifyAdminToken, verifyAdminTokenOnlyForRegister, verifyUserToken, authMiddleware, checkClientAccess, ensureUserBelongsToClient}; 
+// Verify human agent token
+const verifyHumanAgentToken = async (req, res, next) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'No token provided' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Check if it's a human agent token
+    if (decoded.userType !== 'humanAgent') {
+      return res.status(401).json({ success: false, message: 'Invalid token type for human agent access' });
+    }
+    
+    // Find human agent by id
+    const humanAgent = await HumanAgent.findById(decoded.id);
+    if (!humanAgent) {
+      return res.status(401).json({ success: false, message: 'Human agent not found' });
+    }
+    
+    // Check if human agent is approved
+    if (!humanAgent.isApproved) {
+      return res.status(401).json({ success: false, message: 'Human agent account is not approved' });
+    }
+    
+    // Add human agent to request object
+    req.humanAgent = humanAgent;
+    req.user = {
+      id: humanAgent._id,
+      userType: 'humanAgent',
+      email: humanAgent.email,
+      clientId: humanAgent.clientId
+    };
+    next();
+  } catch (error) {
+    console.error('Human agent token verification error:', error);
+    return res.status(401).json({ success: false, message: 'Invalid token' });
+  }
+};
+
+module.exports = { 
+  verifyClientToken, 
+  verifyAdminToken, 
+  verifyAdminTokenOnlyForRegister, 
+  verifyUserToken, 
+  authMiddleware, 
+  checkClientAccess, 
+  ensureUserBelongsToClient,
+  verifyHumanAgentToken
+}; 

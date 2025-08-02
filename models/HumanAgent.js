@@ -14,16 +14,24 @@ const humanAgentSchema = new mongoose.Schema({
     type: String, 
     required: true 
   },
-  gmail: { 
+  email: { 
     type: String, 
     required: true,
     unique: true,
     lowercase: true,
     trim: true
   },
+  mobileNumber:{
+    type:String,
+    required: true
+  },
+  did:{
+    type:String,
+    required: true
+  },
 
   // Status flags
-  isprofileTrue: { 
+  isprofileCompleted: { 
     type: Boolean, 
     default: false 
   },
@@ -58,7 +66,5 @@ humanAgentSchema.pre('save', function(next) {
 // Compound index for client + human agent name uniqueness
 humanAgentSchema.index({ clientId: 1, humanAgentName: 1 }, { unique: true });
 
-// Index for email uniqueness
-humanAgentSchema.index({ gmail: 1 }, { unique: true });
 
 module.exports = mongoose.model("HumanAgent", humanAgentSchema); 

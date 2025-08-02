@@ -417,7 +417,7 @@ const getHumanAgents = async (req, res) => {
     }
 
     const humanAgents = await HumanAgent.find({ clientId })
-      .populate('agentId', 'agentName description')
+      .populate('agentIds', 'agentName description')
       .sort({ createdAt: -1 });
 
     res.json({ 
@@ -438,13 +438,13 @@ const createHumanAgent = async (req, res) => {
   try {
     // Extract clientId from token
     const clientId = req.clientId;
-    const { humanAgentName, gmail } = req.body;
+    const { humanAgentName, email } = req.body;
 
     // Validate required fields
-    if (!humanAgentName || !gmail) {
+    if (!humanAgentName || !email) {
       return res.status(400).json({ 
         success: false, 
-        message: "Human agent name and gmail are required" 
+        message: "Human agent name and email are required" 
       });
     }
 
@@ -472,22 +472,22 @@ const createHumanAgent = async (req, res) => {
       });
     }
 
-    // Check if gmail already exists
-    const existingEmail = await HumanAgent.findOne({ gmail: gmail.toLowerCase() });
+    // Check if email already exists
+    const existingEmail = await HumanAgent.findOne({ email: email.toLowerCase() });
     if (existingEmail) {
       return res.status(400).json({ 
         success: false, 
-        message: "Gmail already registered" 
+        message: "Email already registered" 
       });
     }
 
     const humanAgent = new HumanAgent({
       clientId,
       humanAgentName: humanAgentName.trim(),
-      gmail: gmail.toLowerCase().trim(),
-      isprofileTrue: true,
+      email: email.toLowerCase().trim(),
+      isprofileCompleted: true,
       isApproved: true,
-      agentId: [] // Initially empty array
+      agentIds: [] // Initially empty array
     });
 
     await humanAgent.save();
@@ -510,9 +510,9 @@ const createHumanAgent = async (req, res) => {
 const updateHumanAgent = async (req, res) => {
   try {
     // Extract clientId from token
-    const clientId = req.user.id;
+    const clientId = req.clientId;
     const { agentId } = req.params;
-    const { humanAgentName, gmail, isprofileTrue, isApproved } = req.body;
+    const { humanAgentName, email} = req.body;
 
     // Verify client exists
     const client = await Client.findById(clientId);
@@ -528,9 +528,8 @@ const updateHumanAgent = async (req, res) => {
       { _id: agentId, clientId },
       {
         humanAgentName: humanAgentName?.trim(),
-        gmail: gmail?.toLowerCase().trim(),
-        isprofileTrue,
-        isApproved,
+        email: email?.toLowerCase().trim(),
+        
         updatedAt: new Date()
       },
       { new: true, runValidators: true }
@@ -603,7 +602,7 @@ const getHumanAgentById = async (req, res) => {
   try {
     // Extract clientId from token
     const clientId = req.clientId;
-    const { agentId } = req.query;
+    const { agentId } = req.params;
 
     // Verify client exists
     const client = await Client.findById(clientId);
@@ -617,7 +616,7 @@ const getHumanAgentById = async (req, res) => {
     const humanAgent = await HumanAgent.findOne({ 
       _id: agentId, 
       clientId 
-    }).populate('agentId', 'agentName description');
+    }).populate('agentIds', 'agentName description');
 
     if (!humanAgent) {
       return res.status(404).json({ 
@@ -639,6 +638,206 @@ const getHumanAgentById = async (req, res) => {
   }
 };
 
+// Human Agent Login
+const loginHumanAgent = async (req, res) => {
+  try {
+    const { email, clientEmail } = req.body;
+
+    console.log('Human agent login attempt for email:', email, 'clientEmail:', clientEmail);
+
+    if (!email || !clientEmail) {
+      console.log('Missing credentials for human agent login');
+      return res.status(400).json({
+        success: false,
+        message: "Email and Client Email are required"
+      });
+    }
+
+    // First verify the client exists by email
+    const client = await Client.findOne({ email: clientEmail.toLowerCase() });
+    if (!client) {
+      console.log('Client not found for clientEmail:', clientEmail);
+      return res.status(401).json({ 
+        success: false, 
+        message: "Invalid Client Email" 
+      });
+    }
+
+    // Check if human agent exists with this email and clientId
+    const humanAgent = await HumanAgent.findOne({ 
+      email: email.toLowerCase(),
+      clientId: client._id 
+    });
+
+    if (!humanAgent) {
+      console.log('Human agent not found for email:', email, 'clientId:', client._id);
+      return res.status(401).json({ 
+        success: false, 
+        message: "Human agent not found. Please check your email and Client Email." 
+      });
+    }
+
+    // Check if human agent is approved
+    if (!humanAgent.isApproved) {
+      console.log('Human agent not approved:', humanAgent._id);
+      return res.status(401).json({ 
+        success: false, 
+        message: "Your account is not yet approved. Please contact your administrator." 
+      });
+    }
+
+    console.log('Human agent login successful:', humanAgent._id);
+
+    // Generate token for human agent
+    const token = jwt.sign(
+      { 
+        id: humanAgent._id, 
+        userType: 'humanAgent',
+        clientId: client._id,
+        email: humanAgent.email
+      }, 
+      process.env.JWT_SECRET, 
+      { expiresIn: "7d" }
+    );
+
+    res.json({
+      success: true,
+      message: "Human agent login successful",
+      token,
+      humanAgent: {
+        _id: humanAgent._id,
+        humanAgentName: humanAgent.humanAgentName,
+        email: humanAgent.email,
+        mobileNumber: humanAgent.mobileNumber,
+        did: humanAgent.did,
+        isprofileCompleted: humanAgent.isprofileCompleted,
+        isApproved: humanAgent.isApproved,
+        clientId: humanAgent.clientId,
+        agentIds: humanAgent.agentIds
+      },
+      client: {
+        _id: client._id,
+        clientName: client.clientName,
+        email: client.email
+      }
+    });
+
+  } catch (error) {
+    console.error("Error in human agent login:", error);
+    res.status(500).json({
+      success: false,
+      message: "Login failed. Please try again."
+    });
+  }
+};
+
+// Human Agent Google Login
+const loginHumanAgentGoogle = async (req, res) => {
+  try {
+    const { token } = req.body;
+
+    console.log('Human agent Google login attempt');
+
+    if (!token) {
+      console.log('Missing Google token for human agent login');
+      return res.status(400).json({
+        success: false,
+        message: "Google token is required"
+      });
+    }
+
+    // Verify Google token and extract email
+    const { verifyGoogleToken } = require('../middlewares/googleAuth');
+    const googleUser = await verifyGoogleToken(token);
+    
+    if (!googleUser || !googleUser.email) {
+      console.log('Invalid Google token or missing email');
+      return res.status(401).json({ 
+        success: false, 
+        message: "Invalid Google token" 
+      });
+    }
+
+    const humanAgentEmail = googleUser.email.toLowerCase();
+    console.log('Looking for human agent with email:', humanAgentEmail);
+
+    // Find human agent with this email
+    const humanAgent = await HumanAgent.findOne({ 
+      email: humanAgentEmail 
+    }).populate('clientId');
+
+    if (!humanAgent) {
+      console.log('Human agent not found for email:', humanAgentEmail);
+      return res.status(401).json({ 
+        success: false, 
+        message: "Human agent not found. Please contact your administrator to register your email." 
+      });
+    }
+
+    // Check if human agent is approved
+    if (!humanAgent.isApproved) {
+      console.log('Human agent not approved:', humanAgent._id);
+      return res.status(401).json({ 
+        success: false, 
+        message: "Your account is not yet approved. Please contact your administrator." 
+      });
+    }
+
+    // Get client information
+    const client = await Client.findById(humanAgent.clientId);
+    if (!client) {
+      console.log('Client not found for human agent:', humanAgent._id);
+      return res.status(401).json({ 
+        success: false, 
+        message: "Associated client not found" 
+      });
+    }
+
+    console.log('Human agent Google login successful:', humanAgent._id);
+
+    // Generate token for human agent
+    const jwtToken = jwt.sign(
+      { 
+        id: humanAgent._id, 
+        userType: 'humanAgent',
+        clientId: client._id,
+        email: humanAgent.email
+      }, 
+      process.env.JWT_SECRET, 
+      { expiresIn: "7d" }
+    );
+
+    res.json({
+      success: true,
+      message: "Human agent Google login successful",
+      token: jwtToken,
+      humanAgent: {
+        _id: humanAgent._id,
+        humanAgentName: humanAgent.humanAgentName,
+        email: humanAgent.email,
+        mobileNumber: humanAgent.mobileNumber,
+        did: humanAgent.did,
+        isprofileCompleted: humanAgent.isprofileCompleted,
+        isApproved: humanAgent.isApproved,
+        clientId: humanAgent.clientId,
+        agentIds: humanAgent.agentIds
+      },
+      client: {
+        _id: client._id,
+        clientName: client.clientName,
+        email: client.email
+      }
+    });
+
+  } catch (error) {
+    console.error("Error in human agent Google login:", error);
+    res.status(500).json({
+      success: false,
+      message: "Google login failed. Please try again."
+    });
+  }
+};
+
 module.exports = { 
   getUploadUrl,
   loginClient, 
@@ -649,5 +848,7 @@ module.exports = {
   createHumanAgent,
   updateHumanAgent,
   deleteHumanAgent,
-  getHumanAgentById
+  getHumanAgentById,
+  loginHumanAgent,
+  loginHumanAgentGoogle
 };
