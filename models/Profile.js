@@ -75,11 +75,7 @@ const ProfileSchema = new mongoose.Schema({
     required: true 
   },
 }, { 
-  timestamps: true,
-  // Add compound index for better performance
-  indexes: [
-    { clientId: 1 }
-  ]
+  timestamps: true
 });
 
 // Pre-save middleware to ensure either clientId or humanAgentId is provided and unique

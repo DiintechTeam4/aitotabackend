@@ -62,8 +62,6 @@ humanAgentSchema.pre('save', function(next) {
   next();
 });
 
-// Compound index for client + human agent name uniqueness
-humanAgentSchema.index({ clientId: 1, humanAgentName: 1 }, { unique: true });
-
+// Compound index for client + human agent name uniquene
 
 module.exports = mongoose.model("HumanAgent", humanAgentSchema); 

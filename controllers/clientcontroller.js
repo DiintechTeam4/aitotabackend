@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { getobject, putobject } = require("../utils/s3");
 const { OAuth2Client } = require("google-auth-library");
+const Profile = require("../models/Profile");
 
 // Initialize Google OAuth2 client
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -112,6 +113,9 @@ const loginClient = async (req, res) => {
 
     console.log('Login successful for client email:', email);
 
+    // Get profile ID for client
+    let profileId = await Profile.findOne({clientId: client._id});
+
     let code; 
     
     if (client.isprofileCompleted && client.isApproved) {
@@ -137,7 +141,8 @@ const loginClient = async (req, res) => {
         pincode: client.pincode,
         websiteUrl: client.websiteUrl,
         isApproved: client.isApproved || false,
-        isprofileCompleted: client.isprofileCompleted || false
+        isprofileCompleted: client.isprofileCompleted || false,
+        profileId: profileId ? profileId._id : null
       }
     });
   } catch (error) {
@@ -186,6 +191,9 @@ const googleLogin = async (req, res) => {
 
       console.log('Human agent Google login successful:', humanAgent._id);
 
+      // Get profile information for human agent
+      let humanAgentProfileId = await Profile.findOne({humanAgentId: humanAgent._id});
+
       // Generate token for human agent
       const jwtToken = jwt.sign(
         { 
@@ -204,6 +212,7 @@ const googleLogin = async (req, res) => {
         message: "Profile incomplete",
         token: jwtToken,
         userType: "executive",
+        profileId: humanAgentProfileId ? humanAgentProfileId._id : null,
         isprofileCompleted: humanAgent.isprofileCompleted || false,
         id: humanAgent._id,
         email: humanAgent.email,
@@ -214,12 +223,14 @@ const googleLogin = async (req, res) => {
 
     // Step 2: If not human agent, check if email exists as client
     let client = await Client.findOne({ email: userEmail });
+    
 
     if (client) {
       console.log('Client found:', client._id);
       // Existing client
       const token = generateToken(client._id);
-
+      let profileId = await Profile.findOne({clientId: client._id});
+      
       if (client.isprofileCompleted === true || client.isprofileCompleted === "true") {
         // Profile completed, proceed with login
         return res.status(200).json({
@@ -227,6 +238,7 @@ const googleLogin = async (req, res) => {
           message: "Profile incomplete",
           token,
           userType: "client",
+          profileId: profileId ? profileId._id : null,
           isprofileCompleted: true,
           id: client._id,
           email: client.email,
@@ -240,6 +252,7 @@ const googleLogin = async (req, res) => {
           message: "Profile incomplete",
           token,
           userType: "client",
+          profileId: profileId ? profileId._id : null,
           isprofileCompleted: false,
           id: client._id,
           email: client.email,
@@ -723,6 +736,10 @@ const loginHumanAgent = async (req, res) => {
 
     console.log('Human agent login successful:', humanAgent._id);
 
+    // Get profile information for human agent and client
+    let humanAgentProfileId = await Profile.findOne({humanAgentId: humanAgent._id});
+    let clientProfileId = await Profile.findOne({clientId: client._id});
+
     // Generate token for human agent
     const token = jwt.sign(
       { 
@@ -748,12 +765,14 @@ const loginHumanAgent = async (req, res) => {
         isprofileCompleted: humanAgent.isprofileCompleted,
         isApproved: humanAgent.isApproved,
         clientId: humanAgent.clientId,
-        agentIds: humanAgent.agentIds
+        agentIds: humanAgent.agentIds,
+        profileId: humanAgentProfileId ? humanAgentProfileId._id : null
       },
       client: {
         _id: client._id,
         clientName: client.clientName,
-        email: client.email
+        email: client.email,
+        profileId: clientProfileId ? clientProfileId._id : null
       }
     });
 
@@ -838,6 +857,10 @@ const loginHumanAgentGoogle = async (req, res) => {
         });
       }
 
+      // Get profile information for human agent
+      let humanAgentProfileId = await Profile.findOne({humanAgentId: humanAgent._id});
+      let clientProfileId = await Profile.findOne({clientId: client._id});
+
       console.log('Human agent Google login successful:', humanAgent._id);
 
       // Generate token for human agent
@@ -865,12 +888,14 @@ const loginHumanAgentGoogle = async (req, res) => {
           isprofileCompleted: humanAgent.isprofileCompleted,
           isApproved: humanAgent.isApproved,
           clientId: humanAgent.clientId,
-          agentIds: humanAgent.agentIds
+          agentIds: humanAgent.agentIds,
+          profileId: humanAgentProfileId ? humanAgentProfileId._id : null
         },
         client: {
           _id: client._id,
           clientName: client.clientName,
-          email: client.email
+          email: client.email,
+          profileId: clientProfileId ? clientProfileId._id : null
         }
       });
 
