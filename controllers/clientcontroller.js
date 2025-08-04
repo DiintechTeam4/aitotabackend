@@ -203,7 +203,7 @@ const googleLogin = async (req, res) => {
         success: true,
         message: "Profile incomplete",
         token: jwtToken,
-        userType: "humanAgent",
+        userType: "executive",
         isprofileCompleted: humanAgent.isprofileCompleted || false,
         id: humanAgent._id,
         email: humanAgent.email,
