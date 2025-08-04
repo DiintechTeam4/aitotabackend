@@ -1,5 +1,6 @@
 const Profile = require('../models/Profile');
 const Client = require('../models/Client');
+const HumanAgent = require('../models/HumanAgent');
 
 // Helper to check if all required fields are filled
 function checkProfileCompleted(profile) {
@@ -159,8 +160,85 @@ exports.createProfile = async (req, res) => {
   }
 };
 
-// Get a profile by clientId
+// Get a profile by profileId
 exports.getProfile = async (req, res) => {
+  try {
+    // Validate profileId parameter
+    if (!req.params.profileId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Profile ID is required',
+        statusCode: 400
+      });
+    }
+
+    // Validate ObjectId format
+    if (!require('mongoose').Types.ObjectId.isValid(req.params.profileId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid profile ID format',
+        statusCode: 400
+      });
+    }
+
+    const profile = await Profile.findById(req.params.profileId);
+    
+    if (!profile) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profile not found',
+        statusCode: 404
+      });
+    }
+
+    // Get human email if profile has clientId
+    let clientEmail = null;
+    if (profile.humanAgentId) {
+      const client = await HumanAgent.findById(profile.humanAgentId).select('email');
+      clientEmail = client ? client.email : null;
+    } else if (profile.clientId) {
+      try {
+        const client = await Client.findById(profile.clientId).select('email');
+        if (client) {
+          clientEmail = client.email;
+        } else {
+          clientEmail = null;
+        }
+      } catch (error) {
+        console.error('Error finding client:', error);
+        clientEmail = null;
+      }
+    }
+
+    // Sync Client's isprofileCompleted field if profile has clientId
+    if (profile.clientId) {
+      await Client.findByIdAndUpdate(
+        profile.clientId,
+        { isprofileCompleted: profile.isProfileCompleted },
+        { new: false }
+      );
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile retrieved successfully',
+      email: clientEmail,
+      profile,
+      statusCode: 200
+    });
+
+  } catch (error) {
+    console.error('Profile retrieval error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      statusCode: 500
+    });
+  }
+};
+
+// Get a profile by clientId (for backward compatibility)
+exports.getProfileByClientId = async (req, res) => {
   try {
     // Validate clientId parameter
     if (!req.params.clientId) {
@@ -216,7 +294,7 @@ exports.getProfile = async (req, res) => {
   }
 };
 
-// Update a profile by clientId
+// Update a profile by profileId
 exports.updateProfile = async (req, res) => {
   try {
     // Validate request body
@@ -228,20 +306,20 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
-    // Validate clientId parameter
-    if (!req.params.clientId) {
+    // Validate profileId parameter
+    if (!req.params.profileId) {
       return res.status(400).json({
         success: false,
-        message: 'Client ID is required',
+        message: 'Profile ID is required',
         statusCode: 400
       });
     }
 
     // Validate ObjectId format
-    if (!require('mongoose').Types.ObjectId.isValid(req.params.clientId)) {
+    if (!require('mongoose').Types.ObjectId.isValid(req.params.profileId)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid client ID format',
+        message: 'Invalid profile ID format',
         statusCode: 400
       });
     }
@@ -257,12 +335,13 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
-    // Prevent clientId from being changed
+    // Prevent clientId and humanAgentId from being changed
     const updateData = { ...req.body };
     delete updateData.clientId;
+    delete updateData.humanAgentId;
 
     // Find the current profile
-    const profile = await Profile.findOne({ clientId: req.params.clientId });
+    const profile = await Profile.findById(req.params.profileId);
     
     if (!profile) {
       return res.status(404).json({
@@ -280,12 +359,14 @@ exports.updateProfile = async (req, res) => {
     
     await profile.save();
 
-    // Sync Client's isprofileCompleted field
-    await Client.findByIdAndUpdate(
-      profile.clientId,
-      { isprofileCompleted: profile.isProfileCompleted },
-      { new: true }
-    );
+    // Sync Client's isprofileCompleted field if profile has clientId
+    if (profile.clientId) {
+      await Client.findByIdAndUpdate(
+        profile.clientId,
+        { isprofileCompleted: profile.isProfileCompleted },
+        { new: true }
+      );
+    }
 
     res.status(200).json({
       success: true,
@@ -315,29 +396,29 @@ exports.updateProfile = async (req, res) => {
   }
 };
 
-// Delete a profile by clientId
+// Delete a profile by profileId
 exports.deleteProfile = async (req, res) => {
   try {
-    // Validate clientId parameter
-    if (!req.params.clientId) {
+    // Validate profileId parameter
+    if (!req.params.profileId) {
       return res.status(400).json({
         success: false,
-        message: 'Client ID is required',
+        message: 'Profile ID is required',
         statusCode: 400
       });
     }
 
     // Validate ObjectId format
-    if (!require('mongoose').Types.ObjectId.isValid(req.params.clientId)) {
+    if (!require('mongoose').Types.ObjectId.isValid(req.params.profileId)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid client ID format',
+        message: 'Invalid profile ID format',
         statusCode: 400
       });
     }
 
     // First, find the profile to check if it exists
-    const profile = await Profile.findOne({ clientId: req.params.clientId });
+    const profile = await Profile.findById(req.params.profileId);
     
     if (!profile) {
       return res.status(404).json({
@@ -347,19 +428,24 @@ exports.deleteProfile = async (req, res) => {
       });
     }
 
+    // Store clientId before deletion for updating client status
+    const clientId = profile.clientId;
+
     // Set isProfileCompleted to false before deletion (for audit purposes)
     profile.isProfileCompleted = false;
     await profile.save();
 
     // Now delete the profile
-    await Profile.findOneAndDelete({ clientId: req.params.clientId });
+    await Profile.findByIdAndDelete(req.params.profileId);
 
-    // Update client's profile completion status to false
-    await Client.findByIdAndUpdate(
-      req.params.clientId,
-      { isprofileCompleted: false },
-      { new: true }
-    );
+    // Update client's profile completion status to false if profile had clientId
+    if (clientId) {
+      await Client.findByIdAndUpdate(
+        clientId,
+        { isprofileCompleted: false },
+        { new: true }
+      );
+    }
 
     res.status(200).json({
       success: true,

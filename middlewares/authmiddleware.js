@@ -320,6 +320,75 @@ const verifyHumanAgentToken = async (req, res, next) => {
   }
 };
 
+// Verify client or human agent token (accepts both)
+const verifyClientOrHumanAgentToken = async (req, res, next) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'No token provided' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Check if it's a client token
+    if (decoded.userType === 'client') {
+      const client = await Client.findById(decoded.id).select('-password');
+      if (!client) {
+        return res.status(401).json({ success: false, message: 'Client not found' });
+      }
+      
+      // Add client to request object
+      req.client = client;
+      req.user = {
+        id: client._id,
+        userType: 'client',
+        email: client.email,
+        clientId: client.userId
+      };
+      next();
+      return;
+    }
+    
+    // Check if it's a human agent token
+    if (decoded.userType === 'humanAgent') {
+      const humanAgent = await HumanAgent.findById(decoded.id);
+      if (!humanAgent) {
+        return res.status(401).json({ success: false, message: 'Human agent not found' });
+      }
+      
+      // Check if human agent is approved
+      if (!humanAgent.isApproved) {
+        return res.status(401).json({ success: false, message: 'Human agent account is not approved' });
+      }
+      
+      // Add human agent to request object
+      req.humanAgent = humanAgent;
+      req.user = {
+        id: humanAgent._id,
+        userType: 'humanAgent',
+        email: humanAgent.email,
+        clientId: humanAgent.clientId
+      };
+      next();
+      return;
+    }
+    
+    // If neither client nor human agent token
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Invalid token type. Only client or human agent tokens are allowed' 
+    });
+    
+  } catch (error) {
+    console.error('Client or Human Agent token verification error:', error);
+    return res.status(401).json({ success: false, message: 'Invalid token' });
+  }
+};
+
 module.exports = { 
   verifyClientToken, 
   verifyAdminToken, 
@@ -328,5 +397,6 @@ module.exports = {
   authMiddleware, 
   checkClientAccess, 
   ensureUserBelongsToClient,
-  verifyHumanAgentToken
+  verifyHumanAgentToken,
+  verifyClientOrHumanAgentToken
 }; 
