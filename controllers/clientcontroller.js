@@ -483,13 +483,13 @@ const createHumanAgent = async (req, res) => {
   try {
     // Extract clientId from token
     const clientId = req.clientId;
-    const { humanAgentName, email, mobileNumber, did } = req.body;
+    const { humanAgentName, email, mobileNumber, agentIds, role } = req.body;
 
     // Validate required fields
-    if (!humanAgentName || !email || !mobileNumber || !did) {
+    if (!humanAgentName || !email || !mobileNumber || !agentIds || agentIds.length === 0) {
       return res.status(400).json({ 
         success: false, 
-        message: "Human agent name, email, mobile number, and DID are required" 
+        message: "Human agent name, email, mobile number, and at least one agent are required" 
       });
     }
 
@@ -531,10 +531,10 @@ const createHumanAgent = async (req, res) => {
       humanAgentName: humanAgentName.trim(),
       email: email.toLowerCase().trim(),
       mobileNumber: mobileNumber.trim(),
-      did: did.trim(),
+      role: role || 'executive',
       isprofileCompleted: true,
       isApproved: true,
-      agentIds: [] // Initially empty array
+      agentIds: agentIds // Store all selected agent IDs
     });
 
     await humanAgent.save();
@@ -559,7 +559,7 @@ const updateHumanAgent = async (req, res) => {
     // Extract clientId from token
     const clientId = req.clientId;
     const { agentId } = req.params;
-    const { humanAgentName, email, mobileNumber, did} = req.body;
+    const { humanAgentName, email, mobileNumber, agentIds, role} = req.body;
 
     // Verify client exists
     const client = await Client.findById(clientId);
@@ -577,7 +577,8 @@ const updateHumanAgent = async (req, res) => {
         humanAgentName: humanAgentName?.trim(),
         email: email?.toLowerCase().trim(),
         mobileNumber: mobileNumber?.trim(),
-        did: did?.trim(),
+        role: role || 'executive',
+        agentIds: agentIds || [], // Update agentIds array
         updatedAt: new Date()
       },
       { new: true, runValidators: true }
@@ -608,33 +609,57 @@ const updateHumanAgent = async (req, res) => {
 const deleteHumanAgent = async (req, res) => {
   try {
     // Extract clientId from token
-    const clientId = req.user.id;
+    const clientId = req.clientId;
     const { agentId } = req.params;
+
+    console.log('Delete request - clientId:', clientId, 'agentId:', agentId);
 
     // Verify client exists
     const client = await Client.findById(clientId);
     if (!client) {
+      console.log('Client not found:', clientId);
       return res.status(404).json({ 
         success: false, 
         message: "Client not found" 
       });
     }
 
-    const humanAgent = await HumanAgent.findOneAndDelete({ 
-      _id: agentId, 
-      clientId 
-    });
-
-    if (!humanAgent) {
+    // First check if human agent exists
+    const existingAgent = await HumanAgent.findById(agentId);
+    if (!existingAgent) {
+      console.log('Human agent not found by ID:', agentId);
       return res.status(404).json({ 
         success: false, 
         message: "Human agent not found" 
       });
     }
 
+    // Check if human agent belongs to this client
+    if (existingAgent.clientId.toString() !== clientId.toString()) {
+      console.log('Human agent does not belong to client. Agent clientId:', existingAgent.clientId, 'Request clientId:', clientId);
+      return res.status(403).json({ 
+        success: false, 
+        message: "Access denied - human agent does not belong to this client" 
+      });
+    }
+
+    // Delete the human agent
+    const humanAgent = await HumanAgent.findOneAndDelete({ 
+      _id: agentId, 
+      clientId 
+    });
+
+    // Also delete the associated profile
+    const deletedProfile = await Profile.findOneAndDelete({ 
+      humanAgentId: agentId 
+    });
+
+    console.log('Deleted human agent:', humanAgent ? 'Yes' : 'No');
+    console.log('Deleted associated profile:', deletedProfile ? 'Yes' : 'No');
+
     res.json({ 
       success: true, 
-      message: "Human agent deleted successfully" 
+      message: "Human agent and associated profile deleted successfully" 
     });
   } catch (error) {
     console.error("Error deleting human agent:", error);

@@ -14,6 +14,7 @@ const Group = require('../models/Group');
 const Campaign = require('../models/Campaign');
 const jwt = require('jsonwebtoken');
 const BusinessInfo = require('../models/BusinessInfo');
+const Contacts = require('../models/Contacts');
 
 const clientApiService = new ClientApiService()
 
@@ -728,6 +729,120 @@ router.put('/inbound/settings', extractClientId, async (req, res) => {
   }
 });
 
+// ==================== Sync Contacts =================
+
+// Bulk contact addition
+router.post('/sync/contacts', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { contacts } = req.body;
+
+    if (!contacts || !Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ 
+        status: false, 
+        message: 'contacts array is required and must not be empty' 
+      });
+    }
+
+    // Validate each contact
+    for (let i = 0; i < contacts.length; i++) {
+      const contact = contacts[i];
+      if (!contact.name || !contact.name.trim() || !contact.phone || !contact.phone.trim()) {
+        return res.status(400).json({ 
+          status: false, 
+          message: `Contact at index ${i}: name and phone are required` 
+        });
+      }
+    }
+
+    const results = {
+      success: [],
+      duplicates: [],
+      errors: []
+    };
+
+    // Process each contact
+    for (let i = 0; i < contacts.length; i++) {
+      const contact = contacts[i];
+      try {
+        // Check if contact already exists
+        const existingContact = await Contacts.findOne({ 
+          clientId, 
+          phone: contact.phone.trim() 
+        });
+
+        if (existingContact) {
+          results.duplicates.push({
+            index: i,
+            input: contact,
+            existing: {
+              name: existingContact.name,
+              phone: existingContact.phone
+            }
+          });
+          continue;
+        }
+
+        // Create new contact
+        const newContact = new Contacts({
+          name: contact.name.trim(),
+          phone: contact.phone.trim(),
+          email: contact.email?.trim() || '',
+          clientId
+        });
+
+        const savedContact = await newContact.save();
+        results.success.push({
+          index: i,
+          data: savedContact
+        });
+
+      } catch (error) {
+        results.errors.push({
+          index: i,
+          input: contact,
+          error: error.message
+        });
+      }
+    }
+
+    // Determine response status
+    const hasSuccess = results.success.length > 0;
+    const hasDuplicates = results.duplicates.length > 0;
+    const hasErrors = results.errors.length > 0;
+
+    let statusCode = 200;
+    let message = '';
+
+    if (hasSuccess && !hasDuplicates && !hasErrors) {
+      statusCode = 201;
+      message = `Successfully added ${results.success.length} contacts`;
+    } else if (hasSuccess && (hasDuplicates || hasErrors)) {
+      statusCode = 207; // Multi-Status
+      message = `Partially successful: ${results.success.length} added, ${results.duplicates.length} duplicates, ${results.errors.length} errors`;
+    } else if (!hasSuccess && hasDuplicates) {
+      statusCode = 409;
+      message = `All contacts already exist (${results.duplicates.length} duplicates)`;
+    } else if (!hasSuccess && hasErrors) {
+      statusCode = 400;
+      message = `Failed to add contacts: ${results.errors.length} errors`;
+    }
+
+    res.status(statusCode).json({
+      status: hasSuccess,
+      message,
+      results
+    });
+
+  } catch (error) {
+    console.error('Error in bulk contact addition:', error);
+    res.status(500).json({ 
+      status: false, 
+      message: 'Internal server error during bulk contact addition' 
+    });
+  }
+});
+
 // ==================== GROUPS API ====================
 
 // Get all groups for client
@@ -744,14 +859,24 @@ router.get('/groups', extractClientId, async (req, res) => {
 // Create new group
 router.post('/groups', extractClientId, async (req, res) => {
   try {
-    const { name, description } = req.body;
+    const { name, category, description } = req.body;
     
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Group name is required' });
     }
 
+    // Check for duplicate group name within the same client
+    const groupNameMatch = await Group.findOne({
+      name: { $regex: name.trim(), $options: 'i' },
+      clientId: req.clientId
+    });
+    if (groupNameMatch) {
+      return res.status(400).json({ success : false,error: 'Group name already exists' });
+    }
+
     const group = new Group({
       name: name.trim(),
+      category: category?.trim() || '',
       description: description?.trim() || '',
       clientId: req.clientId,
       contacts: []
@@ -782,16 +907,27 @@ router.get('/groups/:id', extractClientId, async (req, res) => {
 // Update group
 router.put('/groups/:id', extractClientId, async (req, res) => {
   try {
-    const { name, description } = req.body;
+    const { name, category, description } = req.body;
     
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Group name is required' });
+    }
+
+    // Check for duplicate group name within the same client (excluding current group)
+    const groupNameMatch = await Group.findOne({
+      name: { $regex: name.trim(), $options: 'i' },
+      clientId: req.clientId,
+      _id: { $ne: req.params.id }
+    });
+    if (groupNameMatch) {
+      return res.status(400).json({ success : false, error: 'Group name already exists' });
     }
 
     const group = await Group.findOneAndUpdate(
       { _id: req.params.id, clientId: req.clientId },
       { 
         name: name.trim(), 
+        category: category?.trim() || '',
         description: description?.trim() || '',
         updatedAt: new Date()
       },
@@ -835,6 +971,19 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
     const group = await Group.findOne({ _id: req.params.id, clientId: req.clientId });
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Check if phone number already exists in the group
+    const existingContact = group.contacts.find(contact => contact.phone === phone.trim());
+    if (existingContact) {
+      return res.status(409).json({ 
+        status: false,
+        message: 'Phone number already exists in this group',
+        existingContact: {
+          name: existingContact.name,
+          phone: existingContact.phone
+        }
+      });
     }
 
     const contact = {
@@ -920,6 +1069,15 @@ router.post('/campaigns', extractClientId, async (req, res) => {
       return res.status(400).json({ error: 'End date must be after start date' });
     }
 
+    // Check for duplicate campaign name within the same client
+    const campaignNameMatch = await Campaign.findOne({
+      name: { $regex: name.trim(), $options: 'i' },
+      clientId: req.clientId
+    });
+    if (campaignNameMatch) {
+      return res.status(400).json({ error: 'Campaign name already exists' });
+    }
+
     const campaign = new Campaign({
       name: name.trim(),
       description: description?.trim() || '',
@@ -959,6 +1117,16 @@ router.put('/campaigns/:id', extractClientId, async (req, res) => {
     
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Campaign name is required' });
+    }
+
+    // Check for duplicate campaign name within the same client (excluding current campaign)
+    const campaignNameMatch = await Campaign.findOne({
+      name: { $regex: name.trim(), $options: 'i' },
+      clientId: req.clientId,
+      _id: { $ne: req.params.id }
+    });
+    if (campaignNameMatch) {
+      return res.status(400).json({ error: 'Campaign name already exists' });
     }
 
     const updateData = {

@@ -25,8 +25,11 @@ const humanAgentSchema = new mongoose.Schema({
     type:String,
     required: true
   },
-  did:{
-    type:String,
+  role: {
+    type: String,
+    enum: ['executive', 'team leads', 'deputy manager', 'deputy director', 'manager', 'director'],
+    default: 'executive',
+    required: true
   },
 
   // Status flags
@@ -39,10 +42,11 @@ const humanAgentSchema = new mongoose.Schema({
     default: false 
   },
 
-  // Agent IDs array (initially null/empty)
+  // Agent IDs array (required)
   agentIds: [{
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Agent'
+    ref: 'Agent',
+    required: true
   }],
 
   // Timestamps

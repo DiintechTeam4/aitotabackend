@@ -23,32 +23,12 @@ function checkProfileCompleted(profile) {
 function validateProfileData(data) {
   const errors = [];
   
-  if (!data.businessName || data.businessName.trim().length === 0) {
-    errors.push('Business name is required');
-  }
-  
-  if (!data.businessType || data.businessType.trim().length === 0) {
-    errors.push('Business type is required');
-  }
-  
   if (!data.contactNumber || data.contactNumber.trim().length === 0) {
     errors.push('Contact number is required');
   }
   
   if (!data.contactName || data.contactName.trim().length === 0) {
     errors.push('Contact name is required');
-  }
-  
-  if (!data.pincode || data.pincode.trim().length === 0) {
-    errors.push('Pincode is required');
-  }
-  
-  if (!data.city || data.city.trim().length === 0) {
-    errors.push('City is required');
-  }
-  
-  if (!data.state || data.state.trim().length === 0) {
-    errors.push('State is required');
   }
   
   return errors;
