@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getAssignedAgents, updateAssignedAgent } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken , verifyClientOrHumanAgentToken} = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -321,7 +321,7 @@ router.delete('/agents/:id', extractClientId, async (req, res)=>{
 });
 
 // Get all agents for client
-router.get('/agents', verifyClientOrHumanAgentToken, async (req, res) => {
+router.get('/agents', extractClientId, async (req, res) => {
   try {
     const agents = await Agent.find({ clientId: req.clientId })
       .select('-audioBytes') // Don't send audio bytes in list view
@@ -394,7 +394,7 @@ router.post('/voice/synthesize', extractClientId, async (req, res) => {
 });
 
 // Inbound Reports
-router.get('/inbound/report', verifyClientOrHumanAgentToken, async (req, res) => {
+router.get('/inbound/report', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const { filter, startDate, endDate } = req.query;
@@ -488,7 +488,7 @@ router.get('/inbound/report', verifyClientOrHumanAgentToken, async (req, res) =>
 });
 
 // Inbound Logs/Conversation
-router.get('/inbound/logs', verifyClientOrHumanAgentToken, async (req, res) => {
+router.get('/inbound/logs', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const { filter, startDate, endDate } = req.query;
@@ -562,7 +562,7 @@ router.get('/inbound/logs', verifyClientOrHumanAgentToken, async (req, res) => {
 });
 
 // Inbound Leads
-router.get('/inbound/leads', verifyClientOrHumanAgentToken, async (req, res) => {
+router.get('/inbound/leads', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const { filter, startDate, endDate } = req.query;
@@ -706,7 +706,7 @@ router.get('/inbound/leads', verifyClientOrHumanAgentToken, async (req, res) => 
 });
 
 // Inbound Settings (GET/PUT)
-router.get('/inbound/settings', verifyClientOrHumanAgentToken, async (req, res) => {
+router.get('/inbound/settings', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const settings = await AgentSettings.findOne({ clientId });
@@ -717,7 +717,7 @@ router.get('/inbound/settings', verifyClientOrHumanAgentToken, async (req, res) 
   }
 });
 
-router.put('/inbound/settings', verifyClientOrHumanAgentToken, async (req, res) => {
+router.put('/inbound/settings', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const update = req.body;
@@ -732,7 +732,7 @@ router.put('/inbound/settings', verifyClientOrHumanAgentToken, async (req, res) 
 // ==================== Sync Contacts =================
 
 // Bulk contact addition
-router.post('/sync/contacts', verifyClientOrHumanAgentToken, async (req, res) => {
+router.post('/sync/contacts', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const { contacts } = req.body;
@@ -1311,12 +1311,6 @@ router.put('/human-agents/:agentId', extractClientId,  updateHumanAgent);
 
 // Delete human agent
 router.delete('/human-agents/:agentId', extractClientId,  deleteHumanAgent);
-
-// Get assigned agents for human agent (requires human agent authentication)
-router.get('/human-agent/assigned-agents', verifyClientOrHumanAgentToken, getAssignedAgents);
-
-// Update assigned agent (voice and first message only)
-router.put('/human-agent/assigned-agents/:agentId', verifyClientOrHumanAgentToken, updateAssignedAgent);
 
 module.exports = router;
 
