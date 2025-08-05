@@ -157,19 +157,21 @@ const loginClient = async (req, res) => {
 
 const googleLogin = async (req, res) => {
   try {
+    const loginType = req.body.loginType; // 'humanAgent' or undefined
     // googleUser is set by verifyGoogleToken middleware
     const { email, name, picture, emailVerified, googleId } = req.googleUser;
     const userEmail = email.toLowerCase();
     console.log('Google login attempt for email:', userEmail);
 
-    // Step 1: Check if email exists as human agent FIRST (Priority)
-    const humanAgent = await HumanAgent.findOne({ 
-      email: userEmail 
-    }).populate('clientId');
-
-    if (humanAgent) {
-      console.log('Human agent found:', humanAgent._id);
-      
+    if (loginType === 'humanAgent') {
+      // Only check HumanAgent model
+      const humanAgent = await HumanAgent.findOne({ email: userEmail }).populate('clientId');
+      if (!humanAgent) {
+        return res.status(404).json({
+          success: false,
+          message: "You are not registered as a human agent. Please contact your administrator."
+        });
+      }
       // Check if human agent is approved
       if (!humanAgent.isApproved) {
         console.log('Human agent not approved:', humanAgent._id);
@@ -178,7 +180,6 @@ const googleLogin = async (req, res) => {
           message: "Your human agent account is not yet approved. Please contact your administrator." 
         });
       }
-
       // Get client information
       const client = await Client.findById(humanAgent.clientId);
       if (!client) {
@@ -188,12 +189,8 @@ const googleLogin = async (req, res) => {
           message: "Associated client not found" 
         });
       }
-
-      console.log('Human agent Google login successful:', humanAgent._id);
-
       // Get profile information for human agent
       let humanAgentProfileId = await Profile.findOne({humanAgentId: humanAgent._id});
-
       // Generate token for human agent
       const jwtToken = jwt.sign(
         { 
@@ -205,7 +202,59 @@ const googleLogin = async (req, res) => {
         process.env.JWT_SECRET, 
         { expiresIn: "7d" }
       );
+      // Return response in the exact format you specified
+      return res.status(200).json({
+        success: true,
+        message: "Profile incomplete",
+        token: jwtToken,
+        userType: "executive",
+        profileId: humanAgentProfileId ? humanAgentProfileId._id : null,
+        isprofileCompleted: humanAgent.isprofileCompleted || false,
+        id: humanAgent._id,
+        email: humanAgent.email,
+        name: humanAgent.humanAgentName,
+        isApproved: humanAgent.isApproved || false
+      });
+    }
 
+    // Step 1: Check if email exists as human agent FIRST (Priority)
+    const humanAgent = await HumanAgent.findOne({ 
+      email: userEmail 
+    }).populate('clientId');
+
+    if (humanAgent) {
+      console.log('Human agent found:', humanAgent._id);
+      // Check if human agent is approved
+      if (!humanAgent.isApproved) {
+        console.log('Human agent not approved:', humanAgent._id);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Your human agent account is not yet approved. Please contact your administrator." 
+        });
+      }
+      // Get client information
+      const client = await Client.findById(humanAgent.clientId);
+      if (!client) {
+        console.log('Client not found for human agent:', humanAgent._id);
+        return res.status(401).json({ 
+          success: false, 
+          message: "Associated client not found" 
+        });
+      }
+      console.log('Human agent Google login successful:', humanAgent._id);
+      // Get profile information for human agent
+      let humanAgentProfileId = await Profile.findOne({humanAgentId: humanAgent._id});
+      // Generate token for human agent
+      const jwtToken = jwt.sign(
+        { 
+          id: humanAgent._id, 
+          userType: 'humanAgent',
+          clientId: client._id,
+          email: humanAgent.email
+        }, 
+        process.env.JWT_SECRET, 
+        { expiresIn: "7d" }
+      );
       // Return response in the exact format you specified
       return res.status(200).json({
         success: true,
@@ -223,14 +272,11 @@ const googleLogin = async (req, res) => {
 
     // Step 2: If not human agent, check if email exists as client
     let client = await Client.findOne({ email: userEmail });
-    
-
     if (client) {
       console.log('Client found:', client._id);
       // Existing client
       const token = generateToken(client._id);
       let profileId = await Profile.findOne({clientId: client._id});
-      
       if (client.isprofileCompleted === true || client.isprofileCompleted === "true") {
         // Profile completed, proceed with login
         return res.status(200).json({
@@ -275,7 +321,6 @@ const googleLogin = async (req, res) => {
         isApproved: false
       });
       const token = generateToken(newClient._id)
-
       return res.status(200).json({
         success: true,
         message: "Profile incomplete",
@@ -941,6 +986,146 @@ const loginHumanAgentGoogle = async (req, res) => {
   }
 };
 
+// Get assigned agents for a human agent
+const getAssignedAgents = async (req, res) => {
+  try {
+    const humanAgentId = req.user.id;
+    
+    // Find the human agent and populate their assigned agents
+    const humanAgent = await HumanAgent.findById(humanAgentId)
+      .populate('agentIds', 'agentName description category personality language voiceSelection firstMessage isActive createdAt');
+    
+    if (!humanAgent) {
+      return res.status(404).json({
+        success: false,
+        message: "Human agent not found"
+      });
+    }
+
+    // Check if human agent is approved
+    if (!humanAgent.isApproved) {
+      return res.status(401).json({
+        success: false,
+        message: "Your account is not yet approved"
+      });
+    }
+
+    // Return only the assigned agents
+    res.status(200).json({
+      success: true,
+      message: "Assigned agents fetched successfully",
+      data: humanAgent.agentIds || []
+    });
+
+  } catch (error) {
+    console.error("Error fetching assigned agents:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch assigned agents"
+    });
+  }
+};
+
+// Update assigned agent (voice and first message only)
+const updateAssignedAgent = async (req, res) => {
+  try {
+    const humanAgentId = req.user.id;
+    const { agentId } = req.params;
+    const { voiceSelection, firstMessage } = req.body;
+    
+    // Find the human agent and check if they have access to this agent
+    const humanAgent = await HumanAgent.findById(humanAgentId);
+    
+    if (!humanAgent) {
+      return res.status(404).json({
+        success: false,
+        message: "Human agent not found"
+      });
+    }
+
+    // Check if human agent is approved
+    if (!humanAgent.isApproved) {
+      return res.status(401).json({
+        success: false,
+        message: "Your account is not yet approved"
+      });
+    }
+
+    // Check if the agent is assigned to this human agent
+    if (!humanAgent.agentIds.includes(agentId)) {
+      return res.status(403).json({
+        success: false,
+        message: "You don't have permission to edit this agent"
+      });
+    }
+
+    // Validate input
+    const updateData = {};
+    
+    if (voiceSelection !== undefined) {
+      // Validate voice selection
+      const validVoices = [
+        "default", "male-professional", "female-professional", 
+        "male-friendly", "female-friendly", "neutral", "abhilash",
+        "anushka", "meera", "pavithra", "maitreyi", "arvind",
+        "amol", "amartya", "diya", "neel", "misha", "vian",
+        "arjun", "maya", "manisha", "vidya", "arya", "karun", "hitesh"
+      ];
+      
+      if (!validVoices.includes(voiceSelection)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid voice selection"
+        });
+      }
+      updateData.voiceSelection = voiceSelection;
+    }
+    
+    if (firstMessage !== undefined) {
+      if (!firstMessage || firstMessage.trim().length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "First message cannot be empty"
+        });
+      }
+      updateData.firstMessage = firstMessage.trim();
+    }
+
+    // Update the agent
+    const Agent = require('../models/Agent');
+    const agent = await Agent.findOneAndUpdate(
+      { _id: agentId },
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: "Agent not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Agent updated successfully",
+      data: {
+        _id: agent._id,
+        agentName: agent.agentName,
+        voiceSelection: agent.voiceSelection,
+        firstMessage: agent.firstMessage
+      }
+    });
+
+  } catch (error) {
+    console.error("Error updating assigned agent:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update agent"
+    });
+  }
+};
+
 module.exports = { 
   getUploadUrl,
   loginClient, 
@@ -953,5 +1138,7 @@ module.exports = {
   deleteHumanAgent,
   getHumanAgentById,
   loginHumanAgent,
-  loginHumanAgentGoogle
+  loginHumanAgentGoogle,
+  getAssignedAgents,
+  updateAssignedAgent
 };
