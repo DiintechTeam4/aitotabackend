@@ -171,22 +171,27 @@ exports.getProfile = async (req, res) => {
       });
     }
 
-    // Get human email if profile has clientId
+    // Get human email and role if profile has humanAgentId
     let clientEmail = null;
+    let role = null;
     if (profile.humanAgentId) {
-      const client = await HumanAgent.findById(profile.humanAgentId).select('email');
-      clientEmail = client ? client.email : null;
+      const humanAgent = await HumanAgent.findById(profile.humanAgentId).select('email role');
+      clientEmail = humanAgent ? humanAgent.email : null;
+      role = humanAgent ? humanAgent.role : null;
     } else if (profile.clientId) {
       try {
         const client = await Client.findById(profile.clientId).select('email');
         if (client) {
           clientEmail = client.email;
+          role = 'client'; // Set role as 'client' for client profiles
         } else {
           clientEmail = null;
+          role = null;
         }
       } catch (error) {
         console.error('Error finding client:', error);
         clientEmail = null;
+        role = null;
       }
     }
 
@@ -203,6 +208,7 @@ exports.getProfile = async (req, res) => {
       success: true,
       message: 'Profile retrieved successfully',
       email: clientEmail,
+      role: role,
       profile,
       statusCode: 200
     });
