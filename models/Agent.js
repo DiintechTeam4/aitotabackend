@@ -28,6 +28,12 @@ const agentSchema = new mongoose.Schema({
     enum: ["sarvam", "elevenlabs", "openai", "google", "azure", "aws"],
     default: "sarvam",
   },
+  callingNumber:{type:String , required:true},
+  callingType:{type: String, 
+    enum:["inbound","outbound","both"],
+    default:"both",
+    required:true
+  },
   llmSelection: {
     type: String,
     enum: ["openai", "anthropic", "google", "azure"],
@@ -64,6 +70,7 @@ const agentSchema = new mongoose.Schema({
     ],
     default: "default",
   },
+
   contextMemory: { type: String },
   brandInfo: { type: String },
 
