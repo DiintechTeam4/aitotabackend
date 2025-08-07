@@ -320,10 +320,13 @@ router.delete('/agents/:id', extractClientId, async (req, res)=>{
   }
 });
 
-// Get all agents for client
-router.get('/agents', extractClientId, async (req, res) => {
+// Get all agents for client (public, no authentication required)
+router.get('/agents', async (req, res) => {
   try {
-    const agents = await Agent.find({ clientId: req.clientId })
+    // Optionally allow filtering by clientId via query param for public access
+    const clientId = req.query.clientId;
+    const filter = clientId ? { clientId } : {};
+    const agents = await Agent.find(filter)
       .select('-audioBytes') // Don't send audio bytes in list view
       .sort({ createdAt: -1 });
     res.json({success: true, data: agents});
