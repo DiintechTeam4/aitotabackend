@@ -15,6 +15,9 @@ const Campaign = require('../models/Campaign');
 const jwt = require('jsonwebtoken');
 const Business = require('../models/BusinessInfo');
 const Contacts = require('../models/Contacts');
+const MyBusiness = require('../models/MyBussiness');
+const MyDials = require('../models/MyDials');
+
 
 const clientApiService = new ClientApiService()
 
@@ -1300,9 +1303,6 @@ router.put('/business-info/:id', extractClientId, async(req,res)=>{
 
 //===================== My Business ===========================
 
-// Import the correct Business model
-const MyBusiness = require('../models/MyBussiness');
-
 // CREATE Business
 router.post('/business', extractClientId, async(req, res)=>{
   try{
@@ -1434,6 +1434,269 @@ router.delete('/business/:id', extractClientId, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to delete business' });
   }
 });
+
+//===================== MY Dial ===============================
+
+router.post('/dials', extractClientId, async(req,res)=>{
+  try{
+    const clientId = req.clientId;
+    const {category, phoneNumber, leadStatus ,contactName, date} = req.body;
+
+    if(!category || !phoneNumber || !contactName){
+      return res.status(400).json({success: false, message: "Missing required fields. Required: category, phoneNumber, contactName"});
+    }
+
+    const dial = await MyDials.create({
+      clientId : clientId,
+      category,
+      leadStatus,
+      phoneNumber,
+      contactName,
+      date
+    });
+    res.status(201).json({success: true, data: dial});
+
+  }catch(error){
+    console.log(error);
+    return json.status(400)({sucess: true, message: "Failed to add dials"})
+  }
+});
+
+router.get('/dials/report', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { filter, startDate, endDate } = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        time: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query
+    const query = { clientId, ...dateFilter };
+        
+    const logs = await MyDials.find(query);
+    const totalCalls = logs.length;
+    const totalConnected = logs.filter(l => l.category === 'connected').length;
+    const totalNotConnected = logs.filter(l => l.category === 'not connected').length;
+    const totalConversationTime = logs.reduce((sum, l) => sum + (l.duration || 0), 0);
+    const avgCallDuration = totalCalls ? totalConversationTime / totalCalls : 0;
+    
+    res.json({ 
+      success: true, 
+      data: {
+        clientId,
+        totalCalls, 
+        totalConnected, 
+        totalNotConnected, 
+        totalConversationTime, 
+        avgCallDuration 
+      },
+      filter: {
+        applied: filter || 'all',
+        startDate: dateFilter.time?.$gte,
+        endDate: dateFilter.time?.$lte
+      }
+    });
+  } catch (error) {
+    console.error('Error in /dials/report', error);
+    res.status(500).json({ error: 'Failed to fetch report' });
+  }
+});
+
+router.get('/dials/leads', extractClientId, async(req,res)=>{
+  try{
+    const clientId = req.clientId;
+    const {filter, startDate, endDate} = req.query;
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        time: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        time: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query
+    const query = { clientId, ...dateFilter };    
+    const logs = await MyDials.find(query);
+    
+    // Group leads according to the new leadStatus structure
+    const leads = {
+      // Connected - Interested
+      veryInterested: {
+        data: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'Very Interested'),
+        count: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'Very Interested').length
+      },
+      maybe: {
+        data: logs.filter(l => l.leadStatus === 'maybe' || l.leadStatus === 'medium'),
+        count: logs.filter(l => l.leadStatus === 'maybe' || l.leadStatus === 'medium').length
+      },
+      enrolled: {
+        data: logs.filter(l => l.leadStatus === 'enrolled'),
+        count: logs.filter(l => l.leadStatus === 'enrolled').length
+      },
+      
+      // Connected - Not Interested
+      junkLead: {
+        data: logs.filter(l => l.leadStatus === 'junk lead'),
+        count: logs.filter(l => l.leadStatus === 'junk lead').length
+      },
+      notRequired: {
+        data: logs.filter(l => l.leadStatus === 'not required'),
+        count: logs.filter(l => l.leadStatus === 'not required').length
+      },
+      enrolledOther: {
+        data: logs.filter(l => l.leadStatus === 'enrolled other'),
+        count: logs.filter(l => l.leadStatus === 'enrolled other').length
+      },
+      decline: {
+        data: logs.filter(l => l.leadStatus === 'decline'),
+        count: logs.filter(l => l.leadStatus === 'decline').length
+      },
+      notEligible: {
+        data: logs.filter(l => l.leadStatus === 'not eligible'),
+        count: logs.filter(l => l.leadStatus === 'not eligible').length
+      },
+      wrongNumber: {
+        data: logs.filter(l => l.leadStatus === 'wrong number'),
+        count: logs.filter(l => l.leadStatus === 'wrong number').length
+      },
+      
+      // Connected - Followup
+      hotFollowup: {
+        data: logs.filter(l => l.leadStatus === 'hot followup'),
+        count: logs.filter(l => l.leadStatus === 'hot followup').length
+      },
+      coldFollowup: {
+        data: logs.filter(l => l.leadStatus === 'cold followup'),
+        count: logs.filter(l => l.leadStatus === 'cold followup').length
+      },
+      schedule: {
+        data: logs.filter(l => l.leadStatus === 'schedule'),
+        count: logs.filter(l => l.leadStatus === 'schedule').length
+      },
+      
+      // Not Connected
+      notConnected: {
+        data: logs.filter(l => l.leadStatus === 'not connected'),
+        count: logs.filter(l => l.leadStatus === 'not connected').length
+      }
+    };
+
+    res.json({ 
+      success: true, 
+      data: leads,
+      filter: {
+        applied: filter || 'all',
+        startDate: dateFilter.time?.$gte,
+        endDate: dateFilter.time?.$lte
+      }
+    });
+  } catch (error) {
+    console.error('Error in /inbound/leads:', error);
+    res.status(500).json({ error: 'Failed to fetch leads' });
+  }
+});
+
 
 // ==================== HUMAN AGENT ROUTES ====================
 

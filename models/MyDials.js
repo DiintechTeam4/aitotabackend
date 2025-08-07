@@ -1,14 +1,18 @@
-const mongoose = reqiure("mongoose");
+const mongoose = require("mongoose");
 
-const MyDialSchema = new mongoose.schema({
+const MyDialSchema = new mongoose.Schema({
   clientId: {
-    type: mongoose.schema.type.ObjectId,
+    type: mongoose.Schema.Types.ObjectId,
     ref: "Client",
     required: true,
   },
   category:{
     type: String,
     require: true,
+  },
+  leadStatus:{
+    type: String,
+    required: true
   },
   phoneNumber:{
     type: String,
