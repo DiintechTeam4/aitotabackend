@@ -13,7 +13,7 @@ const AgentSettings = require('../models/AgentSettings');
 const Group = require('../models/Group');
 const Campaign = require('../models/Campaign');
 const jwt = require('jsonwebtoken');
-const BusinessInfo = require('../models/BusinessInfo');
+const Business = require('../models/BusinessInfo');
 const Contacts = require('../models/Contacts');
 
 const clientApiService = new ClientApiService()
@@ -1240,7 +1240,7 @@ router.post('/business-info', extractClientId, async(req,res)=>{
       return res.status(400).json({success: false, message: "Text is required"});
     }
 
-    const businessInfo = await BusinessInfo.create({clientId: clientId, text: text.trim()});
+    const businessInfo = await Business.create({clientId: clientId, text: text.trim()});
     res.status(201).json({success: true, data: businessInfo});
   }catch(error){
     console.error('Error creating business info:', error);
@@ -1254,7 +1254,7 @@ router.get('/business-info/:id', extractClientId, async(req,res)=>{
     const clientId = req.clientId;
     const { id } = req.params;
 
-    const businessInfo = await BusinessInfo.findOne({ _id: id, clientId: clientId });
+    const businessInfo = await Business.findOne({ _id: id, clientId: clientId });
     
     if (!businessInfo) {
       return res.status(404).json({success: false, message: "Business info not found"});
@@ -1278,7 +1278,7 @@ router.put('/business-info/:id', extractClientId, async(req,res)=>{
       return res.status(400).json({success: false, message: "Text is required"});
     }
 
-    const businessInfo = await BusinessInfo.findOneAndUpdate(
+    const businessInfo = await Business.findOneAndUpdate(
       { _id: id, clientId: clientId },
       { text: text.trim(), updatedAt: Date.now() },
       { new: true, runValidators: true }
@@ -1292,6 +1292,143 @@ router.put('/business-info/:id', extractClientId, async(req,res)=>{
   }catch(error){
     console.error('Error updating business info:', error);
     res.status(500).json({success: false, message: "Failed to update business info"});
+  }
+});
+
+//===================== My Business ===========================
+
+// Import the correct Business model
+const MyBusiness = require('../models/MyBussiness');
+
+// CREATE Business
+router.post('/business', extractClientId, async(req, res)=>{
+  try{
+    const clientId = req.clientId;
+    const { title, category, type, image, documents, videoLink, description, mrp, offerPrice } = req.body;
+
+    // Validate required fields
+    if(!title || !category || !type || !image || !image.url || !description || mrp === undefined) {
+      return res.status(400).json({success: false, message: "Missing required fields. Required: title, category, type, image.url, description, mrp"});
+    }
+    // Validate image structure
+    if(typeof image !== 'object' || !image.url) {
+      return res.status(400).json({success: false, message: "Image must be an object with a 'url' property."});
+    }
+    // Validate documents structure if provided
+    if(documents && (typeof documents !== 'object' || !documents.url)) {
+      return res.status(400).json({success: false, message: "Documents must be an object with a 'url' property if provided."});
+    }
+    // Validate mrp and offerPrice
+    if(isNaN(Number(mrp)) || (offerPrice !== undefined && offerPrice !== null && isNaN(Number(offerPrice)))) {
+      return res.status(400).json({success: false, message: "mrp and offerPrice must be numbers."});
+    }
+
+    const business = await MyBusiness.create({
+      clientId,
+      title,
+      category,
+      type,
+      image,
+      documents: documents || undefined,
+      videoLink,
+      description,
+      mrp: Number(mrp),
+      offerPrice: offerPrice !== undefined && offerPrice !== null ? Number(offerPrice) : null
+    });
+    res.status(201).json({success: true, data: business});
+  }catch(error){
+    console.error('Error creating business:', error);
+    res.status(500).json({success: false, message: "Failed to create business"});
+  }
+})
+
+// READ: Get all businesses for a client
+router.get('/business', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    let businesses = await MyBusiness.find({ clientId });
+    // Ensure image and documents always have url and key fields
+    businesses = businesses.map(business => {
+      return {
+        ...business.toObject(),
+        image: {
+          url: business.image && business.image.url ? business.image.url : '',
+          key: business.image && business.image.key ? business.image.key : ''
+        },
+        documents: {
+          url: business.documents && business.documents.url ? business.documents.url : '',
+          key: business.documents && business.documents.key ? business.documents.key : ''
+        }
+      };
+    });
+    res.status(200).json({ success: true, data: businesses });
+  } catch (error) {
+    console.error('Error fetching businesses:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch businesses' });
+  }
+});
+
+// READ: Get a single business by ID
+router.get('/business/:id', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { id } = req.params;
+    let business = await MyBusiness.findOne({ _id: id, clientId });
+    if (!business) {
+      return res.status(404).json({ success: false, message: 'Business not found' });
+    }
+    business = {
+      ...business.toObject(),
+      image: {
+        url: business.image && business.image.url ? business.image.url : '',
+        key: business.image && business.image.key ? business.image.key : ''
+      },
+      documents: {
+        url: business.documents && business.documents.url ? business.documents.url : '',
+        key: business.documents && business.documents.key ? business.documents.key : ''
+      }
+    };
+    res.status(200).json({ success: true, data: business });
+  } catch (error) {
+    console.error('Error fetching business:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch business' });
+  }
+});
+
+// UPDATE: Update a business by ID
+router.put('/business/:id', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { id } = req.params;
+    const updateData = req.body;
+    const business = await MyBusiness.findOneAndUpdate(
+      { _id: id, clientId },
+      { ...updateData, updatedAt: Date.now() },
+      { new: true, runValidators: true }
+    );
+    if (!business) {
+      return res.status(404).json({ success: false, message: 'Business not found' });
+    }
+    res.status(200).json({ success: true, data: business });
+  } catch (error) {
+    console.error('Error updating business:', error);
+    res.status(500).json({ success: false, message: 'Failed to update business' });
+  }
+});
+
+// DELETE: Delete a business by ID
+router.delete('/business/:id', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { id } = req.params;
+    const business = await MyBusiness.findOneAndDelete({ _id: id, clientId });
+    if (!business) {
+      return res.status(404).json({ success: false, message: 'Business not found' });
+    }
+    res.status(200).json({ success: true, message: 'Business deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting business:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete business' });
   }
 });
 
@@ -1311,6 +1448,8 @@ router.put('/human-agents/:agentId', extractClientId,  updateHumanAgent);
 
 // Delete human agent
 router.delete('/human-agents/:agentId', extractClientId,  deleteHumanAgent);
+
+
 
 module.exports = router;
 

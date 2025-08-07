@@ -31,7 +31,6 @@ const agentSchema = new mongoose.Schema({
   callingNumber:{type:String , required:true},
   callingType:{type: String, 
     enum:["inbound","outbound","both"],
-    default:"both",
     required:true
   },
   llmSelection: {
