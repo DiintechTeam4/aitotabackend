@@ -17,6 +17,7 @@ const Business = require('../models/BusinessInfo');
 const Contacts = require('../models/Contacts');
 const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
+const User = require('../models/User'); // Added User model import
 
 
 const clientApiService = new ClientApiService()
@@ -1711,6 +1712,128 @@ router.put('/human-agents/:agentId', extractClientId,  updateHumanAgent);
 // Delete human agent
 router.delete('/human-agents/:agentId', extractClientId,  deleteHumanAgent);
 
+// Get agent by ID (public route for mobile users)
+router.get('/agents/:id/public', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const agent = await Agent.findById(id).select('-audioBytes');
+    
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    res.json({ success: true, data: agent });
+  } catch (error) {
+    console.error('Error fetching agent by ID:', error);
+    res.status(500).json({ error: 'Failed to fetch agent' });
+  }
+});
+
+// Get agent by ID (authenticated route)
+router.get('/agents/:id', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const agent = await Agent.findOne({ _id: id, clientId: req.clientId }).select('-audioBytes');
+    
+    if (!agent) {
+      return res.status(404).json({ error: 'Agent not found' });
+    }
+
+    res.json({ success: true, data: agent });
+  } catch (error) {
+    console.error('Error fetching agent by ID:', error);
+    res.status(500).json({ error: 'Failed to fetch agent' });
+  }
+});
+
+// Public route for user registration (for mobile users)
+router.post('/register-user', async (req, res) => {
+  try {
+    const { name, mobileNumber, email, clientId, sessionId } = req.body;
+    
+    if (!name || !mobileNumber || !clientId || !sessionId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Name, mobile number, client ID, and session ID are required' 
+      });
+    }
+
+    // Find existing user by sessionId
+    let user = await User.findOne({ sessionId });
+    
+    if (user) {
+      // Update existing user
+      user.name = name;
+      user.mobileNumber = mobileNumber;
+      user.email = email || null;
+      user.isRegistered = true;
+      user.registrationAttempts = 0;
+      user.lastRegistrationPrompt = null;
+      await user.save();
+    } else {
+      // Create new user
+      user = new User({
+        clientId,
+        name,
+        mobileNumber,
+        email: email || null,
+        isRegistered: true,
+        sessionId,
+        conversations: []
+      });
+      await user.save();
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'User registered successfully',
+      data: {
+        userId: user._id,
+        name: user.name,
+        mobileNumber: user.mobileNumber,
+        isRegistered: user.isRegistered
+      }
+    });
+  } catch (error) {
+    console.error('Error registering user:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to register user' 
+    });
+  }
+});
+
+// Public route to get user by session ID
+router.get('/user/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const user = await User.findOne({ sessionId });
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      data: {
+        userId: user._id,
+        name: user.name,
+        mobileNumber: user.mobileNumber,
+        isRegistered: user.isRegistered,
+        clientId: user.clientId
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch user' 
+    });
+  }
+});
 
 
 module.exports = router;

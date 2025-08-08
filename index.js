@@ -3,12 +3,15 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const connectDB = require('./config/db');
 const axios = require('axios');
+const http = require('http');
+const VoiceChatWebSocketServer = require('./websocketServer');
 const superadminRoutes = require('./routes/superadminroutes')
 const adminRoutes = require('./routes/adminroutes');
 const clientRoutes = require('./routes/clientroutes')
 const profileRoutes = require('./routes/profileroutes')
 
 const app = express();
+const server = http.createServer(app);
 
 dotenv.config();
 
@@ -18,9 +21,22 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.use(cors());
 
+// Initialize WebSocket server
+const wsServer = new VoiceChatWebSocketServer(server);
+
 app.get('/', (req,res)=>{
     res.send("hello world")
 })
+
+// WebSocket server status endpoint
+app.get('/ws/status', (req, res) => {
+    const status = wsServer.getConnectionInfo();
+    res.json({
+        success: true,
+        data: status
+    });
+});
+
 app.post('/api/v1/client/proxy/clicktobot', async (req, res) => {
     try {
       const { apiKey, payload } = req.body;
@@ -50,17 +66,22 @@ app.post('/api/v1/client/proxy/clicktobot', async (req, res) => {
       });
     }
   });
+
 app.use('/api/v1/superadmin',superadminRoutes);
 app.use('/api/v1/admin',adminRoutes);
 app.use('/api/v1/client',clientRoutes);
 app.use('/api/v1/auth/client/profile', profileRoutes);
 
+const PORT = process.env.PORT || 4000;
 
-const PORT = 4000 || process.env.PORT;
-
-connectDB().then(
-app.listen(PORT,()=>{
-console.log(`server is running on http://localhost:${PORT}`)
-})
-)
+connectDB().then(() => {
+    server.listen(PORT, () => {
+        console.log(`🚀 Server is running on http://localhost:${PORT}`);
+        console.log(`🔌 WebSocket server is ready on ws://localhost:${PORT}`);
+        console.log(`📊 WebSocket status: http://localhost:${PORT}/ws/status`);
+    });
+}).catch(err => {
+    console.error('❌ Database connection failed:', err);
+    process.exit(1);
+});
 
