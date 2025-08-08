@@ -323,13 +323,10 @@ router.delete('/agents/:id', extractClientId, async (req, res)=>{
   }
 });
 
-// Get all agents for client (public, no authentication required)
-router.get('/agents', async (req, res) => {
+// Get all agents for client
+router.get('/agents', extractClientId, async (req, res) => {
   try {
-    // Optionally allow filtering by clientId via query param for public access
-    const clientId = req.query.clientId;
-    const filter = clientId ? { clientId } : {};
-    const agents = await Agent.find(filter)
+    const agents = await Agent.find({ clientId: req.clientId })
       .select('-audioBytes') // Don't send audio bytes in list view
       .sort({ createdAt: -1 });
     res.json({success: true, data: agents});
@@ -1303,7 +1300,7 @@ router.put('/business-info/:id', extractClientId, async(req,res)=>{
 
 //===================== My Business ===========================
 
-// CREATE Business
+// CREATE MyBusiness
 router.post('/business', extractClientId, async(req, res)=>{
   try{
     const clientId = req.clientId;
@@ -1696,7 +1693,6 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
     res.status(500).json({ error: 'Failed to fetch leads' });
   }
 });
-
 
 // ==================== HUMAN AGENT ROUTES ====================
 
