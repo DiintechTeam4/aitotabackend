@@ -1729,6 +1729,45 @@ router.get('/agents/:id/public', async (req, res) => {
   }
 });
 
+// Public route to fetch minimal client details for mobile display
+router.get('/public/:clientId', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    let client = null;
+    // Try by Mongo _id if valid
+    const mongoose = require('mongoose');
+    if (mongoose.Types.ObjectId.isValid(clientId)) {
+      client = await Client.findById(clientId).lean();
+    }
+    // Fallbacks for installations using different id fields
+    if (!client) {
+      client = await Client.findOne({ clientId: clientId }).lean();
+    }
+    if (!client) {
+      client = await Client.findOne({ userId: clientId }).lean();
+    }
+
+    if (!client) {
+      return res.status(404).json({ success: false, error: 'Client not found' });
+    }
+
+    const minimal = {
+      id: client._id,
+      name: client.name || client.clientName || 'Client',
+      email: client.email || null,
+      businessName: client.businessName || null,
+      businessLogoUrl: client.businessLogoUrl || null,
+      websiteUrl: client.websiteUrl || null,
+    };
+
+    return res.json({ success: true, data: minimal });
+  } catch (error) {
+    console.error('Error fetching public client details:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch client details' });
+  }
+});
+
 // Get agent by ID (authenticated route)
 router.get('/agents/:id', extractClientId, async (req, res) => {
   try {
