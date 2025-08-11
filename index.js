@@ -38,6 +38,202 @@ app.get('/ws/status', (req, res) => {
     });
 });
 
+// Call Logs APIs
+app.get("/api/v1/logs", async (req, res) => {
+  try {
+    const {
+      clientId,
+      limit = 50,
+      page = 1,
+      leadStatus,
+      isActive,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      customField,
+      customValue,
+      customContains,
+      uniqueid,
+      mobile,
+      agentId,
+    } = req.query;
+
+    const filters = {};
+    if (clientId) filters.clientId = clientId;
+    if (leadStatus) filters.leadStatus = leadStatus;
+    if (typeof isActive !== 'undefined') filters['metadata.isActive'] = isActive === 'true';
+    if (mobile) filters.mobile = mobile;
+    if (agentId) filters.agentId = agentId;
+    if (uniqueid) filters['metadata.customParams.uniqueid'] = uniqueid;
+
+    if (customField && (customValue || customContains)) {
+      const path = `metadata.customParams.${customField}`;
+      if (customContains) {
+        filters[path] = { $regex: customContains, $options: 'i' };
+      } else {
+        filters[path] = customValue;
+      }
+    }
+
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const CallLog = require("./models/CallLog");
+
+    const [logs, totalCount, activeCount, clientIds] = await Promise.all([
+      CallLog.find(filters).sort(sort).limit(parseInt(limit)).skip(skip).lean().exec(),
+      CallLog.countDocuments(filters),
+      CallLog.countDocuments({ ...filters, 'metadata.isActive': true }),
+      CallLog.distinct('clientId', {})
+    ]);
+
+    const response = {
+      logs,
+      pagination: {
+        total: totalCount,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(totalCount / parseInt(limit)),
+      },
+      stats: {
+        total: totalCount,
+        active: activeCount,
+        clients: clientIds.length,
+        timestamp: new Date().toISOString(),
+      },
+      filters: {
+        clientId,
+        leadStatus,
+        isActive,
+        customField,
+        customValue,
+        customContains,
+        uniqueid,
+        mobile,
+        agentId,
+        availableClients: clientIds.sort(),
+      }
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error("❌ [LOGS-API] Error fetching logs:", error.message);
+    res.status(500).json({
+      error: "Failed to fetch logs",
+      message: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Get most recent active call log for quick polling
+app.get('/api/v1/logs/active', async (req, res) => {
+  try {
+    const { clientId, mobile, agentId, limit = 1 } = req.query;
+    const CallLog = require('./models/CallLog');
+
+    const filters = { 'metadata.isActive': true };
+    if (clientId) filters.clientId = clientId;
+    if (mobile) filters.mobile = mobile;
+    if (agentId) filters.agentId = agentId;
+
+    const logs = await CallLog.find(filters)
+      .sort({ 'metadata.lastUpdated': -1 })
+      .limit(parseInt(limit))
+      .lean()
+      .exec();
+
+    res.json({ logs, timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('❌ [LOGS-ACTIVE] Error fetching active logs:', error.message);
+    res.status(500).json({ error: 'Failed to fetch active logs', message: error.message });
+  }
+});
+
+// Get specific call log by ID
+app.get("/api/v1/logs/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const CallLog = require("./models/CallLog");
+    const log = await CallLog.findById(id).lean();
+    if (!log) {
+      return res.status(404).json({
+        error: "Call log not found",
+        id: id,
+        timestamp: new Date().toISOString(),
+      });
+    }
+    res.json({ log, timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error("❌ [LOGS-API] Error fetching log:", error.message);
+    res.status(500).json({
+      error: "Failed to fetch log",
+      message: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Get live statistics
+app.get("/api/v1/logs/stats", async (req, res) => {
+  try {
+    const CallLog = require("./models/CallLog");
+    const [totalCalls, activeCalls, todaysCalls, statusBreakdown, clientBreakdown] = await Promise.all([
+      CallLog.countDocuments(),
+      CallLog.countDocuments({ 'metadata.isActive': true }),
+      CallLog.countDocuments({ createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) } }),
+      CallLog.aggregate([{ $group: { _id: "$leadStatus", count: { $sum: 1 } } }]),
+      CallLog.aggregate([
+        { $group: { _id: "$clientId", count: { $sum: 1 }, activeCalls: { $sum: { $cond: ["$metadata.isActive", 1, 0] } } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 }
+      ])
+    ]);
+
+    const wsStatus = wsServer.getConnectionInfo ? wsServer.getConnectionInfo() : {};
+
+    const stats = {
+      overview: {
+        total: totalCalls,
+        active: activeCalls,
+        today: todaysCalls,
+        timestamp: new Date().toISOString(),
+      },
+      statusBreakdown: statusBreakdown.reduce((acc, item) => {
+        acc[item._id] = item.count;
+        return acc;
+      }, {}),
+      topClients: clientBreakdown,
+      server: wsStatus,
+    };
+
+    res.json(stats);
+  } catch (error) {
+    console.error("❌ [LOGS-STATS] Error generating stats:", error.message);
+    res.status(500).json({
+      error: "Failed to generate statistics",
+      message: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Clean up stale active calls (utility endpoint)
+app.post("/api/v1/logs/cleanup", async (req, res) => {
+  try {
+    const CallLog = require("./models/CallLog");
+    const result = await CallLog.cleanupStaleActiveCalls();
+    res.json({ message: "Cleanup completed", modifiedCount: result.modifiedCount, timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error("❌ [LOGS-CLEANUP] Error during cleanup:", error.message);
+    res.status(500).json({
+      error: "Failed to cleanup stale calls",
+      message: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
 app.post('/api/v1/client/proxy/clicktobot', async (req, res) => {
     try {
       const { apiKey, payload } = req.body;
