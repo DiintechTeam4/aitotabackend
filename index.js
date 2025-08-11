@@ -9,6 +9,7 @@ const superadminRoutes = require('./routes/superadminroutes')
 const adminRoutes = require('./routes/adminroutes');
 const clientRoutes = require('./routes/clientroutes')
 const profileRoutes = require('./routes/profileroutes')
+const Business = require('./models/MyBussiness');
 
 const app = express();
 const server = http.createServer(app);
@@ -71,6 +72,89 @@ app.use('/api/v1/superadmin',superadminRoutes);
 app.use('/api/v1/admin',adminRoutes);
 app.use('/api/v1/client',clientRoutes);
 app.use('/api/v1/auth/client/profile', profileRoutes);
+
+// Public API endpoint for business details (no authentication required)
+app.get('/api/v1/public/business/:identifier', async (req, res) => {
+  try {
+    const { identifier } = req.params;
+    
+    // Check if identifier is a hash (8 characters) or ObjectId (24 characters)
+    const isHash = /^[a-f0-9]{8}$/.test(identifier);
+    const isObjectId = /^[a-f0-9]{24}$/.test(identifier);
+    
+    if (!isHash && !isObjectId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid business identifier format'
+      });
+    }
+
+    // Find business by hash or ObjectId
+    let business;
+    if (isHash) {
+      business = await Business.findOne({ hash: identifier });
+    } else {
+      business = await Business.findById(identifier);
+    }
+    
+    if (!business) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business not found'
+      });
+    }
+
+    // Generate fresh URLs for images using getobject
+    const { getobject } = require('./utils/s3');
+    let imageWithUrl = business.image;
+    let documentsWithUrl = business.documents;
+
+    try {
+      // Generate fresh URL for image
+      if (business.image && business.image.key) {
+        const imageUrl = await getobject(business.image.key);
+        imageWithUrl = { ...business.image, url: imageUrl };
+      }
+      
+      // Generate fresh URL for documents if provided
+      if (business.documents && business.documents.key) {
+        const documentsUrl = await getobject(business.documents.key);
+        documentsWithUrl = { ...business.documents, url: documentsUrl };
+      }
+    } catch (s3Error) {
+      console.error('Error generating S3 URLs:', s3Error);
+      // Keep original URLs if S3 fails
+      imageWithUrl = business.image;
+      documentsWithUrl = business.documents;
+    }
+
+    // Return business details (excluding sensitive information)
+    res.json({
+      success: true,
+      data: {
+        _id: business._id,
+        title: business.title,
+        category: business.category,
+        type: business.type,
+        image: imageWithUrl,
+        documents: documentsWithUrl,
+        videoLink: business.videoLink,
+        link: business.link,
+        description: business.description,
+        mrp: business.mrp,
+        offerPrice: business.offerPrice,
+        createdAt: business.createdAt,
+        updatedAt: business.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching public business details:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
 
 const PORT = process.env.PORT || 4000;
 

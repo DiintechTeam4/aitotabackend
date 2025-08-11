@@ -1001,6 +1001,7 @@ const loginHumanAgentGoogle = async (req, res) => {
 
 module.exports = { 
   getUploadUrl,
+  getUploadUrlMyBusiness,
   loginClient, 
   googleLogin,
   registerClient,

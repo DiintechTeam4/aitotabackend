@@ -95,6 +95,11 @@ const BusinessSchema = new mongoose.Schema({
       type: Date,
       default: Date.now
     },
+    hash: {
+      type: String,
+      unique: true,
+      sparse: true
+    },
 });
 
 module.exports = mongoose.model('Business', BusinessSchema);

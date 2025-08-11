@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
-const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken , verifyClientOrHumanAgentToken} = require('../middlewares/authmiddleware');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken , verifyClientOrHumanAgentToken} = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
@@ -18,6 +17,7 @@ const Contacts = require('../models/Contacts');
 const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
 const User = require('../models/User'); // Added User model import
+const { generateBusinessHash } = require('../utils/hashUtils');
 
 
 const clientApiService = new ClientApiService()
@@ -163,7 +163,9 @@ router.get("/providers", (req, res) => {
   }
 })
 
-router.get('/upload-url',getUploadUrl)
+router.get('/upload-url',getUploadUrl);
+
+router.get('/upload-url-mybusiness',getUploadUrlMyBusiness);
 
 router.post('/login', loginClient);
 
@@ -1305,36 +1307,81 @@ router.put('/business-info/:id', extractClientId, async(req,res)=>{
 router.post('/business', extractClientId, async(req, res)=>{
   try{
     const clientId = req.clientId;
-    const { title, category, type, image, documents, videoLink, description, mrp, offerPrice } = req.body;
+    const { title, category, type, image, documents, videoLink, link, description, mrp, offerPrice } = req.body;
 
     // Validate required fields
-    if(!title || !category || !type || !image || !image.url || !description || mrp === undefined) {
-      return res.status(400).json({success: false, message: "Missing required fields. Required: title, category, type, image.url, description, mrp"});
+    if(!title || !category || !type || !image || !image.key || !description || mrp === undefined) {
+      return res.status(400).json({success: false, message: "Missing required fields. Required: title, category, type, image.key, description, mrp"});
     }
+
     // Validate image structure
-    if(typeof image !== 'object' || !image.url) {
-      return res.status(400).json({success: false, message: "Image must be an object with a 'url' property."});
+    if(typeof image !== 'object' || !image.key) {
+      return res.status(400).json({success: false, message: "Image must be an object with a 'key' property."});
     }
+
     // Validate documents structure if provided
-    if(documents && (typeof documents !== 'object' || !documents.url)) {
-      return res.status(400).json({success: false, message: "Documents must be an object with a 'url' property if provided."});
+    if(documents && (typeof documents !== 'object' || !documents.key)) {
+      return res.status(400).json({success: false, message: "Documents must be an object with a 'key' property if provided."});
     }
+
     // Validate mrp and offerPrice
     if(isNaN(Number(mrp)) || (offerPrice !== undefined && offerPrice !== null && isNaN(Number(offerPrice)))) {
       return res.status(400).json({success: false, message: "mrp and offerPrice must be numbers."});
     }
+
+     // Generate S3 URLs using getobject function
+     const { getobject } = require('../utils/s3');
+    
+     let imageWithUrl = { ...image };
+     let documentsWithUrl = documents ? { ...documents } : undefined;
+     
+     try {
+       // Generate URL for image
+       const imageUrl = await getobject(image.key);
+       imageWithUrl.url = imageUrl;
+       
+       // Generate URL for documents if provided
+       if (documents && documents.key) {
+         const documentsUrl = await getobject(documents.key);
+         documentsWithUrl.url = documentsUrl;
+       }
+     } catch (s3Error) {
+       console.error('Error generating S3 URLs:', s3Error);
+       return res.status(500).json({success: false, message: "Error generating file URLs"});
+     }
+ 
+     // Generate unique hash for the business
+     let hash;
+     let isHashUnique = false;
+     let attempts = 0;
+     const maxAttempts = 10;
+ 
+     while (!isHashUnique && attempts < maxAttempts) {
+       hash = generateBusinessHash();
+       const existingBusiness = await MyBusiness.findOne({ hash });
+       if (!existingBusiness) {
+         isHashUnique = true;
+       }
+       attempts++;
+     }
+ 
+     if (!isHashUnique) {
+       return res.status(500).json({ success: false, message: "Failed to generate unique hash for business" });
+     } 
 
     const business = await MyBusiness.create({
       clientId,
       title,
       category,
       type,
-      image,
-      documents: documents || undefined,
+      image: imageWithUrl,
+      documents: documentsWithUrl,
       videoLink,
+      link,
       description,
       mrp: Number(mrp),
-      offerPrice: offerPrice !== undefined && offerPrice !== null ? Number(offerPrice) : null
+      offerPrice: offerPrice !== undefined && offerPrice !== null ? Number(offerPrice) : null,
+      hash
     });
     res.status(201).json({success: true, data: business});
   }catch(error){
