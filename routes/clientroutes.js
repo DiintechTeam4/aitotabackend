@@ -1921,6 +1921,84 @@ router.get('/user/:sessionId', async (req, res) => {
   }
 });
 
+// Add this route to your client routes file (usually clientroutes.js)
+
+// Toggle agent active status
+router.patch('/agents/:agentId/toggle-active', async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { isActive } = req.body;
+    const clientId = req.query.clientId;
+
+    // Validate required fields
+    if (!agentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Agent ID is required'
+      });
+    }
+
+    if (!clientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Client ID is required'
+      });
+    }
+
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'isActive must be a boolean value'
+      });
+    }
+
+    // Find and update the agent
+    const agent = await Agent.findOneAndUpdate(
+      { 
+        _id: agentId, 
+        clientId: clientId 
+      },
+      { 
+        isActive: isActive,
+        updatedAt: new Date()
+      },
+      { 
+        new: true,
+        runValidators: true
+      }
+    );
+
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Agent not found or you do not have permission to modify this agent'
+      });
+    }
+
+    console.log(`✅ [AGENT-TOGGLE] Agent ${agent.agentName} (${agentId}) ${isActive ? 'activated' : 'deactivated'} by client ${clientId}`);
+
+    res.json({
+      success: true,
+      message: `Agent ${isActive ? 'activated' : 'deactivated'} successfully`,
+      data: {
+        agentId: agent._id,
+        agentName: agent.agentName,
+        isActive: agent.isActive,
+        updatedAt: agent.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [AGENT-TOGGLE] Error toggling agent status:', error);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to toggle agent status',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 
 module.exports = router;
 
