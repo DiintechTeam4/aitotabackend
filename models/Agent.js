@@ -80,11 +80,13 @@ const agentSchema = new mongoose.Schema({
 
   // Telephony
   accountSid: { type: String },
+  callingNumber: { type: String }, // Add missing callingNumber field
   callerId: { type: String, index: true }, // For outbound call matching
   serviceProvider: {
     type: String,
     enum: ["twilio", "vonage", "plivo", "bandwidth", "other"],
   },
+  X_API_KEY: { type: String }, // Add missing X_API_KEY field
 
   // Audio storage - Store as base64 string instead of Buffer
   audioFile: { type: String }, // File path (legacy support)
