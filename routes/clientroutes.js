@@ -196,8 +196,35 @@ router.post('/agents', extractClientId, async (req, res) => {
     agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
     agentData.clientId = req.clientId;
+
+    // If creating as active with an accountSid, deactivate others first to satisfy unique index
+    const willBeActive = agentData.isActive !== false; // default true per schema
+    if (willBeActive && agentData.accountSid) {
+      await Agent.updateMany(
+        {
+          clientId: req.clientId,
+          accountSid: agentData.accountSid,
+          isActive: true,
+        },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      );
+    }
+
     const agent = new Agent(agentData);
     const savedAgent = await agent.save();
+
+    // If this agent is active and has accountSid, deactivate others with same (clientId, accountSid)
+    if (savedAgent.isActive && savedAgent.accountSid) {
+      await Agent.updateMany(
+        {
+          _id: { $ne: savedAgent._id },
+          clientId: req.clientId,
+          accountSid: savedAgent.accountSid,
+          isActive: true,
+        },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      )
+    }
     const responseAgent = savedAgent.toObject();
     delete responseAgent.audioBytes;
     res.status(201).json(responseAgent);
@@ -225,7 +252,28 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
     agentData.firstMessage = startingMessages[defaultStartingMessageIndex].text;
     agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
-    const agent = await Agent.findOneAndUpdate(
+
+    // If we are activating this agent, deactivate others first to satisfy unique index
+    let agent;
+    if (agentData.isActive === true) {
+      const current = await Agent.findOne({ _id: req.params.id, clientId: req.clientId });
+      if (!current) {
+        return res.status(404).json({ error: 'Agent not found' });
+      }
+      if (current.accountSid) {
+        await Agent.updateMany(
+          {
+            _id: { $ne: current._id },
+            clientId: req.clientId,
+            accountSid: current.accountSid,
+            isActive: true,
+          },
+          { $set: { isActive: false, updatedAt: new Date() } }
+        );
+      }
+    }
+
+    agent = await Agent.findOneAndUpdate(
       { _id: req.params.id, clientId: req.clientId },
       agentData,
       { new: true, runValidators: true }
@@ -233,6 +281,19 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
     if (!agent) {
       return res.status(404).json({ error: 'Agent not found' });
     }
+    // If this agent is active and has accountSid, deactivate others with same (clientId, accountSid)
+    if (agent && agent.isActive && agent.accountSid) {
+      await Agent.updateMany(
+        {
+          _id: { $ne: agent._id },
+          clientId: req.clientId,
+          accountSid: agent.accountSid,
+          isActive: true,
+        },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      )
+    }
+
     const responseAgent = agent.toObject();
     delete responseAgent.audioBytes;
     res.json(responseAgent);
@@ -2112,20 +2173,33 @@ router.patch('/agents/:agentId/toggle-active', async (req, res) => {
       });
     }
 
-    // Find and update the agent
+    // Find the agent first
+    const current = await Agent.findOne({ _id: agentId, clientId: clientId });
+    if (!current) {
+      return res.status(404).json({
+        success: false,
+        message: 'Agent not found or you do not have permission to modify this agent'
+      });
+    }
+
+    // If activating, deactivate others first to satisfy unique index
+    if (isActive === true && current.accountSid) {
+      await Agent.updateMany(
+        {
+          _id: { $ne: current._id },
+          clientId: clientId,
+          accountSid: current.accountSid,
+          isActive: true,
+        },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      );
+    }
+
+    // Now update this agent's active status
     const agent = await Agent.findOneAndUpdate(
-      { 
-        _id: agentId, 
-        clientId: clientId 
-      },
-      { 
-        isActive: isActive,
-        updatedAt: new Date()
-      },
-      { 
-        new: true,
-        runValidators: true
-      }
+      { _id: agentId, clientId: clientId },
+      { isActive: isActive, updatedAt: new Date() },
+      { new: true, runValidators: true }
     );
 
     if (!agent) {
@@ -2136,6 +2210,19 @@ router.patch('/agents/:agentId/toggle-active', async (req, res) => {
     }
 
     console.log(`✅ [AGENT-TOGGLE] Agent ${agent.agentName} (${agentId}) ${isActive ? 'activated' : 'deactivated'} by client ${clientId}`);
+
+    // If activating this agent and it has accountSid, deactivate others with same (clientId, accountSid)
+    if (agent.isActive && agent.accountSid) {
+      await Agent.updateMany(
+        {
+          _id: { $ne: agent._id },
+          clientId: clientId,
+          accountSid: agent.accountSid,
+          isActive: true,
+        },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      )
+    }
 
     res.json({
       success: true,

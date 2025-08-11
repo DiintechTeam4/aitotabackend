@@ -120,6 +120,23 @@ agentSchema.index({ callerId: 1, isActive: 1 })
 // Additional index for accountSid lookup with isActive filter
 agentSchema.index({ accountSid: 1, isActive: 1 })
 
+// Ensure only one active agent per (clientId, accountSid)
+// Partial unique index applies only when isActive is true and accountSid exists
+try {
+  agentSchema.index(
+    { clientId: 1, accountSid: 1 },
+    {
+      unique: true,
+      partialFilterExpression: {
+        isActive: true,
+        accountSid: { $exists: true, $type: 'string' },
+      },
+    }
+  )
+} catch (e) {
+  // Index creation failures will be logged by Mongoose at startup; continue
+}
+
 // Update the updatedAt field before saving
 agentSchema.pre("save", function (next) {
   this.updatedAt = Date.now()
