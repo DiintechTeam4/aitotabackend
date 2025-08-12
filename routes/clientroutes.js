@@ -485,7 +485,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfDay,
           $lte: endOfDay
         }
@@ -496,7 +496,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
       const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
       const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfYesterday,
           $lte: endOfYesterday
         }
@@ -505,7 +505,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
       const today = new Date();
       const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: sevenDaysAgo,
           $lte: today
         }
@@ -515,7 +515,7 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: start,
           $lte: end
         }
@@ -544,8 +544,8 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
       },
       filter: {
         applied: filter || 'all',
-        startDate: dateFilter.time?.$gte,
-        endDate: dateFilter.time?.$lte
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
       }
     });
   } catch (error) {
@@ -579,7 +579,7 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfDay,
           $lte: endOfDay
         }
@@ -590,7 +590,7 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
       const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
       const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfYesterday,
           $lte: endOfYesterday
         }
@@ -599,7 +599,7 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
       const today = new Date();
       const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: sevenDaysAgo,
           $lte: today
         }
@@ -609,7 +609,7 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: start,
           $lte: end
         }
@@ -653,7 +653,7 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfDay,
           $lte: endOfDay
         }
@@ -664,7 +664,7 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
       const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
       const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfYesterday,
           $lte: endOfYesterday
         }
@@ -673,7 +673,7 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
       const today = new Date();
       const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: sevenDaysAgo,
           $lte: today
         }
@@ -683,7 +683,7 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: start,
           $lte: end
         }
@@ -762,8 +762,8 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
       data: leads,
       filter: {
         applied: filter || 'all',
-        startDate: dateFilter.time?.$gte,
-        endDate: dateFilter.time?.$lte
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
       }
     });
   } catch (error) {
@@ -1592,7 +1592,7 @@ router.get('/dials/report', extractClientId, async (req, res) => {
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfDay,
           $lte: endOfDay
         }
@@ -1603,7 +1603,7 @@ router.get('/dials/report', extractClientId, async (req, res) => {
       const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
       const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfYesterday,
           $lte: endOfYesterday
         }
@@ -1612,7 +1612,7 @@ router.get('/dials/report', extractClientId, async (req, res) => {
       const today = new Date();
       const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: sevenDaysAgo,
           $lte: today
         }
@@ -1622,7 +1622,7 @@ router.get('/dials/report', extractClientId, async (req, res) => {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: start,
           $lte: end
         }
@@ -1651,8 +1651,8 @@ router.get('/dials/report', extractClientId, async (req, res) => {
       },
       filter: {
         applied: filter || 'all',
-        startDate: dateFilter.time?.$gte,
-        endDate: dateFilter.time?.$lte
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
       }
     });
   } catch (error) {
@@ -1684,7 +1684,7 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfDay,
           $lte: endOfDay
         }
@@ -1695,7 +1695,7 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
       const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
       const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfYesterday,
           $lte: endOfYesterday
         }
@@ -1704,7 +1704,7 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
       const today = new Date();
       const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: sevenDaysAgo,
           $lte: today
         }
@@ -1714,7 +1714,7 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: start,
           $lte: end
         }
@@ -1792,14 +1792,98 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
       success: true, 
       data: leads,
       filter: {
-        applied: filter || 'all',
-        startDate: dateFilter.time?.$gte,
-        endDate: dateFilter.time?.$lte
+        applied: filter,
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
       }
     });
   } catch (error) {
     console.error('Error in /inbound/leads:', error);
     res.status(500).json({ error: 'Failed to fetch leads' });
+  }
+});
+
+router.get('/dials/done', extractClientId, async(req,res)=>{
+  try{
+    const clientId = req.clientId;
+    const {filter, startDate, endDate} = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && !startDate && !endDate) {
+      return res.status(400).json({ error: 'Invalid filter parameter' });
+    }
+    
+    let dateFilter = {};
+    
+    // Apply date filtering based on filter parameter
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      
+      dateFilter = {
+        createdAt: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      
+      dateFilter = {
+        createdAt: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today);
+      sevenDaysAgo.setDate(today.getDate() - 7);
+      
+      dateFilter = {
+        createdAt: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      
+      dateFilter = {
+        createdAt: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query
+    const query = { 
+      clientId, 
+      category: 'sale_done',
+      ...dateFilter 
+    };
+    
+    const data = await MyDials.find(query);
+    res.json({
+      success: true,
+      data: data,
+      filter: {
+        applied: filter,
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch done dials' });
   }
 });
 
@@ -1924,7 +2008,7 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
       const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
       const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfDay,
           $lte: endOfDay
         }
@@ -1935,7 +2019,7 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
       const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
       const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: startOfYesterday,
           $lte: endOfYesterday
         }
@@ -1944,7 +2028,7 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
       const today = new Date();
       const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: sevenDaysAgo,
           $lte: today
         }
@@ -1953,7 +2037,7 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
       const today = new Date();
       const thirtyDaysAgo = new Date(today.getTime() - (30 * 24 * 60 * 60 * 1000));
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: thirtyDaysAgo,
           $lte: today
         }
@@ -1963,7 +2047,7 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
       dateFilter = {
-        time: {
+        createdAt: {
           $gte: start,
           $lte: end
         }
@@ -2043,8 +2127,8 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
       },
       filter: {
         applied: filter || 'all',
-        startDate: dateFilter.time?.$gte,
-        endDate: dateFilter.time?.$lte
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
       }
     });
   } catch (error) {
