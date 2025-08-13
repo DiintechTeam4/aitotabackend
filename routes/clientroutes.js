@@ -1298,7 +1298,7 @@ router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
 
 // ==================== BUSINESS INFO API ====================
 //create client business id
-router.post('/business-info', extractClientId, async(req,res)=>{
+router.post('-info', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
     const {text} = req.body;
@@ -1316,7 +1316,7 @@ router.post('/business-info', extractClientId, async(req,res)=>{
 });
 
 //Get client's business id
-router.get('/business-info/:id', extractClientId, async(req,res)=>{
+router.get('-info/:id', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
     const { id } = req.params;
@@ -1335,7 +1335,7 @@ router.get('/business-info/:id', extractClientId, async(req,res)=>{
 });
 
 //update client's business id
-router.put('/business-info/:id', extractClientId, async(req,res)=>{
+router.put('-info/:id', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
     const { id } = req.params;
@@ -1367,6 +1367,7 @@ router.put('/business-info/:id', extractClientId, async(req,res)=>{
 // CREATE MyBusiness
 router.post('/business', extractClientId, async(req, res)=>{
   try{
+    console.log(req.body);
     const clientId = req.clientId;
     const { title, category, type, image, documents, videoLink, link, description, mrp, offerPrice } = req.body;
 
