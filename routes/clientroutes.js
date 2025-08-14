@@ -1335,7 +1335,7 @@ router.get('/campaigns/:id/groups', extractClientId, async (req, res) => {
 
 // ==================== BUSINESS INFO API ====================
 //create client business id
-router.post('-info', extractClientId, async(req,res)=>{
+router.post('/business-info', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
     const {text} = req.body;
@@ -1353,7 +1353,7 @@ router.post('-info', extractClientId, async(req,res)=>{
 });
 
 //Get client's business id
-router.get('-info/:id', extractClientId, async(req,res)=>{
+router.get('/business-info/:id', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
     const { id } = req.params;
@@ -1372,7 +1372,7 @@ router.get('-info/:id', extractClientId, async(req,res)=>{
 });
 
 //update client's business id
-router.put('-info/:id', extractClientId, async(req,res)=>{
+router.put('/business-info/:id', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
     const { id } = req.params;
