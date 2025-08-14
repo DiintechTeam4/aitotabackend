@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require("mongoose");
 const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken , verifyClientOrHumanAgentToken} = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -1036,24 +1037,33 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
     const { name, phone, email } = req.body;
     
     if (!name || !name.trim() || !phone || !phone.trim()) {
-      return res.status(400).json({ error: 'Name and phone are required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Name and phone are required' 
+      });
     }
 
     const group = await Group.findOne({ _id: req.params.id, clientId: req.clientId });
     if (!group) {
-      return res.status(404).json({ error: 'Group not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Group not found' 
+      });
     }
 
     // Check if phone number already exists in the group
     const existingContact = group.contacts.find(contact => contact.phone === phone.trim());
     if (existingContact) {
       return res.status(409).json({ 
-        status: false,
-        message: 'Phone number already exists in this group',
+        success: false,
+        error: 'Phone number already exists in this group',
         existingContact: {
           name: existingContact.name,
-          phone: existingContact.phone
-        }
+          phone: existingContact.phone,
+          email: existingContact.email || '',
+          createdAt: existingContact.createdAt
+        },
+        message: `Phone number ${phone.trim()} is already assigned to contact "${existingContact.name}" in group "${group.name}"`
       });
     }
 
@@ -1067,10 +1077,17 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
     group.contacts.push(contact);
     await group.save();
 
-    res.status(201).json({ success: true, data: contact });
+    res.status(201).json({ 
+      success: true, 
+      data: contact,
+      message: 'Contact added successfully to group'
+    });
   } catch (error) {
     console.error('Error adding contact:', error);
-    res.status(500).json({ error: 'Failed to add contact' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to add contact' 
+    });
   }
 });
 
@@ -1427,6 +1444,162 @@ router.get('/campaigns/:id/call-logs', extractClientId, async (req, res) => {
   }
 });
 
+// GET campaign contacts
+router.get('/campaigns/:id/contacts', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    res.json({
+      success: true,
+      data: campaign.contacts || []
+    });
+  } catch (error) {
+    console.error('Error fetching campaign contacts:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch campaign contacts' });
+  }
+});
+
+// POST new contact to campaign
+router.post('/campaigns/:id/contacts', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phone, email } = req.body;
+
+    if (!name || !phone) {
+      return res.status(400).json({ success: false, error: 'Name and phone are required' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Check if phone number already exists in campaign contacts
+    const existingContact = campaign.contacts.find(contact => contact.phone === phone);
+    if (existingContact) {
+      return res.status(400).json({ success: false, error: 'Phone number already exists in this campaign' });
+    }
+
+    // Add new contact (MongoDB will auto-generate _id)
+    campaign.contacts.push({
+      _id: new mongoose.Types.ObjectId(),
+      name,
+      phone,
+      email: email || '',
+      addedAt: new Date()
+    });
+
+    await campaign.save();
+
+    res.json({
+      success: true,
+      data: campaign.contacts[campaign.contacts.length - 1],
+      message: 'Contact added successfully'
+    });
+  } catch (error) {
+    console.error('Error adding contact to campaign:', error);
+    res.status(500).json({ success: false, error: 'Failed to add contact to campaign' });
+  }
+});
+
+// DELETE campaign contact
+router.delete('/campaigns/:id/contacts/:contactId', extractClientId, async (req, res) => {
+  try {
+    const { id, contactId } = req.params;
+    
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Remove the contact using ObjectId
+    const initialLength = campaign.contacts.length;
+    campaign.contacts = campaign.contacts.filter(contact => 
+      contact._id.toString() !== contactId
+    );
+    
+    if (campaign.contacts.length === initialLength) {
+      return res.status(404).json({ success: false, error: 'Contact not found' });
+    }
+
+    await campaign.save();
+
+    res.json({
+      success: true,
+      message: 'Contact removed successfully'
+    });
+  } catch (error) {
+    console.error('Error removing campaign contact:', error);
+    res.status(500).json({ success: false, error: 'Failed to remove campaign contact' });
+  }
+});
+
+// POST sync contacts from groups
+router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    if (!campaign.groupIds || campaign.groupIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'No groups in campaign to sync from' });
+    }
+
+    // Fetch all groups and their contacts
+    const groups = await Group.find({ _id: { $in: campaign.groupIds } });
+    
+    let totalContacts = 0;
+    let totalGroups = groups.length;
+    const newContacts = [];
+
+    for (const group of groups) {
+      if (group.contacts && group.contacts.length > 0) {
+        for (const groupContact of group.contacts) {
+          // Check if phone number already exists in campaign contacts
+          const existingContact = campaign.contacts.find(contact => contact.phone === groupContact.phone);
+          if (!existingContact) {
+            newContacts.push({
+              _id: new mongoose.Types.ObjectId(),
+              name: groupContact.name,
+              phone: groupContact.phone,
+              email: groupContact.email || '',
+              addedAt: new Date()
+            });
+            totalContacts++;
+          }
+        }
+      }
+    }
+
+    // Add new contacts to campaign
+    if (newContacts.length > 0) {
+      campaign.contacts.push(...newContacts);
+      await campaign.save();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalContacts: totalContacts,
+        totalGroups: totalGroups,
+        newContactsAdded: newContacts.length
+      },
+      message: `Synced ${newContacts.length} new contacts from ${totalGroups} groups`
+    });
+  } catch (error) {
+    console.error('Error syncing contacts from groups:', error);
+    res.status(500).json({ success: false, error: 'Failed to sync contacts from groups' });
+  }
+});
+
 // ==================== BUSINESS INFO API ====================
 //create client business id
 router.post('/business-info', extractClientId, async(req,res)=>{
@@ -1678,7 +1851,7 @@ router.delete('/business/:id', extractClientId, async (req, res) => {
 router.post('/dials', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
-    const {category, phoneNumber, leadStatus ,contactName, date} = req.body;
+    const {category, phoneNumber, leadStatus ,contactName, date, other} = req.body;
 
     if(!category || !phoneNumber || !contactName){
       return res.status(400).json({success: false, message: "Missing required fields. Required: category, phoneNumber, contactName"});
@@ -1690,7 +1863,8 @@ router.post('/dials', extractClientId, async(req,res)=>{
       leadStatus,
       phoneNumber,
       contactName,
-      date
+      date,
+      other
     });
     res.status(201).json({success: true, data: dial});
 
@@ -2481,6 +2655,187 @@ router.patch('/agents/:agentId/toggle-active', async (req, res) => {
       message: 'Failed to toggle agent status',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
+  }
+});
+
+// Sync contacts from groups to campaign
+router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    if (!campaign.groupIds || campaign.groupIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'No groups in campaign to sync from' });
+    }
+
+    // Fetch all groups and their contacts
+    const groups = await Group.find({ _id: { $in: campaign.groupIds } });
+    
+    let totalContacts = 0;
+    let totalGroups = groups.length;
+    const newContacts = [];
+
+    for (const group of groups) {
+      if (group.contacts && group.contacts.length > 0) {
+        for (const groupContact of group.contacts) {
+          // Check if phone number already exists in campaign contacts
+          const existingContact = campaign.contacts.find(contact => contact.phone === groupContact.phone);
+          if (!existingContact) {
+            newContacts.push({
+              _id: new mongoose.Types.ObjectId(),
+              name: groupContact.name,
+              phone: groupContact.phone,
+              email: groupContact.email || '',
+              addedAt: new Date()
+            });
+            totalContacts++;
+          }
+        }
+      }
+    }
+
+    // Add new contacts to campaign
+    if (newContacts.length > 0) {
+      campaign.contacts.push(...newContacts);
+      await campaign.save();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        totalContacts: totalContacts,
+        totalGroups: totalGroups,
+        newContactsAdded: newContacts.length
+      },
+      message: `Synced ${newContacts.length} new contacts from ${totalGroups} groups`
+    });
+  } catch (error) {
+    console.error('Error syncing contacts from groups:', error);
+    res.status(500).json({ success: false, error: 'Failed to sync contacts from groups' });
+  }
+});
+
+// Add contact to campaign
+router.post('/campaigns/:id/contacts', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, phone, email } = req.body;
+
+    if (!name || !phone) {
+      return res.status(400).json({ success: false, error: 'Name and phone are required' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Check if phone number already exists in campaign contacts
+    const existingContact = campaign.contacts.find(contact => contact.phone === phone);
+    if (existingContact) {
+      return res.status(400).json({ success: false, error: 'Contact with this phone number already exists in this campaign' });
+    }
+
+    const newContact = {
+      name,
+      phone,
+      email: email || "",
+      isActive: true,
+      addedAt: new Date()
+    };
+
+    campaign.contacts.push(newContact);
+    await campaign.save();
+
+    res.json({
+      success: true,
+      message: 'Contact added successfully',
+      contact: newContact
+    });
+  } catch (error) {
+    console.error('Error adding contact:', error);
+    res.status(500).json({ success: false, error: 'Failed to add contact' });
+  }
+});
+
+// Update contact in campaign
+router.put('/campaigns/:id/contacts/:contactIndex', extractClientId, async (req, res) => {
+  try {
+    const { id, contactIndex } = req.params;
+    const { name, phone, email } = req.body;
+
+    if (!name || !phone) {
+      return res.status(400).json({ success: false, error: 'Name and phone are required' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const index = parseInt(contactIndex);
+    if (index < 0 || index >= campaign.contacts.length) {
+      return res.status(404).json({ success: false, error: 'Contact not found' });
+    }
+
+    // Check if phone number already exists in other contacts (excluding current one)
+    const existingContact = campaign.contacts.find((contact, i) => i !== index && contact.phone === phone);
+    if (existingContact) {
+      return res.status(400).json({ success: false, error: 'Contact with this phone number already exists in this campaign' });
+    }
+
+    // Update the contact
+    campaign.contacts[index] = {
+      ...campaign.contacts[index],
+      name,
+      phone,
+      email: email || "",
+      updatedAt: new Date()
+    };
+
+    await campaign.save();
+
+    res.json({
+      success: true,
+      message: 'Contact updated successfully',
+      contact: campaign.contacts[index]
+    });
+  } catch (error) {
+    console.error('Error updating contact:', error);
+    res.status(500).json({ success: false, error: 'Failed to update contact' });
+  }
+});
+
+// Remove contact from campaign
+router.delete('/campaigns/:id/contacts/:contactIndex', extractClientId, async (req, res) => {
+  try {
+    const { id, contactIndex } = req.params;
+    const index = parseInt(contactIndex);
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    if (index < 0 || index >= campaign.contacts.length) {
+      return res.status(404).json({ success: false, error: 'Contact not found' });
+    }
+
+    const removedContact = campaign.contacts.splice(index, 1)[0];
+    await campaign.save();
+
+    res.json({
+      success: true,
+      message: 'Contact removed successfully',
+      removedContact
+    });
+  } catch (error) {
+    console.error('Error removing contact:', error);
+    res.status(500).json({ success: false, error: 'Failed to remove contact' });
   }
 });
 

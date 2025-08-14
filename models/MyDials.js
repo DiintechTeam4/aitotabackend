@@ -14,6 +14,9 @@ const MyDialSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  other:{
+    type: String,
+  },
   phoneNumber:{
     type: String,
     require: true

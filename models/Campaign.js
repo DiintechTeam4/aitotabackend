@@ -37,6 +37,14 @@ const campaignSchema = new mongoose.Schema({
     type: String,
     index: true
   }],
+  // Array to store campaign contacts (copied from groups but can be manipulated independently)
+  contacts: [{
+    _id: {type: mongoose.Schema.Types.ObjectId},
+    name: { type: String, required: true },
+    phone: { type: String, required: true },
+    email: { type: String, default: "" },
+    addedAt: { type: Date, default: Date.now }
+  }],
   createdAt: {
     type: Date,
     default: Date.now
