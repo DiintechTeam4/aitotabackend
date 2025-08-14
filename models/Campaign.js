@@ -32,6 +32,11 @@ const campaignSchema = new mongoose.Schema({
     enum: [ 'active', 'expired'],
     default: 'active'
   },
+  // Array to store all unique IDs from campaign calls
+  uniqueIds: [{
+    type: String,
+    index: true
+  }],
   createdAt: {
     type: Date,
     default: Date.now

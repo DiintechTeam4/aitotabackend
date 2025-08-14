@@ -58,20 +58,20 @@ const extractClientId = (req, res, next) => {
 // Get or create client
 router.get("/", extractClientId, async (req, res) => {
   try {
-    let client = await Client.findOne({ clientId: req.clientId })
+    // Fetch actual client by _id from token. Do not create here to avoid schema validation errors.
+    const client = await Client.findById(req.clientId).lean();
     if (!client) {
-      client = new Client({
-        clientId: req.clientId,
-        clientName: `Client ${req.clientId}`,
-        email: `${req.clientId}@example.com`,
-        status: "active",
-      })
-      await client.save()
+      return res.status(404).json({ success: false, error: "Client not found" });
     }
-    res.json({ success: true, data: client })
+    // Return a lightweight view with clientId added for frontend compatibility
+    const responseClient = {
+      ...client,
+      clientId: String(client._id),
+    };
+    return res.json({ success: true, data: responseClient });
   } catch (error) {
-    console.error("Error fetching/creating client:", error)
-    res.status(500).json({ error: "Failed to fetch client information" })
+    console.error("Error fetching client:", error);
+    return res.status(500).json({ error: "Failed to fetch client information" });
   }
 })
 
@@ -1330,6 +1330,100 @@ router.get('/campaigns/:id/groups', extractClientId, async (req, res) => {
   } catch (error) {
     console.error('Error fetching campaign groups:', error);
     res.status(500).json({ error: 'Failed to fetch campaign groups' });
+  }
+});
+
+// Add unique ID to campaign (for tracking campaign calls)
+router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
+  try {
+    const { uniqueId } = req.body;
+    
+    if (!uniqueId || typeof uniqueId !== 'string') {
+      return res.status(400).json({ error: 'uniqueId is required and must be a string' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    // Add unique ID if it doesn't already exist
+    if (!campaign.uniqueIds.includes(uniqueId)) {
+      campaign.uniqueIds.push(uniqueId);
+      await campaign.save();
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Unique ID added to campaign',
+      data: { uniqueId, totalUniqueIds: campaign.uniqueIds.length }
+    });
+  } catch (error) {
+    console.error('Error adding unique ID to campaign:', error);
+    res.status(500).json({ error: 'Failed to add unique ID to campaign' });
+  }
+});
+
+// Get call logs for a campaign using stored uniqueIds
+router.get('/campaigns/:id/call-logs', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = parseInt(req.query.page || '1', 10);
+    const limit = parseInt(req.query.limit || '50', 10);
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = (req.query.sortOrder || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const uniqueIds = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
+    if (uniqueIds.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        campaign: { _id: campaign._id, name: campaign.name, uniqueIdsCount: 0 },
+        pagination: { currentPage: page, totalPages: 0, totalLogs: 0, hasNextPage: false, hasPrevPage: false }
+      });
+    }
+
+    const query = {
+      clientId: req.clientId,
+      'metadata.customParams.uniqueid': { $in: uniqueIds }
+    };
+
+    const totalLogs = await CallLog.countDocuments(query);
+    const skip = (page - 1) * limit;
+    const sortSpec = { [sortBy]: sortOrder };
+
+    const logs = await CallLog.find(query)
+      .sort(sortSpec)
+      .skip(skip)
+      .limit(limit)
+      .populate('campaignId', 'name description')
+      .populate('agentId', 'agentName')
+      .lean();
+
+    return res.json({
+      success: true,
+      data: logs,
+      campaign: {
+        _id: campaign._id,
+        name: campaign.name,
+        uniqueIdsCount: uniqueIds.length
+      },
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalLogs / limit),
+        totalLogs,
+        hasNextPage: skip + logs.length < totalLogs,
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching campaign call logs:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch campaign call logs' });
   }
 });
 
