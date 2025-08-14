@@ -8,6 +8,40 @@ class VoiceService {
     this.deepgramApiKey = process.env.DEEPGRAM_API_KEY
   }
 
+  // Basic allowlist of supported Sarvam voices for bulbul:v2
+  // Extend as needed based on provider docs
+  getSupportedSpeakers() {
+    return new Set([
+      "abhilash",
+      "anushka",
+      "karun",
+      "manisha",
+      "vidya",
+      "arya",
+      "hitesh",
+    ])
+  }
+
+  getDefaultSpeakerForLanguage(language) {
+    const lang = (language || "en").toLowerCase()
+    return lang === "hi" ? "anushka" : "abhilash"
+  }
+
+  sanitizeSpeaker(language, requestedSpeaker) {
+    const supported = this.getSupportedSpeakers()
+    if (!requestedSpeaker || typeof requestedSpeaker !== "string") {
+      return this.getDefaultSpeakerForLanguage(language)
+    }
+    const speakerLower = requestedSpeaker.toLowerCase()
+    if (!supported.has(speakerLower)) {
+      console.warn(
+        `[VOICE_SERVICE] Unsupported speaker '${requestedSpeaker}'. Falling back to default for language '${language}'.`
+      )
+      return this.getDefaultSpeakerForLanguage(language)
+    }
+    return speakerLower
+  }
+
   // Convert text to speech using Sarvam AI (matching your unifiedVoiceServer)
   async textToSpeech(text, language = "en", speaker = null) {
     if (!this.sarvamApiKey || !text.trim()) {
@@ -16,10 +50,12 @@ class VoiceService {
 
     try {
       // Build request body matching your unifiedVoiceServer implementation
+      const targetLanguage = language === "hi" ? "hi-IN" : "en-IN"
+      const safeSpeaker = this.sanitizeSpeaker(language, speaker)
       const requestBody = {
         inputs: [text],
-        target_language_code: language === "hi" ? "hi-IN" : "en-IN",
-        speaker: speaker || (language === "hi" ? "anushka" : "abhilash"),
+        target_language_code: targetLanguage,
+        speaker: safeSpeaker,
         pitch: 0,
         pace: 1.0,
         loudness: 1.0,
@@ -47,12 +83,59 @@ class VoiceService {
         } catch {
           errorData = { error: errorText }
         }
+        const extractedMessage =
+          (typeof errorData.error === "string" && errorData.error) ||
+          (typeof errorData.message === "string" && errorData.message) ||
+          (errorData.error && errorData.error.message) ||
+          JSON.stringify(errorData)
         console.error("[VOICE_SERVICE] API Error:", {
           status: response.status,
-          error: errorData.error || "Unknown error",
+          error: extractedMessage,
           requestBody,
         })
-        throw new Error(`Sarvam AI API error: ${response.status} - ${errorData.error || "Unknown error"}`)
+        // Retry once with minimal payload and default speaker on 400
+        if (response.status === 400) {
+          const fallbackBody = {
+            inputs: [text],
+            target_language_code: targetLanguage,
+            speaker: this.getDefaultSpeakerForLanguage(language),
+            model: "bulbul:v2",
+          }
+          console.warn("[VOICE_SERVICE] Retrying with minimal payload:", fallbackBody)
+          const retryRes = await fetch("https://api.sarvam.ai/text-to-speech", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "API-Subscription-Key": this.sarvamApiKey,
+            },
+            body: JSON.stringify(fallbackBody),
+          })
+          if (retryRes.ok) {
+            const retryData = await retryRes.json()
+            if (!retryData.audios || retryData.audios.length === 0) {
+              throw new Error("No audio data received from Sarvam AI (fallback)")
+            }
+            const audioBase64 = retryData.audios[0]
+            const audioBuffer = Buffer.from(audioBase64, "base64")
+            console.log(`[VOICE_SERVICE] Fallback audio generated: ${audioBuffer.length} bytes`)
+            return {
+              audioBuffer,
+              audioBase64,
+              sampleRate: 22050,
+              channels: 1,
+              format: "mp3",
+              usedSpeaker: this.getDefaultSpeakerForLanguage(language),
+              targetLanguage,
+            }
+          } else {
+            const retryErrText = await retryRes.text()
+            let retryErr
+            try { retryErr = JSON.parse(retryErrText) } catch { retryErr = { error: retryErrText } }
+            const retryMsg = retryErr.error || retryErr.message || JSON.stringify(retryErr)
+            throw new Error(`Sarvam AI API error: 400 (retry failed) - ${retryMsg}`)
+          }
+        }
+        throw new Error(`Sarvam AI API error: ${response.status} - ${extractedMessage}`)
       }
 
       const responseData = await response.json()
@@ -72,6 +155,8 @@ class VoiceService {
         sampleRate: 22050,
         channels: 1,
         format: "mp3",
+        usedSpeaker: safeSpeaker,
+        targetLanguage: targetLanguage,
       }
     } catch (error) {
       console.error(`[VOICE_SERVICE] TTS error: ${error.message}`)

@@ -452,11 +452,15 @@ router.post('/voice/synthesize', extractClientId, async (req, res) => {
       format: audioResult.format,
       size: audioResult.size,
       sampleRate: audioResult.sampleRate,
-      channels: audioResult.channels
+      channels: audioResult.channels,
+      usedSpeaker: audioResult.usedSpeaker,
+      targetLanguage: audioResult.targetLanguage
     });
   } catch (error) {
     console.error("❌ Voice synthesis error:", error);
-    res.status(500).json({ error: `Voice synthesis failed: ${error.message}` });
+    // Surface clearer error payloads to the frontend
+    const message = typeof error?.message === 'string' ? error.message : String(error)
+    res.status(500).json({ error: message });
   }
 });
 
@@ -1296,6 +1300,39 @@ router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
   }
 });
 
+// Get all groups associated with a campaign
+router.get('/campaigns/:id/groups', extractClientId, async (req, res) => {
+  try {
+    // Find the campaign and verify it belongs to the client
+    const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    // If no groups are associated with the campaign
+    if (!campaign.groupIds || campaign.groupIds.length === 0) {
+      return res.json({ success: true, data: [], message: 'No groups associated with this campaign' });
+    }
+
+    // Fetch all groups associated with the campaign
+    const groups = await Group.find({ 
+      _id: { $in: campaign.groupIds }, 
+      clientId: req.clientId 
+    }).populate('contacts', 'name email phone');
+
+    res.json({ 
+      success: true, 
+      campaignName: campaign.name,
+      totalGroups: groups.length,
+      data: groups,
+      campaignId: campaign._id,
+    });
+  } catch (error) {
+    console.error('Error fetching campaign groups:', error);
+    res.status(500).json({ error: 'Failed to fetch campaign groups' });
+  }
+});
+
 // ==================== BUSINESS INFO API ====================
 //create client business id
 router.post('-info', extractClientId, async(req,res)=>{
@@ -1786,6 +1823,28 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
       notConnected: {
         data: logs.filter(l => l.leadStatus === 'not connected'),
         count: logs.filter(l => l.leadStatus === 'not connected').length
+      },
+      
+      // Other - leads that don't match any predefined category
+      other: {
+        data: logs.filter(l => {
+          const predefinedStatuses = [
+            'vvi', 'Very Interested', 'maybe', 'medium', 'enrolled', 
+            'junk lead', 'not required', 'enrolled other', 'decline', 
+            'not eligible', 'wrong number', 'hot followup', 'cold followup', 
+            'schedule', 'not connected'
+          ];
+          return !predefinedStatuses.includes(l.leadStatus);
+        }),
+        count: logs.filter(l => {
+          const predefinedStatuses = [
+            'vvi', 'Very Interested', 'maybe', 'medium', 'enrolled', 
+            'junk lead', 'not required', 'enrolled other', 'decline', 
+            'not eligible', 'wrong number', 'hot followup', 'cold followup', 
+            'schedule', 'not connected'
+          ];
+          return !predefinedStatuses.includes(l.leadStatus);
+        }).length
       }
     };
 
