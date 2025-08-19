@@ -663,7 +663,7 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
         allowedFilters: allowedFilters
       });
     }
-    
+
     // Build date filter based on parameters
     let dateFilter = {};
     
@@ -711,7 +711,7 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
     
     // Build the complete query
     const query = { clientId, ...dateFilter };    
-    const logs = await CallLog.find(query);
+    const logs = await CallLog.find(query).sort({ createdAt: -1 });
     
     // Group leads according to the new leadStatus structure
     const leads = {
@@ -1750,7 +1750,7 @@ router.post('/business', extractClientId, async(req, res)=>{
      } 
 
      // Generate share link using the hash
-     const baseUrl = process.env.FRONTEND_BASE_URL || 'https://aitotafrontend.vercel.app' || 'http://localhost:5173';
+     const baseUrl = 'https://aitotafrontend.vercel.app' || 'http://localhost:5173';
      const slug = title
        .toLowerCase()
        .replace(/[^a-z0-9]+/g, "-")
@@ -2121,7 +2121,7 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
     
     // Build the complete query
     const query = { clientId, ...dateFilter };    
-    const logs = await MyDials.find(query);
+    const logs = await MyDials.find(query).sort({ createdAt: -1 });
     
     // Group leads according to the new leadStatus structure
     const leads = {
@@ -2292,7 +2292,7 @@ router.get('/dials/done', extractClientId, async(req,res)=>{
       ...dateFilter 
     };
     
-    const data = await MyDials.find(query);
+    const data = await MyDials.find(query).sort({ createdAt: -1 });
     res.json({
       success: true,
       data: data,
