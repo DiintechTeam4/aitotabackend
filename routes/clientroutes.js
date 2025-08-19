@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken , verifyClientOrHumanAgentToken} = require('../middlewares/authmiddleware');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
+  const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
@@ -179,7 +180,7 @@ router.post('/register',verifyAdminTokenOnlyForRegister, registerClient);
 router.get('/profile', authMiddleware, getClientProfile);
 
 // Create new agent with multiple starting messages and default selection
-router.post('/agents', extractClientId, async (req, res) => {
+router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
     const { startingMessages, defaultStartingMessageIndex, ...agentData } = req.body;
     if (!Array.isArray(startingMessages) || startingMessages.length === 0) {
@@ -196,11 +197,14 @@ router.post('/agents', extractClientId, async (req, res) => {
     agentData.firstMessage = startingMessages[defaultStartingMessageIndex].text;
     agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
-    agentData.clientId = req.clientId;
+    // If middleware resolved a clientId (client token or admin with clientId), set it; otherwise allow null
+    if (req.clientId) {
+      agentData.clientId = req.clientId;
+    }
 
     // If creating as active with an accountSid, deactivate others first to satisfy unique index
     const willBeActive = agentData.isActive !== false; // default true per schema
-    if (willBeActive && agentData.accountSid) {
+    if (req.clientId && willBeActive && agentData.accountSid) {
       await Agent.updateMany(
         {
           clientId: req.clientId,
@@ -215,7 +219,7 @@ router.post('/agents', extractClientId, async (req, res) => {
     const savedAgent = await agent.save();
 
     // If this agent is active and has accountSid, deactivate others with same (clientId, accountSid)
-    if (savedAgent.isActive && savedAgent.accountSid) {
+    if (req.clientId && savedAgent.isActive && savedAgent.accountSid) {
       await Agent.updateMany(
         {
           _id: { $ne: savedAgent._id },
@@ -236,7 +240,7 @@ router.post('/agents', extractClientId, async (req, res) => {
 });
 
 // Update agent with multiple starting messages and default selection
-router.put('/agents/:id', extractClientId, async (req, res) => {
+router.put('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
     const { startingMessages, defaultStartingMessageIndex, ...agentData } = req.body;
     if (!Array.isArray(startingMessages) || startingMessages.length === 0) {
@@ -256,7 +260,7 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
 
     // If we are activating this agent, deactivate others first to satisfy unique index
     let agent;
-    if (agentData.isActive === true) {
+    if (agentData.isActive === true && req.clientId) {
       const current = await Agent.findOne({ _id: req.params.id, clientId: req.clientId });
       if (!current) {
         return res.status(404).json({ error: 'Agent not found' });
@@ -275,7 +279,7 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
     }
 
     agent = await Agent.findOneAndUpdate(
-      { _id: req.params.id, clientId: req.clientId },
+      req.clientId ? { _id: req.params.id, clientId: req.clientId } : { _id: req.params.id },
       agentData,
       { new: true, runValidators: true }
     );
@@ -283,7 +287,7 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
       return res.status(404).json({ error: 'Agent not found' });
     }
     // If this agent is active and has accountSid, deactivate others with same (clientId, accountSid)
-    if (agent && agent.isActive && agent.accountSid) {
+    if (req.clientId && agent && agent.isActive && agent.accountSid) {
       await Agent.updateMany(
         {
           _id: { $ne: agent._id },
@@ -370,7 +374,7 @@ router.put('/agents/mob/:id', extractClientId, async(req,res)=>{
   }
 });
 
-router.delete('/agents/:id', extractClientId, async (req, res)=>{
+router.delete('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res)=>{
   try{
     const { id } = req.params;
     const agent = await Agent.findOneAndDelete({ 
@@ -389,9 +393,10 @@ router.delete('/agents/:id', extractClientId, async (req, res)=>{
 });
 
 // Get all agents for client
-router.get('/agents', extractClientId, async (req, res) => {
+router.get('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
-    const agents = await Agent.find({ clientId: req.clientId })
+    const filter = req.clientId ? { clientId: req.clientId } : {};
+    const agents = await Agent.find(filter)
       .select('-audioBytes') // Don't send audio bytes in list view
       .sort({ createdAt: -1 });
     res.json({success: true, data: agents});
@@ -402,10 +407,11 @@ router.get('/agents', extractClientId, async (req, res) => {
 });
 
 // Get agent audio
-router.get('/agents/:id/audio', extractClientId, async (req, res) => {
+router.get('/agents/:id/audio', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
     const { id } = req.params;
-    const agent = await Agent.findOne({ _id: id, clientId: req.clientId });
+    const query = req.clientId ? { _id: id, clientId: req.clientId } : { _id: id };
+    const agent = await Agent.findOne(query);
     
     if (!agent) {
       return res.status(404).json({ error: 'Agent not found' });
@@ -433,7 +439,7 @@ router.get('/agents/:id/audio', extractClientId, async (req, res) => {
 });
 
 // Generate audio from text endpoint - returns both buffer and base64
-router.post('/voice/synthesize', extractClientId, async (req, res) => {
+router.post('/voice/synthesize', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
     const { text, language = "en", speaker } = req.body;
     if (!text || !text.trim()) {
@@ -622,11 +628,19 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
     }
     
     // Build the complete query
-    const query = { clientId, ...dateFilter };
+    const query = { clientId, ...dateFilter};
+    const agentName = {}
     
     const clientName = await Client.findOne({ _id: clientId }).select('name');
-    const logs = await CallLog.find(query);
-    res.json({success:'true', clientName: clientName ,data:logs});
+    const logs = await CallLog.find(query)
+      .sort({ createdAt: -1 })
+      .populate('agentId', 'agentName')
+      .lean();
+    const logsWithAgentName = logs.map(l => ({
+      ...l,
+      agentName: l.agentId && l.agentId.agentName ? l.agentId.agentName : null,
+    }));
+    res.json({success:'true', clientName: clientName ,data:logsWithAgentName});
   } catch (error) {
     console.error('Error in /inbound/logs:', error);
     res.status(500).json({ error: 'Failed to fetch logs' });
@@ -1735,6 +1749,14 @@ router.post('/business', extractClientId, async(req, res)=>{
        return res.status(500).json({ success: false, message: "Failed to generate unique hash for business" });
      } 
 
+     // Generate share link using the hash
+     const baseUrl = process.env.FRONTEND_BASE_URL || 'https://aitotafrontend.vercel.app' || 'http://localhost:5173';
+     const slug = title
+       .toLowerCase()
+       .replace(/[^a-z0-9]+/g, "-")
+       .replace(/(^-|-$)/g, "");
+     const shareLink = `${baseUrl}/${slug}-${hash}`;
+
     const business = await MyBusiness.create({
       clientId,
       title,
@@ -1747,7 +1769,8 @@ router.post('/business', extractClientId, async(req, res)=>{
       description,
       mrp: Number(mrp),
       offerPrice: offerPrice !== undefined && offerPrice !== null ? Number(offerPrice) : null,
-      hash
+      hash,
+      Sharelink: shareLink
     });
     res.status(201).json({success: true, data: business});
   }catch(error){
@@ -1760,21 +1783,49 @@ router.post('/business', extractClientId, async(req, res)=>{
 router.get('/business', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
-    let businesses = await MyBusiness.find({ clientId });
-    // Ensure image and documents always have url and key fields
-    businesses = businesses.map(business => {
+    let businesses = await MyBusiness.find({ clientId }).sort({ createdAt: -1 }); // Sort by creation date, most recent first
+    
+    // Import S3 utility for generating fresh URLs
+    const { getobject } = require('../utils/s3');
+    
+    // Ensure image and documents always have fresh url and key fields
+    businesses = await Promise.all(businesses.map(async (business) => {
+      let imageUrl = '';
+      let documentsUrl = '';
+      
+      // Generate fresh presigned URL for image if key exists
+      if (business.image && business.image.key) {
+        try {
+          imageUrl = await getobject(business.image.key);
+        } catch (error) {
+          console.error('Error generating image URL:', error);
+          imageUrl = '';
+        }
+      }
+      
+      // Generate fresh presigned URL for documents if key exists
+      if (business.documents && business.documents.key) {
+        try {
+          documentsUrl = await getobject(business.documents.key);
+        } catch (error) {
+          console.error('Error generating documents URL:', error);
+          documentsUrl = '';
+        }
+      }
+      
       return {
         ...business.toObject(),
         image: {
-          url: business.image && business.image.url ? business.image.url : '',
+          url: imageUrl,
           key: business.image && business.image.key ? business.image.key : ''
         },
         documents: {
-          url: business.documents && business.documents.url ? business.documents.url : '',
+          url: documentsUrl,
           key: business.documents && business.documents.key ? business.documents.key : ''
         }
       };
-    });
+    }));
+    
     res.status(200).json({ success: true, data: businesses });
   } catch (error) {
     console.error('Error fetching businesses:', error);
@@ -1791,14 +1842,41 @@ router.get('/business/:id', extractClientId, async (req, res) => {
     if (!business) {
       return res.status(404).json({ success: false, message: 'Business not found' });
     }
+    
+    // Import S3 utility for generating fresh URLs
+    const { getobject } = require('../utils/s3');
+    
+    let imageUrl = '';
+    let documentsUrl = '';
+    
+    // Generate fresh presigned URL for image if key exists
+    if (business.image && business.image.key) {
+      try {
+        imageUrl = await getobject(business.image.key);
+      } catch (error) {
+        console.error('Error generating image URL:', error);
+        imageUrl = '';
+      }
+    }
+    
+    // Generate fresh presigned URL for documents if key exists
+    if (business.documents && business.documents.key) {
+      try {
+        documentsUrl = await getobject(business.documents.key);
+      } catch (error) {
+        console.error('Error generating documents URL:', error);
+        documentsUrl = '';
+      }
+    }
+    
     business = {
       ...business.toObject(),
       image: {
-        url: business.image && business.image.url ? business.image.url : '',
+        url: imageUrl,
         key: business.image && business.image.key ? business.image.key : ''
       },
       documents: {
-        url: business.documents && business.documents.url ? business.documents.url : '',
+        url: documentsUrl,
         key: business.documents && business.documents.key ? business.documents.key : ''
       }
     };
@@ -1815,6 +1893,20 @@ router.put('/business/:id', extractClientId, async (req, res) => {
     const clientId = req.clientId;
     const { id } = req.params;
     const updateData = req.body;
+    
+    // If title is being updated, regenerate the share link
+    if (updateData.title) {
+      const business = await MyBusiness.findById(id);
+      if (business && business.hash) {
+        const baseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+        const slug = updateData.title
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/(^-|-$)/g, "");
+        updateData.Sharelink = `${baseUrl}/${slug}-${business.hash}`;
+      }
+    }
+    
     const business = await MyBusiness.findOneAndUpdate(
       { _id: id, clientId },
       { ...updateData, updatedAt: Date.now() },
@@ -2232,6 +2324,39 @@ router.put('/human-agents/:agentId', extractClientId,  updateHumanAgent);
 // Delete human agent
 router.delete('/human-agents/:agentId', extractClientId,  deleteHumanAgent);
 
+//client assigned agent
+router.get('/staff/agent', verifyClientOrHumanAgentToken, async(req,res)=>{
+  try{
+    const humanAgent = req.humanAgent;
+    const clientId = humanAgent.clientId;
+    
+    // Check if human agent has assigned agents
+    if (!humanAgent.agentIds || humanAgent.agentIds.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'No agents assigned to this human agent' 
+      });
+    }
+    
+    // Fetch the first assigned agent (assuming one agent per human agent for now)
+    const agentId = humanAgent.agentIds[0];
+    const agent = await Agent.findById(agentId);
+    
+    if (!agent) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Assigned agent not found' 
+      });
+    }
+    
+    res.json({success: true, data: agent});
+  }
+  catch(error){
+    console.error('Error in /staff/agent:', error);
+    res.status(500).json({ error: 'Failed to fetch agent' });
+  }
+});
+
 // Get agent by ID (public route for mobile users)
 router.get('/agents/:id/public', async (req, res) => {
   try {
@@ -2289,10 +2414,11 @@ router.get('/public/:clientId', async (req, res) => {
 });
 
 // Get agent by ID (authenticated route)
-router.get('/agents/:id', extractClientId, async (req, res) => {
+router.get('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
     const { id } = req.params;
-    const agent = await Agent.findOne({ _id: id, clientId: req.clientId }).select('-audioBytes');
+    const query = req.clientId ? { _id: id, clientId: req.clientId } : { _id: id };
+    const agent = await Agent.findOne(query).select('-audioBytes');
     
     if (!agent) {
       return res.status(404).json({ error: 'Agent not found' });

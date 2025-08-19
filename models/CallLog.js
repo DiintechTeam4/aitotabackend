@@ -39,7 +39,6 @@ const CallLogSchema = new mongoose.Schema({
   // Telephony identifiers for call management
   streamSid: { type: String, index: true }, // For active call tracking
   callSid: { type: String, index: true },   // For call identification
-  
   // Enhanced metadata for live tracking
   metadata: {
     userTranscriptCount: { type: Number, default: 0 },

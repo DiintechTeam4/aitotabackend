@@ -174,7 +174,7 @@ app.get("/api/v1/logs/:id", async (req, res) => {
   }
 });
 
-// Get live statisti
+// Get live statistic
 app.get("/api/v1/logs/stats", async (req, res) => {
   try {
     const CallLog = require("./models/CallLog");

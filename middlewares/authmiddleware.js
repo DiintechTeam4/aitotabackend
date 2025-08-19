@@ -400,3 +400,50 @@ module.exports = {
   verifyHumanAgentToken,
   verifyClientOrHumanAgentToken
 }; 
+
+// Accepts either a client or admin token. If admin, requires a clientId in query/body/params.
+const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, error: 'No token provided' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (decoded.userType === 'client') {
+      const client = await Client.findById(decoded.id).select('-password');
+      if (!client) {
+        return res.status(401).json({ success: false, error: 'Client not found' });
+      }
+      req.clientId = String(client._id);
+      req.user = { id: client._id, userType: 'client', email: client.email };
+      return next();
+    }
+
+    if (decoded.userType === 'admin') {
+      const candidateClientId = req.query.clientId || req.body.clientId || req.params.clientId;
+      if (candidateClientId) {
+        const client = await Client.findById(candidateClientId).select('-password');
+        if (!client) {
+          return res.status(404).json({ success: false, error: 'Client not found' });
+        }
+        req.clientId = String(client._id);
+      } else {
+        // Allow admin without client context; routes must handle missing req.clientId
+        req.clientId = undefined;
+      }
+      req.user = { id: decoded.id, userType: 'admin' };
+      return next();
+    }
+
+    return res.status(401).json({ success: false, error: 'Invalid token type' });
+  } catch (error) {
+    console.error('verifyClientOrAdminAndExtractClientId error:', error);
+    return res.status(401).json({ success: false, error: 'Invalid token' });
+  }
+};
+
+// Export appended separately to avoid breaking existing export object reference
+module.exports.verifyClientOrAdminAndExtractClientId = verifyClientOrAdminAndExtractClientId;

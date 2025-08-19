@@ -2,8 +2,8 @@ const mongoose = require("mongoose")
 
 const agentSchema = new mongoose.Schema({
   // Client Information
-  clientId: { type: String, required: true, index: true },
-
+  clientId: { type: String },
+  agentId: {type: String},
   // Active Status
   isActive: { type: Boolean, default: true, index: true },
 
@@ -77,7 +77,7 @@ const agentSchema = new mongoose.Schema({
   callerId: { type: String, index: true }, // For outbound call matching
   serviceProvider: {
     type: String,
-    enum: ["twilio", "vonage", "plivo", "bandwidth", "other"],
+    enum: ["twilio", "vonage", "plivo", "bandwidth", "other", "c-zentrix", "tata"],
   },
   X_API_KEY: { type: String }, // Add missing X_API_KEY field
 
@@ -106,31 +106,31 @@ const agentSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 })
 
-// Compound index for client + agent name uniqueness
-agentSchema.index({ clientId: 1, agentName: 1 }, { unique: true })
+// // Compound index for client + agent name uniqueness
+// agentSchema.index({ clientId: 1, agentName: 1 }, { unique: true })
 
-// Additional index for callerId lookup (outbound calls) with isActive filter
-agentSchema.index({ callerId: 1, isActive: 1 })
+// // Additional index for callerId lookup (outbound calls) with isActive filter
+// agentSchema.index({ callerId: 1, isActive: 1 })
 
-// Additional index for accountSid lookup with isActive filter
-agentSchema.index({ accountSid: 1, isActive: 1 })
+// // Additional index for accountSid lookup with isActive filter
+// agentSchema.index({ accountSid: 1, isActive: 1 })
 
-// Ensure only one active agent per (clientId, accountSid)
-// Partial unique index applies only when isActive is true and accountSid exists
-try {
-  agentSchema.index(
-    { clientId: 1, accountSid: 1 },
-    {
-      unique: true,
-      partialFilterExpression: {
-        isActive: true,
-        accountSid: { $exists: true, $type: 'string' },
-      },
-    }
-  )
-} catch (e) {
-  // Index creation failures will be logged by Mongoose at startup; continue
-}
+// // Ensure only one active agent per (clientId, accountSid)
+// // Partial unique index applies only when isActive is true and accountSid exists
+// try {
+//   agentSchema.index(
+//     { clientId: 1, accountSid: 1 },
+//     {
+//       unique: true,
+//       partialFilterExpression: {
+//         isActive: true,
+//         accountSid: { $exists: true, $type: 'string' },
+//       },
+//     }
+//   )
+// } catch (e) {
+//   // Index creation failures will be logged by Mongoose at startup; continue
+// }
 
 // Update the updatedAt field before saving
 agentSchema.pre("save", function (next) {
