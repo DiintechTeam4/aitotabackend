@@ -182,7 +182,25 @@ router.get('/profile', authMiddleware, getClientProfile);
 // Create new agent with multiple starting messages and default selection
 router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
+    console.log('🚀 Creating agent - Request data:', {
+      userType: req.user?.userType,
+      clientId: req.clientId,
+      adminId: req.adminId,
+      bodyKeys: Object.keys(req.body)
+    });
+    
     const { startingMessages, defaultStartingMessageIndex, ...agentData } = req.body;
+    
+    // Validate required fields
+    if (!agentData.agentName || !agentData.agentName.trim()) {
+      return res.status(400).json({ error: 'Agent name is required.' });
+    }
+    if (!agentData.description || !agentData.description.trim()) {
+      return res.status(400).json({ error: 'Description is required.' });
+    }
+    if (!agentData.systemPrompt || !agentData.systemPrompt.trim()) {
+      return res.status(400).json({ error: 'System prompt is required.' });
+    }
     if (!Array.isArray(startingMessages) || startingMessages.length === 0) {
       return res.status(400).json({ error: 'At least one starting message is required.' });
     }
@@ -193,13 +211,44 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
     ) {
       return res.status(400).json({ error: 'Invalid default starting message index.' });
     }
+    
     // Set default firstMessage and audioBytes
     agentData.firstMessage = startingMessages[defaultStartingMessageIndex].text;
     agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
-    // If middleware resolved a clientId (client token or admin with clientId), set it; otherwise allow null
-    if (req.clientId) {
+    
+    // Set the appropriate ID based on token type
+    console.log('🔧 Setting agent IDs:', { userType: req.user.userType, clientId: req.clientId, adminId: req.adminId });
+    
+    if (req.user.userType === 'client') {
+      // If client token, store client ID in createdBy and set clientId
+      if (!req.clientId) {
+        return res.status(400).json({ error: 'Client ID is required for client tokens' });
+      }
       agentData.clientId = req.clientId;
+      agentData.createdBy = req.clientId; // Store client ID in createdBy
+      agentData.createdByType = 'client';
+      console.log('✅ Client agent - IDs set:', { clientId: agentData.clientId, createdBy: agentData.createdBy, createdByType: agentData.createdByType });
+    } else if (req.user.userType === 'admin') {
+      // If admin token, store admin ID in createdBy and clientId is optional
+      if (req.clientId) {
+        agentData.clientId = req.clientId;
+        console.log('✅ Admin agent with clientId:', { clientId: agentData.clientId });
+      } else {
+        // For admin tokens, clientId is optional - allow creating agents without client association
+        agentData.clientId = undefined;
+        console.log('ℹ️ Admin creating agent without clientId - agent will be unassigned');
+      }
+      agentData.createdBy = req.adminId; // Store admin ID in createdBy
+      agentData.createdByType = 'admin';
+      console.log('✅ Admin agent - IDs set:', { clientId: agentData.clientId, createdBy: agentData.createdBy, createdByType: agentData.createdByType });
+    } else {
+      return res.status(400).json({ error: 'Invalid user type' });
+    }
+    
+    // Validate that createdBy is set
+    if (!agentData.createdBy) {
+      return res.status(400).json({ error: 'Failed to set createdBy field' });
     }
 
     // If creating as active with an accountSid, deactivate others first to satisfy unique index
@@ -208,6 +257,16 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
       await Agent.updateMany(
         {
           clientId: req.clientId,
+          accountSid: agentData.accountSid,
+          isActive: true,
+        },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      );
+    } else if (req.user.userType === 'admin' && !req.clientId && willBeActive && agentData.accountSid) {
+      // For admin-created agents without clientId, only check accountSid uniqueness
+      await Agent.updateMany(
+        {
+          clientId: { $exists: false },
           accountSid: agentData.accountSid,
           isActive: true,
         },
@@ -229,13 +288,45 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
         },
         { $set: { isActive: false, updatedAt: new Date() } }
       )
+    } else if (req.user.userType === 'admin' && !req.clientId && savedAgent.isActive && savedAgent.accountSid) {
+      // For admin-created agents without clientId, only check accountSid uniqueness
+      await Agent.updateMany(
+        {
+          _id: { $ne: savedAgent._id },
+          clientId: { $exists: false },
+          accountSid: savedAgent.accountSid,
+          isActive: true,
+        },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      )
     }
+    
     const responseAgent = savedAgent.toObject();
     delete responseAgent.audioBytes;
     res.status(201).json(responseAgent);
   } catch (error) {
     console.error('❌ Error creating agent:', error);
-    res.status(500).json({ error: 'Failed to create agent' });
+    console.error('Request data:', {
+      userType: req.user?.userType,
+      clientId: req.clientId,
+      adminId: req.adminId,
+      agentData: {
+        agentName: agentData.agentName,
+        serviceProvider: agentData.serviceProvider,
+        accountSid: agentData.accountSid
+      }
+    });
+    
+    // Provide more specific error messages
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({ 
+        error: 'Validation failed', 
+        details: error.message,
+        missingFields: Object.keys(error.errors).map(key => key)
+      });
+    }
+    
+    res.status(500).json({ error: 'Failed to create agent', details: error.message });
   }
 });
 
@@ -403,6 +494,45 @@ router.get('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =>
   } catch (error) {
     console.error("Error fetching agents:", error);
     res.status(500).json({ success: false, error: "Failed to fetch agents" });
+  }
+});
+
+// Get all agents created by admin
+router.get('/agents/admin', verifyAdminToken, async (req, res) => {
+  try {
+    const adminId = req.adminId;
+    
+    if (!adminId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Admin ID not found in token' 
+      });
+    }
+
+    // Find all agents created by this admin
+    const agents = await Agent.find({ 
+      createdBy: adminId,
+      createdByType: 'admin'
+    })
+    .select('-audioBytes') // Don't send audio bytes in list view
+    .sort({ createdAt: -1 })
+    .lean();
+
+    console.log(`🔍 Admin ${adminId} fetching their agents. Found: ${agents.length}`);
+
+    res.json({
+      success: true, 
+      data: agents,
+      totalCount: agents.length
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching admin agents:', error);
+    res.status(500).json({
+      success: false, 
+      error: 'Failed to fetch agents',
+      details: error.message
+    });
   }
 });
 
@@ -1050,10 +1180,10 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
   try {
     const { name, phone, email } = req.body;
     
-    if (!name || !name.trim() || !phone || !phone.trim()) {
+    if (!phone || !phone.trim()) {
       return res.status(400).json({ 
         success: false,
-        error: 'Name and phone are required' 
+        error: 'phone is required' 
       });
     }
 
@@ -1082,9 +1212,9 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
     }
 
     const contact = {
-      name: name.trim(),
+      name: typeof name === 'string' ? name.trim() : '',
       phone: phone.trim(),
-      email: email?.trim() || '',
+      email: typeof email === 'string' ? email.trim() : '',
       createdAt: new Date()
     };
 
@@ -1330,6 +1460,23 @@ router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
     res.status(500).json({ error: 'Failed to add groups to campaign' });
   }
 });
+
+//Delete group from campaign
+router.delete('/campaigns/:id/groups/:groupId', extractClientId, async (req, res) => {
+  try {
+    const { id, groupId } = req.params;
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+    campaign.groupIds = campaign.groupIds.filter((id) => id.toString() !== groupId);
+    await campaign.save();
+    res.json({ success: true, message: 'Group deleted from campaign' });
+  }catch (error) {
+    console.error('Error deleting group from campaign:', error);
+    res.status(500).json({ error: 'Failed to delete group from campaign' });
+  }
+})
 
 // Get all groups associated with a campaign
 router.get('/campaigns/:id/groups', extractClientId, async (req, res) => {

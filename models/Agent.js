@@ -2,7 +2,16 @@ const mongoose = require("mongoose")
 
 const agentSchema = new mongoose.Schema({
   // Client Information
-  clientId: { type: String },
+  clientId: { type: String }, // Optional - can be set by admin or client
+  
+  // Creation tracking
+  createdBy: { type: String }, // ID of the user who created the agent
+  createdByType: { 
+    type: String, 
+    enum: ["client", "admin"], 
+    default: "admin" 
+  }, // Type of user who created the agent
+  
   agentId: {type: String},
   // Active Status
   isActive: { type: Boolean, default: true, index: true },

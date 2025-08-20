@@ -3,8 +3,9 @@ const mongoose = require('mongoose');
 const contactSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: true,
-    trim: true
+    required: false,
+    trim: true,
+    default: ''
   },
   phone: {
     type: String,
@@ -14,7 +15,8 @@ const contactSchema = new mongoose.Schema({
   email: {
     type: String,
     trim: true,
-    lowercase: true
+    lowercase: true,
+    default: ''
   },
   createdAt: {
     type: Date,

@@ -125,6 +125,7 @@ const verifyAdminToken = async (req, res, next) => {
     
     // Add admin to request object
     req.admin = admin;
+    req.adminId = String(decoded.id); // Also set adminId for consistency
     next();
   } catch (error) {
     next();
@@ -151,6 +152,7 @@ const verifyAdminTokenOnlyForRegister = async (req, res, next) => {
     
     // Add admin to request object
     req.admin = admin;
+    req.adminId = String(decoded.id); // Also set adminId for consistency
     next();
   } catch (error) {
     next();
@@ -418,6 +420,7 @@ const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
         return res.status(401).json({ success: false, error: 'Client not found' });
       }
       req.clientId = String(client._id);
+      req.clientUserId = String(client.userId); // Store the client's userId for reference
       req.user = { id: client._id, userType: 'client', email: client.email };
       return next();
     }
@@ -430,10 +433,13 @@ const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
           return res.status(404).json({ success: false, error: 'Client not found' });
         }
         req.clientId = String(client._id);
+        req.clientUserId = String(client.userId); // Store the client's userId for reference
       } else {
-        // Allow admin without client context; routes must handle missing req.clientId
+        // Allow admin without client context - clientId is optional for admin tokens
         req.clientId = undefined;
+        req.clientUserId = undefined;
       }
+      req.adminId = String(decoded.id); // Store admin ID
       req.user = { id: decoded.id, userType: 'admin' };
       return next();
     }
