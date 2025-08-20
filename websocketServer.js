@@ -152,15 +152,16 @@ class VoiceChatWebSocketServer {
       const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       connection.sessionId = sessionId;
       
-      // Create a new user for this session
-      const user = new User({
-        clientId: extraData.clientId,
-        sessionId: sessionId,
-        conversations: []
-      });
-      await user.save();
-      
-      connection.user = user;
+      // Disable DB user creation (no mobile/registration saving)
+      connection.user = {
+        _id: null,
+        getConversationHistory: () => [],
+        addMessage: async () => {},
+        shouldPromptForRegistration: () => false,
+        isRegistered: false,
+        updateRegistration: async () => {},
+        incrementRegistrationAttempts: async () => {}
+      };
       
       // Send start confirmation
       connection.ws.send(JSON.stringify({
@@ -302,14 +303,7 @@ class VoiceChatWebSocketServer {
         const text = transcript.trim();
         if (text && text !== connection.lastFinalText) {
           connection.lastFinalText = text;
-          // Record in conversation
-          await connection.user.addMessage(
-            connection.agent._id,
-            connection.agent.agentName,
-            'user',
-            text,
-            null
-          );
+          // Conversation persistence disabled
 
           // Inform UI as conversation message
           connection.ws.send(JSON.stringify({
@@ -349,14 +343,7 @@ class VoiceChatWebSocketServer {
           timestamp: new Date().toISOString()
         }));
 
-        // Persist
-        await connection.user.addMessage(
-          connection.agent._id,
-          connection.agent.agentName,
-          'assistant',
-          aiResponse.text,
-          null
-        );
+        // Persist disabled (no DB writes)
 
         // TTS and stream back
         const audioResponse = await this.textToSpeech(aiResponse.text, connection.agent.voiceSelection, connectionId);
@@ -450,14 +437,7 @@ class VoiceChatWebSocketServer {
       const greeting = connection.agent.firstMessage || "Hello! How can I help you today?";
       this.sendLog(connectionId, 'info', 'Sending initial greeting', { greeting });
       
-      // Add system message to conversation
-      await connection.user.addMessage(
-        connection.agent._id,
-        connection.agent.agentName,
-        'system',
-        greeting,
-        null
-      );
+      // Conversation persistence disabled
       
       // Convert greeting to speech
       const audioGreeting = await this.textToSpeech(greeting, connection.agent.voiceSelection, connectionId);
@@ -573,13 +553,7 @@ class VoiceChatWebSocketServer {
       // Add current user message
       messages.push({ role: 'user', content: userMessage });
       
-      // Check if user should be prompted for registration
-      const shouldPrompt = connection.user.shouldPromptForRegistration();
-      
-      if (shouldPrompt && !connection.user.isRegistered) {
-        const registrationPrompt = `The user is being asked for registration. Extract their name and mobile number from their response: "${userMessage}".\n\nInstructions:\n1. Look for a name (usually after "my name is", "I'm", "I am", "call me")\n2. Look for a mobile number (10-12 digits)\n3. If both are found, respond with: "Thank you! I've got your details. How can I help you today?"\n4. If only name is found, ask: "Thank you for your name. Could you also provide your mobile number?"\n5. If only mobile is found, ask: "Thank you for your mobile number. Could you also provide your name?"\n6. If neither is found, ask: "I didn't catch that completely. Could you please tell me your full name and mobile number?"\n\nBe natural and conversational in your response.`;
-        messages.push({ role: 'system', content: registrationPrompt });
-      }
+      // Registration prompt disabled
       this.sendLog(connectionId, 'info', 'Calling OpenAI with messages', { count: messages.length });
       
       // Call OpenAI API
