@@ -10,6 +10,14 @@ const campaignSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  category: {
+    type: String,
+    trim: true
+  },
+  agent: [{
+    type: String,
+    trim: true
+  }],
   groupIds: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group'
@@ -18,19 +26,6 @@ const campaignSchema = new mongoose.Schema({
     type: String,
     required: true,
     index: true
-  },
-  startDate: {
-    type: Date,
-    required: true
-  },
-  endDate: {
-    type: Date,
-    required: true
-  },
-  status: {
-    type: String,
-    enum: [ 'active', 'expired'],
-    default: 'active'
   },
   // Array to store all unique IDs from campaign calls
   uniqueIds: [{

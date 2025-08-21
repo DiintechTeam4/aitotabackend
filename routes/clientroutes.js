@@ -1280,25 +1280,10 @@ router.get('/campaigns', extractClientId, async (req, res) => {
 // Create new campaign
 router.post('/campaigns', extractClientId, async (req, res) => {
   try {
-    const { name, description, groupIds, startDate, endDate } = req.body;
+    const { name, description, groupIds, category, agent } = req.body;
     
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Campaign name is required' });
-    }
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({ error: 'Start date and end date are required' });
-    }
-
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      return res.status(400).json({ error: 'Invalid date format' });
-    }
-
-    if (start >= end) {
-      return res.status(400).json({ error: 'End date must be after start date' });
     }
 
     // Check for duplicate campaign name within the same client
@@ -1310,13 +1295,24 @@ router.post('/campaigns', extractClientId, async (req, res) => {
       return res.status(400).json({ error: 'Campaign name already exists' });
     }
 
+    let agentArray = [];
+    if (Array.isArray(agent)) {
+      agentArray = agent
+        .filter((v) => typeof v === 'string')
+        .map((v) => v.trim())
+        .filter(Boolean);
+    } else if (typeof agent === 'string') {
+      const val = agent.trim();
+      agentArray = val ? [val] : [];
+    }
+
     const campaign = new Campaign({
       name: name.trim(),
       description: description?.trim() || '',
       groupIds: groupIds || [],
       clientId: req.clientId,
-      startDate: start,
-      endDate: end
+      category: category?.trim() || '',
+      agent: agentArray
     });
 
     await campaign.save();
@@ -1345,52 +1341,52 @@ router.get('/campaigns/:id', extractClientId, async (req, res) => {
 // Update campaign
 router.put('/campaigns/:id', extractClientId, async (req, res) => {
   try {
-    const { name, description, groupIds, startDate, endDate } = req.body;
-    
-    if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'Campaign name is required' });
-    }
+    const { name, description, groupIds, category, agent } = req.body;
 
     // Check for duplicate campaign name within the same client (excluding current campaign)
-    const campaignNameMatch = await Campaign.findOne({
-      name: { $regex: name.trim(), $options: 'i' },
-      clientId: req.clientId,
-      _id: { $ne: req.params.id }
-    });
-    if (campaignNameMatch) {
-      return res.status(400).json({ error: 'Campaign name already exists' });
+    if (name && name.trim()) {
+      const campaignNameMatch = await Campaign.findOne({
+        name: { $regex: name.trim(), $options: 'i' },
+        clientId: req.clientId,
+        _id: { $ne: req.params.id }
+      });
+      if (campaignNameMatch) {
+        return res.status(400).json({ error: 'Campaign name already exists' });
+      }
     }
 
     const updateData = {
-      name: name.trim(),
-      description: description?.trim() || '',
       updatedAt: new Date()
     };
+
+    if (name !== undefined && name.trim()) {
+      updateData.name = name.trim();
+    }
+
+    if (description !== undefined) {
+      updateData.description = description?.trim() || '';
+    }
 
     if (groupIds !== undefined) {
       updateData.groupIds = groupIds;
     }
 
-    // Handle date updates
-    if (startDate) {
-      const start = new Date(startDate);
-      if (isNaN(start.getTime())) {
-        return res.status(400).json({ error: 'Invalid start date format' });
-      }
-      updateData.startDate = start;
+    if (category !== undefined) {
+      updateData.category = category?.trim() || '';
     }
 
-    if (endDate) {
-      const end = new Date(endDate);
-      if (isNaN(end.getTime())) {
-        return res.status(400).json({ error: 'Invalid end date format' });
+    if (agent !== undefined) {
+      if (Array.isArray(agent)) {
+        updateData.agent = agent
+          .filter((v) => typeof v === 'string')
+          .map((v) => v.trim())
+          .filter(Boolean);
+      } else if (typeof agent === 'string') {
+        const val = agent.trim();
+        updateData.agent = val ? [val] : [];
+      } else {
+        updateData.agent = [];
       }
-      updateData.endDate = end;
-    }
-
-    // Validate date range if both dates are provided
-    if (updateData.startDate && updateData.endDate && updateData.startDate >= updateData.endDate) {
-      return res.status(400).json({ error: 'End date must be after start date' });
     }
 
     const campaign = await Campaign.findOneAndUpdate(
@@ -1402,10 +1398,6 @@ router.put('/campaigns/:id', extractClientId, async (req, res) => {
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found' });
     }
-
-    // Update status based on new dates
-    campaign.updateStatus();
-    await campaign.save();
 
     res.json({ success: true, data: campaign });
   } catch (error) {
