@@ -1271,13 +1271,7 @@ router.get('/campaigns', extractClientId, async (req, res) => {
       .populate('groupIds', 'name description')
       .sort({ createdAt: -1 });
     
-    // Update status for each campaign based on current date
-    const updatedCampaigns = campaigns.map(campaign => {
-      campaign.updateStatus();
-      return campaign;
-    });
-    
-    res.json({ success: true, data: updatedCampaigns });
+    res.json({ success: true, data: campaigns });
   } catch (error) {
     console.error('Error fetching campaigns:', error);
     res.status(500).json({ error: 'Failed to fetch campaigns' });
