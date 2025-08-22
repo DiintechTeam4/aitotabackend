@@ -42,9 +42,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       uuid: clientId || "client-uuid-001",
       custom_param: {
         uniqueid: uniqueId,
-        campaignId: campaignId.toString(),
-        agentId: agentId,
-        contactId: contact._id.toString()
+        name: contact.name
       },
       resFormat: 3,
     };

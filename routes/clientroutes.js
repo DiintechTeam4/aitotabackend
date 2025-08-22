@@ -1581,13 +1581,39 @@ router.get('/campaigns/:id/call-logs', extractClientId, async (req, res) => {
       .populate('agentId', 'agentName')
       .lean();
 
+    // Build placeholders for uniqueIds without logs
+    const loggedUniqueIds = new Set(
+      (logs || [])
+        .map(l => l && l.metadata && l.metadata.customParams && l.metadata.customParams.uniqueid)
+        .filter(Boolean)
+    );
+    const missingUniqueIds = uniqueIds.filter(uid => !loggedUniqueIds.has(uid));
+
+    const placeholderLogs = missingUniqueIds.map(uid => ({
+      _id: new mongoose.Types.ObjectId(),
+      clientId: req.clientId,
+      campaignId: { _id: campaign._id, name: campaign.name },
+      agentId: null,
+      mobile: null,
+      duration: 0,
+      callType: 'outbound',
+      leadStatus: 'not_connected',
+      statusText: 'Not Accepted / Busy / Disconnected',
+      createdAt: null,
+      time: null,
+      metadata: { customParams: { uniqueid: uid }, isActive: false }
+    }));
+
+    const allLogs = [...logs, ...placeholderLogs];
+
     return res.json({
       success: true,
-      data: logs,
+      data: allLogs,
       campaign: {
         _id: campaign._id,
         name: campaign.name,
-        uniqueIdsCount: uniqueIds.length
+        uniqueIdsCount: uniqueIds.length,
+        missingUniqueIdsCount: missingUniqueIds.length
       },
       pagination: {
         currentPage: page,
@@ -2944,19 +2970,19 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
       return res.status(400).json({ success: false, error: 'No contacts in campaign to call' });
     }
 
-    if (!agentId) {
-      return res.status(400).json({ success: false, error: 'Agent ID is required' });
-    }
-
     // Check if campaign is already running
     if (campaign.isRunning) {
       return res.status(400).json({ success: false, error: 'Campaign is already running' });
     }
 
-    // Get client API key
-    const apiKey = await getClientApiKey(req.clientId);
+    // Resolve API key from Agent instead of Client
+    const agent = await Agent.findById(agentId).lean();
+    if (!agent) {
+      return res.status(404).json({ success: false, error: 'Agent not found' });
+    }
+    const apiKey = agent.X_API_KEY || '';
     if (!apiKey) {
-      return res.status(400).json({ success: false, error: 'No API key found for client' });
+      return res.status(400).json({ success: false, error: 'No API key found on agent' });
     }
 
     // Update campaign status
@@ -3047,35 +3073,69 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
 router.post('/campaigns/:id/make-call', extractClientId, async (req, res) => {
   try {
     const { id } = req.params;
-    const { contactId, agentId } = req.body;
+    const { agentId, delayBetweenCalls = 2000 } = req.body;
 
     const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
     if (!campaign) {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    const contact = campaign.contacts.find(c => c._id.toString() === contactId);
-    if (!contact) {
-      return res.status(404).json({ success: false, error: 'Contact not found in campaign' });
+    if (!agentId) {
+      return res.status(400).json({ success: false, error: 'Agent ID is required' });
     }
 
-    // Get client API key
-    const apiKey = await getClientApiKey(req.clientId);
+    if (!Array.isArray(campaign.contacts) || campaign.contacts.length === 0) {
+      return res.status(400).json({ success: false, error: 'No contacts found in campaign' });
+    }
+
+    // Get API key from Agent
+    const agent = await Agent.findById(agentId).lean();
+    if (!agent) {
+      return res.status(404).json({ success: false, error: 'Agent not found' });
+    }
+    const apiKey = agent.X_API_KEY;
     if (!apiKey) {
-      return res.status(400).json({ success: false, error: 'No API key found for client' });
+      return res.status(400).json({ success: false, error: 'No API key found on agent' });
     }
 
-    // Make the call
-    const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, req.clientId);
+    // Make calls to all contacts in this campaign
+    const results = [];
+    for (let i = 0; i < campaign.contacts.length; i++) {
+      const contact = campaign.contacts[i];
+      const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, req.clientId);
+      results.push(callResult);
+
+      // Persist uniqueId on success
+      if (callResult && callResult.success && callResult.uniqueId) {
+        if (!Array.isArray(campaign.uniqueIds)) {
+          campaign.uniqueIds = [];
+        }
+        if (!campaign.uniqueIds.includes(callResult.uniqueId)) {
+          campaign.uniqueIds.push(callResult.uniqueId);
+          await campaign.save();
+        }
+      }
+      if (i < campaign.contacts.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, delayBetweenCalls));
+      }
+    }
+
+    const successful = results.filter(r => r.success).length;
+    const failed = results.length - successful;
 
     res.json({
       success: true,
-      data: callResult
+      data: {
+        total: results.length,
+        successful,
+        failed,
+        results
+      }
     });
 
   } catch (error) {
-    console.error('Error making single call:', error);
-    res.status(500).json({ success: false, error: 'Failed to make call' });
+    console.error('Error making calls for campaign:', error);
+    res.status(500).json({ success: false, error: 'Failed to make calls for campaign' });
   }
 });
 
