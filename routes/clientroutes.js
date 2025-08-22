@@ -20,6 +20,13 @@ const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
 const User = require('../models/User'); // Added User model import
 const { generateBusinessHash } = require('../utils/hashUtils');
+const {
+  getClientApiKey,
+  makeSingleCall,
+  startCampaignCalling,
+  stopCampaignCalling,
+  getCampaignCallingProgress
+} = require('../services/campaignCallingService');
 
 
 const clientApiService = new ClientApiService()
@@ -1280,7 +1287,7 @@ router.get('/campaigns', extractClientId, async (req, res) => {
 // Create new campaign
 router.post('/campaigns', extractClientId, async (req, res) => {
   try {
-    const { name, description, groupIds, category, agent } = req.body;
+    const { name, description, groupIds, category, agent, isRunning } = req.body;
     
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Campaign name is required' });
@@ -2925,6 +2932,156 @@ router.patch('/agents/:agentId/toggle-active', async (req, res) => {
       message: 'Failed to toggle agent status',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
+  }
+});
+
+// Start campaign calling process
+router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { agentId, delayBetweenCalls = 2000 } = req.body;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    if (!campaign.contacts || campaign.contacts.length === 0) {
+      return res.status(400).json({ success: false, error: 'No contacts in campaign to call' });
+    }
+
+    if (!agentId) {
+      return res.status(400).json({ success: false, error: 'Agent ID is required' });
+    }
+
+    // Check if campaign is already running
+    if (campaign.isRunning) {
+      return res.status(400).json({ success: false, error: 'Campaign is already running' });
+    }
+
+    // Get client API key
+    const apiKey = await getClientApiKey(req.clientId);
+    if (!apiKey) {
+      return res.status(400).json({ success: false, error: 'No API key found for client' });
+    }
+
+    // Update campaign status
+    campaign.isRunning = true;
+    await campaign.save();
+
+    // Start calling process in background
+    startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, req.clientId);
+
+    res.json({
+      success: true,
+      message: 'Campaign calling started',
+      data: {
+        campaignId: campaign._id,
+        totalContacts: campaign.contacts.length,
+        status: 'started'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error starting campaign calling:', error);
+    res.status(500).json({ success: false, error: 'Failed to start campaign calling' });
+  }
+});
+
+// Stop campaign calling process
+router.post('/campaigns/:id/stop-calling', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Update campaign status
+    campaign.isRunning = false;
+    await campaign.save();
+
+    // Stop the calling process
+    stopCampaignCalling(campaign._id.toString());
+
+    res.json({
+      success: true,
+      message: 'Campaign calling stopped',
+      data: {
+        campaignId: campaign._id,
+        status: 'stopped'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error stopping campaign calling:', error);
+    res.status(500).json({ success: false, error: 'Failed to stop campaign calling' });
+  }
+});
+
+// Get campaign calling status
+router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Get calling progress from memory
+    const callingProgress = getCampaignCallingProgress(campaign._id.toString());
+
+    res.json({
+      success: true,
+      data: {
+        campaignId: campaign._id,
+        isRunning: campaign.isRunning,
+        totalContacts: campaign.contacts.length,
+        progress: callingProgress
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting campaign calling status:', error);
+    res.status(500).json({ success: false, error: 'Failed to get campaign calling status' });
+  }
+});
+
+// Make single call (for testing or manual calls)
+router.post('/campaigns/:id/make-call', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contactId, agentId } = req.body;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const contact = campaign.contacts.find(c => c._id.toString() === contactId);
+    if (!contact) {
+      return res.status(404).json({ success: false, error: 'Contact not found in campaign' });
+    }
+
+    // Get client API key
+    const apiKey = await getClientApiKey(req.clientId);
+    if (!apiKey) {
+      return res.status(400).json({ success: false, error: 'No API key found for client' });
+    }
+
+    // Make the call
+    const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, req.clientId);
+
+    res.json({
+      success: true,
+      data: callResult
+    });
+
+  } catch (error) {
+    console.error('Error making single call:', error);
+    res.status(500).json({ success: false, error: 'Failed to make call' });
   }
 });
 
