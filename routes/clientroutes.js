@@ -337,6 +337,7 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
   }
 });
 
+
 // Update agent with multiple starting messages and default selection
 router.put('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
@@ -1541,93 +1542,118 @@ router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
 });
 
 // Get call logs for a campaign using stored uniqueIds
-router.get('/campaigns/:id/call-logs', extractClientId, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const page = parseInt(req.query.page || '1', 10);
-    const limit = parseInt(req.query.limit || '50', 10);
-    const sortBy = req.query.sortBy || 'createdAt';
-    const sortOrder = (req.query.sortOrder || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+// router.get('/campaigns/:id/call-logs', extractClientId, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const page = parseInt(req.query.page || '1', 10);
+//     const limit = parseInt(req.query.limit || '50', 10);
+//     const sortBy = req.query.sortBy || 'createdAt';
+//     const sortOrder = (req.query.sortOrder || 'desc').toLowerCase() === 'asc' ? 1 : -1;
 
-    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
-    }
+//     const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+//     if (!campaign) {
+//       return res.status(404).json({ success: false, error: 'Campaign not found' });
+//     }
 
-    const uniqueIds = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
-    if (uniqueIds.length === 0) {
-      return res.json({
-        success: true,
-        data: [],
-        campaign: { _id: campaign._id, name: campaign.name, uniqueIdsCount: 0 },
-        pagination: { currentPage: page, totalPages: 0, totalLogs: 0, hasNextPage: false, hasPrevPage: false }
-      });
-    }
+//     // If a specific documentId is provided, return only its logs (convenience path)
+//     const documentId = req.query.documentId;
+//     if (documentId) {
+//       if (!Array.isArray(campaign.uniqueIds) || !campaign.uniqueIds.includes(documentId)) {
+//         return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
+//       }
 
-    const query = {
-      clientId: req.clientId,
-      'metadata.customParams.uniqueid': { $in: uniqueIds }
-    };
+//       const logsByDoc = await CallLog.find({
+//         clientId: req.clientId,
+//         campaignId: campaign._id,
+//         'metadata.customParams.uniqueid': documentId
+//       })
+//         .sort({ createdAt: sortOrder })
+//         .populate('campaignId', 'name description')
+//         .populate('agentId', 'agentName')
+//         .lean();
 
-    const totalLogs = await CallLog.countDocuments(query);
-    const skip = (page - 1) * limit;
-    const sortSpec = { [sortBy]: sortOrder };
+//       return res.json({
+//         success: true,
+//         data: logsByDoc,
+//         campaign: { _id: campaign._id, name: campaign.name },
+//         documentId
+//       });
+//     }
 
-    const logs = await CallLog.find(query)
-      .sort(sortSpec)
-      .skip(skip)
-      .limit(limit)
-      .populate('campaignId', 'name description')
-      .populate('agentId', 'agentName')
-      .lean();
+//     const uniqueIds = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
+//     if (uniqueIds.length === 0) {
+//       return res.json({
+//         success: true,
+//         data: [],
+//         campaign: { _id: campaign._id, name: campaign.name, uniqueIdsCount: 0 },
+//         pagination: { currentPage: page, totalPages: 0, totalLogs: 0, hasNextPage: false, hasPrevPage: false }
+//       });
+//     }
 
-    // Build placeholders for uniqueIds without logs
-    const loggedUniqueIds = new Set(
-      (logs || [])
-        .map(l => l && l.metadata && l.metadata.customParams && l.metadata.customParams.uniqueid)
-        .filter(Boolean)
-    );
-    const missingUniqueIds = uniqueIds.filter(uid => !loggedUniqueIds.has(uid));
+//     const query = {
+//       clientId: req.clientId,
+//       'metadata.customParams.uniqueid': { $in: uniqueIds }
+//     };
 
-    const placeholderLogs = missingUniqueIds.map(uid => ({
-      _id: new mongoose.Types.ObjectId(),
-      clientId: req.clientId,
-      campaignId: { _id: campaign._id, name: campaign.name },
-      agentId: null,
-      mobile: null,
-      duration: 0,
-      callType: 'outbound',
-      leadStatus: 'not_connected',
-      statusText: 'Not Accepted / Busy / Disconnected',
-      createdAt: null,
-      time: null,
-      metadata: { customParams: { uniqueid: uid }, isActive: false }
-    }));
+//     const totalLogs = await CallLog.countDocuments(query);
+//     const skip = (page - 1) * limit;
+//     const sortSpec = { [sortBy]: sortOrder };
 
-    const allLogs = [...logs, ...placeholderLogs];
+//     const logs = await CallLog.find(query)
+//       .sort(sortSpec)
+//       .skip(skip)
+//       .limit(limit)
+//       .populate('campaignId', 'name description')
+//       .populate('agentId', 'agentName')
+//       .lean();
 
-    return res.json({
-      success: true,
-      data: allLogs,
-      campaign: {
-        _id: campaign._id,
-        name: campaign.name,
-        uniqueIdsCount: uniqueIds.length,
-        missingUniqueIdsCount: missingUniqueIds.length
-      },
-      pagination: {
-        currentPage: page,
-        totalPages: Math.ceil(totalLogs / limit),
-        totalLogs,
-        hasNextPage: skip + logs.length < totalLogs,
-        hasPrevPage: page > 1
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching campaign call logs:', error);
-    return res.status(500).json({ success: false, error: 'Failed to fetch campaign call logs' });
-  }
-});
+//     // Build placeholders for uniqueIds without logs
+//     const loggedUniqueIds = new Set(
+//       (logs || [])
+//         .map(l => l && l.metadata && l.metadata.customParams && l.metadata.customParams.uniqueid)
+//         .filter(Boolean)
+//     );
+//     const missingUniqueIds = uniqueIds.filter(uid => !loggedUniqueIds.has(uid));
+
+//     const placeholderLogs = missingUniqueIds.map(uid => ({
+//       _id: new mongoose.Types.ObjectId(),
+//       clientId: req.clientId,
+//       campaignId: { _id: campaign._id, name: campaign.name },
+//       agentId: null,
+//       mobile: null,
+//       duration: 0,
+//       callType: 'outbound',
+//       leadStatus: 'not_connected',
+//       statusText: 'Not Accepted / Busy / Disconnected',
+//       createdAt: null,
+//       time: null,
+//       metadata: { customParams: { uniqueid: uid }, isActive: false }
+//     }));
+
+//     const allLogs = [...logs, ...placeholderLogs];
+
+//     return res.json({
+//       success: true,
+//       data: allLogs,
+//       campaign: {
+//         _id: campaign._id,
+//         name: campaign.name,
+//         uniqueIdsCount: uniqueIds.length,
+//         missingUniqueIdsCount: missingUniqueIds.length
+//       },
+//       pagination: {
+//         currentPage: page,
+//         totalPages: Math.ceil(totalLogs / limit),
+//         totalLogs,
+//         hasNextPage: skip + logs.length < totalLogs,
+//         hasPrevPage: page > 1
+//       }
+//     });
+//   } catch (error) {
+//     console.error('Error fetching campaign call logs:', error);
+//     return res.status(500).json({ success: false, error: 'Failed to fetch campaign call logs' });
+//   }
+// });
 
 // GET campaign contacts
 router.get('/campaigns/:id/contacts', extractClientId, async (req, res) => {
@@ -1782,6 +1808,125 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
   } catch (error) {
     console.error('Error syncing contacts from groups:', error);
     res.status(500).json({ success: false, error: 'Failed to sync contacts from groups' });
+  }
+});
+
+// Get minimal leads list for a campaign: documentId, number, name, leadStatus
+router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = parseInt(req.query.page || '1', 10);
+    const limit = parseInt(req.query.limit || '50', 10);
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const uniqueIds = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
+    const totalItems = uniqueIds.length;
+
+    if (totalItems === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        campaign: { _id: campaign._id, name: campaign.name, uniqueIdsCount: 0 },
+        pagination: { currentPage: page, totalPages: 0, totalItems: 0, hasNextPage: false, hasPrevPage: false }
+      });
+    }
+
+    const skip = (page - 1) * limit;
+    const pagedUniqueIds = uniqueIds.slice(skip, skip + limit);
+
+    // Fetch logs for the paged uniqueIds and map latest log per id
+    const logs = await CallLog.find({
+      clientId: req.clientId,
+      'metadata.customParams.uniqueid': { $in: pagedUniqueIds }
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const latestLogByUid = new Map();
+    for (const log of logs) {
+      const uid = log && log.metadata && log.metadata.customParams && log.metadata.customParams.uniqueid;
+      if (uid && !latestLogByUid.has(uid)) {
+        latestLogByUid.set(uid, log);
+      }
+    }
+
+    const minimal = pagedUniqueIds.map(uid => {
+      const log = latestLogByUid.get(uid);
+      const name = log && (log.contactName || (log.metadata && log.metadata.customParams && log.metadata.customParams.name));
+      const number = log && (log.mobile || (log.metadata && log.metadata.callerId));
+      const leadStatus = (log && log.leadStatus) || 'not_connected';
+      return {
+        documentId: uid,
+        number: number || null,
+        name: name || null,
+        leadStatus
+      };
+    });
+
+    return res.json({
+      success: true,
+      data: minimal,
+      campaign: {
+        _id: campaign._id,
+        name: campaign.name,
+        uniqueIdsCount: totalItems
+      },
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalItems / limit),
+        totalItems,
+        hasNextPage: skip + pagedUniqueIds.length < totalItems,
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching minimal leads list:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch minimal leads list' });
+  }
+});
+
+
+// by-document via query on the original call-logs path; returns only transcript
+router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { documentId } = req.params;
+
+    if (!documentId) {
+      return res.status(400).json({ success: false, error: 'documentId query parameter is required' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    if (!Array.isArray(campaign.uniqueIds) || !campaign.uniqueIds.includes(documentId)) {
+      return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
+    }
+
+    // Relaxed filter: match by clientId and uniqueid only, to avoid campaignId mismatches
+    const latest = await CallLog.findOne({
+      clientId: req.clientId,
+      'metadata.customParams.uniqueid': documentId,
+      transcript: { $ne: '' }
+    })
+      .sort({ createdAt: -1 })
+      .select('transcript createdAt')
+      .lean();
+
+    return res.json({
+      success: true,
+      transcript: latest ? latest.transcript : '',
+      documentId
+    });
+  } catch (error) {
+    console.error('Error fetching transcript by documentId (alias route):', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch transcript' });
   }
 });
 
