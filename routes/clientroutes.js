@@ -671,8 +671,12 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
       };
     }
     
-    // Build the complete query
-    const query = { clientId, ...dateFilter };
+    // Build the complete query - filter for inbound calls only
+    const query = { 
+      clientId, 
+      'metadata.callDirection': "inbound",
+      ...dateFilter 
+    };
         
     const logs = await CallLog.find(query);
     const totalCalls = logs.length;
@@ -703,90 +707,8 @@ router.get('/inbound/report', extractClientId, async (req, res) => {
   }
 });
 
-// Inbound Logs/Conversation
-router.get('/inbound/logs', extractClientId, async (req, res) => {
-  try {
-    const clientId = req.clientId;
-    const { filter, startDate, endDate } = req.query;
-    
-    // Validate filter parameter
-    const allowedFilters = ['today', 'yesterday', 'last7days'];
-    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid filter parameter',
-        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
-        allowedFilters: allowedFilters
-      });
-    }
-    
-    // Build date filter based on parameters
-    let dateFilter = {};
-    
-    if (filter === 'today') {
-      const today = new Date();
-      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
-      dateFilter = {
-        createdAt: {
-          $gte: startOfDay,
-          $lte: endOfDay
-        }
-      };
-    } else if (filter === 'yesterday') {
-      const today = new Date();
-      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
-      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
-      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
-      dateFilter = {
-        createdAt: {
-          $gte: startOfYesterday,
-          $lte: endOfYesterday
-        }
-      };
-    } else if (filter === 'last7days') {
-      const today = new Date();
-      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
-      dateFilter = {
-        createdAt: {
-          $gte: sevenDaysAgo,
-          $lte: today
-        }
-      };
-    } else if (startDate && endDate) {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      dateFilter = {
-        createdAt: {
-          $gte: start,
-          $lte: end
-        }
-      };
-    }
-    
-    // Build the complete query
-    const query = { clientId, ...dateFilter};
-    const agentName = {}
-    
-    const clientName = await Client.findOne({ _id: clientId }).select('name');
-    const logs = await CallLog.find(query)
-      .sort({ createdAt: -1 })
-      .populate('agentId', 'agentName')
-      .lean();
-    const logsWithAgentName = logs.map(l => ({
-      ...l,
-      agentName: l.agentId && l.agentId.agentName ? l.agentId.agentName : null,
-    }));
-    res.json({success:'true', clientName: clientName ,data:logsWithAgentName});
-  } catch (error) {
-    console.error('Error in /inbound/logs:', error);
-    res.status(500).json({ error: 'Failed to fetch logs' });
-  }
-});
-
-// Outbound logs API
-router.get('/outbound/logs', extractClientId, async (req, res) => {
+// Outbound Report
+router.get('/outbound/report', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
     const { filter, startDate, endDate } = req.query;
@@ -850,20 +772,269 @@ router.get('/outbound/logs', extractClientId, async (req, res) => {
     // Build the complete query - filter for outbound calls only
     const query = { 
       clientId, 
-      callDirection: "outbound",
+      'metadata.callDirection': "outbound",
+      ...dateFilter 
+    };
+        
+    const logs = await CallLog.find(query);
+    const totalCalls = logs.length;
+    const totalConnected = logs.filter(l => l.leadStatus !== 'not_connected').length;
+    const totalNotConnected = logs.filter(l => l.leadStatus === 'not_connected').length;
+    const totalConversationTime = logs.reduce((sum, l) => sum + (l.duration || 0), 0);
+    const avgCallDuration = totalCalls ? totalConversationTime / totalCalls : 0;
+    
+    res.json({ 
+      success: true, 
+      data: {
+        clientId,
+        totalCalls, 
+        totalConnected, 
+        totalNotConnected, 
+        totalConversationTime, 
+        avgCallDuration 
+      },
+      filter: {
+        applied: filter || 'all',
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
+      }
+    });
+  } catch (error) {
+    console.error('Error in /outbound/report:', error);
+    res.status(500).json({ error: 'Failed to fetch report' });
+  }
+});
+
+// Inbound Logs/Conversation
+router.get('/inbound/logs', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { filter, startDate, endDate, page = 1, limit = 20 } = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        createdAt: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query - filter for inbound calls only
+    const query = { 
+      clientId, 
+      'metadata.callDirection': "inbound",
       ...dateFilter
     };
     
+    // Pagination parameters
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
     const clientName = await Client.findOne({ _id: clientId }).select('name');
+    
+    // Get total count for pagination
+    const totalCount = await CallLog.countDocuments(query);
+    
+    // Get paginated logs
     const logs = await CallLog.find(query)
       .sort({ createdAt: -1 })
       .populate('agentId', 'agentName')
+      .skip(skip)
+      .limit(limitNum)
       .lean();
+      
     const logsWithAgentName = logs.map(l => ({
       ...l,
       agentName: l.agentId && l.agentId.agentName ? l.agentId.agentName : null,
     }));
-    res.json({success:'true', clientName: clientName ,data:logsWithAgentName});
+    
+    // Calculate pagination info
+    const totalPages = Math.ceil(totalCount / limitNum);
+    const hasNextPage = pageNum < totalPages;
+    const hasPrevPage = pageNum > 1;
+    
+    res.json({
+      success: true, 
+      clientName: clientName,
+      data: logsWithAgentName,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: totalPages,
+        totalItems: totalCount,
+        itemsPerPage: limitNum,
+        hasNextPage: hasNextPage,
+        hasPrevPage: hasPrevPage,
+        nextPage: hasNextPage ? pageNum + 1 : null,
+        prevPage: hasPrevPage ? pageNum - 1 : null
+      }
+    });
+  } catch (error) {
+    console.error('Error in /inbound/logs:', error);
+    res.status(500).json({ error: 'Failed to fetch logs' });
+  }
+});
+
+// Outbound logs API
+router.get('/outbound/logs', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { filter, startDate, endDate, page = 1, limit = 20 } = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        createdAt: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query - filter for outbound calls only
+    const query = { 
+      clientId, 
+      'metadata.callDirection': "outbound",
+      ...dateFilter
+    };
+    
+    // Pagination parameters
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const clientName = await Client.findOne({ _id: clientId }).select('name');
+    
+    // Get total count for pagination
+    const totalCount = await CallLog.countDocuments(query);
+    
+    // Get paginated logs
+    const logs = await CallLog.find(query)
+      .sort({ createdAt: -1 })
+      .populate('agentId', 'agentName')
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+      
+    const logsWithAgentName = logs.map(l => ({
+      ...l,
+      agentName: l.agentId && l.agentId.agentName ? l.agentId.agentName : null,
+    }));
+    
+    // Calculate pagination info
+    const totalPages = Math.ceil(totalCount / limitNum);
+    const hasNextPage = pageNum < totalPages;
+    const hasPrevPage = pageNum > 1;
+    
+    res.json({
+      success: true, 
+      clientName: clientName,
+      data: logsWithAgentName,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: totalPages,
+        totalItems: totalCount,
+        itemsPerPage: limitNum,
+        hasNextPage: hasNextPage,
+        hasPrevPage: hasPrevPage,
+        nextPage: hasNextPage ? pageNum + 1 : null,
+        prevPage: hasPrevPage ? pageNum - 1 : null
+      }
+    });
   } catch (error) {
     console.error('Error in /outbound/logs:', error);
     res.status(500).json({ error: 'Failed to fetch logs' });
@@ -932,8 +1103,12 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
       };
     }
     
-    // Build the complete query
-    const query = { clientId, ...dateFilter };    
+    // Build the complete query - filter for inbound calls only
+    const query = { 
+      clientId, 
+      'metadata.callDirection': "inbound",
+      ...dateFilter 
+    };    
     const logs = await CallLog.find(query).sort({ createdAt: -1 });
     
     // Group leads according to the new leadStatus structure
@@ -1014,6 +1189,154 @@ router.get('/inbound/leads', extractClientId, async (req, res) => {
   }
 });
 
+// Outbound Leads
+router.get('/outbound/leads', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { filter, startDate, endDate } = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        createdAt: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query - filter for outbound calls only
+    const query = { 
+      clientId, 
+      'metadata.callDirection': "outbound",
+      ...dateFilter 
+    };    
+    const logs = await CallLog.find(query).sort({ createdAt: -1 });
+    
+    // Group leads according to the new leadStatus structure
+    const leads = {
+      // Connected - Interested
+      veryInterested: {
+        data: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'very_interested'),
+        count: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'very_interested').length
+      },
+      maybe: {
+        data: logs.filter(l => l.leadStatus === 'maybe' || l.leadStatus === 'medium'),
+        count: logs.filter(l => l.leadStatus === 'maybe' || l.leadStatus === 'medium').length
+      },
+      enrolled: {
+        data: logs.filter(l => l.leadStatus === 'enrolled'),
+        count: logs.filter(l => l.leadStatus === 'enrolled').length
+      },
+      
+      // Connected - Not Interested
+      junkLead: {
+        data: logs.filter(l => l.leadStatus === 'junk_lead'),
+        count: logs.filter(l => l.leadStatus === 'junk_lead').length
+      },
+      notRequired: {
+        data: logs.filter(l => l.leadStatus === 'not_required'),
+        count: logs.filter(l => l.leadStatus === 'not_required').length
+      },
+      enrolledOther: {
+        data: logs.filter(l => l.leadStatus === 'enrolled_other'),
+        count: logs.filter(l => l.leadStatus === 'enrolled_other').length
+      },
+      decline: {
+        data: logs.filter(l => l.leadStatus === 'decline'),
+        count: logs.filter(l => l.leadStatus === 'decline').length
+      },
+      notEligible: {
+        data: logs.filter(l => l.leadStatus === 'not_eligible'),
+        count: logs.filter(l => l.leadStatus === 'not_eligible').length
+      },
+      wrongNumber: {
+        data: logs.filter(l => l.leadStatus === 'wrong_number'),
+        count: logs.filter(l => l.leadStatus === 'wrong_number').length
+      },
+      
+      // Connected - Followup
+      hotFollowup: {
+        data: logs.filter(l => l.leadStatus === 'hot_followup'),
+        count: logs.filter(l => l.leadStatus === 'hot_followup').length
+      },
+      coldFollowup: {
+        data: logs.filter(l => l.leadStatus === 'cold_followup'),
+        count: logs.filter(l => l.leadStatus === 'cold_followup').length
+      },
+      schedule: {
+        data: logs.filter(l => l.leadStatus === 'schedule'),
+        count: logs.filter(l => l.leadStatus === 'schedule').length
+      },
+      
+      // Not Connected
+      notConnected: {
+        data: logs.filter(l => l.leadStatus === 'not_connected'),
+        count: logs.filter(l => l.leadStatus === 'not_connected').length
+      }
+    };
+
+    res.json({ 
+      success: true, 
+      data: leads,
+      filter: {
+        applied: filter || 'all',
+        startDate: dateFilter.createdAt?.$gte,
+        endDate: dateFilter.createdAt?.$lte
+      }
+    });
+  } catch (error) {
+    console.error('Error in /outbound/leads:', error);
+    res.status(500).json({ error: 'Failed to fetch leads' });
+  }
+});
+
 // Inbound Settings (GET/PUT)
 router.get('/inbound/settings', extractClientId, async (req, res) => {
   try {
@@ -1026,6 +1349,7 @@ router.get('/inbound/settings', extractClientId, async (req, res) => {
   }
 });
 
+//Inbound Settings
 router.put('/inbound/settings', extractClientId, async (req, res) => {
   try {
     const clientId = req.clientId;
@@ -1037,7 +1361,6 @@ router.put('/inbound/settings', extractClientId, async (req, res) => {
     res.status(500).json({ error: 'Failed to update settings' });
   }
 });
-
 // ==================== Sync Contacts =================
 
 // Bulk contact addition
