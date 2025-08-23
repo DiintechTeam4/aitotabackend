@@ -1635,6 +1635,36 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
       });
     }
 
+    // Function to normalize phone number for duplicate detection
+    const normalizePhoneNumber = (phoneNumber) => {
+      if (!phoneNumber) return '';
+      
+      // Convert to string and trim
+      let normalized = phoneNumber.toString().trim();
+      
+      // Remove all spaces, dashes, dots, and parentheses
+      normalized = normalized.replace(/[\s\-\.\(\)]/g, '');
+      
+      // Remove country codes (common patterns)
+      // Remove +91, +1, +44, etc. (any + followed by 1-3 digits)
+      normalized = normalized.replace(/^\+\d{1,3}/, '');
+      
+      // Remove leading zeros
+      normalized = normalized.replace(/^0+/, '');
+      
+      // If the number starts with 91 and is longer than 10 digits, remove 91
+      if (normalized.startsWith('91') && normalized.length > 10) {
+        normalized = normalized.substring(2);
+      }
+      
+      // If the number starts with 1 and is longer than 10 digits, remove 1
+      if (normalized.startsWith('1') && normalized.length > 10) {
+        normalized = normalized.substring(1);
+      }
+      
+      return normalized;
+    };
+
     const group = await Group.findOne({ _id: req.params.id, clientId: req.clientId });
     if (!group) {
       return res.status(404).json({ 
@@ -1643,8 +1673,15 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
       });
     }
 
-    // Check if phone number already exists in the group
-    const existingContact = group.contacts.find(contact => contact.phone === phone.trim());
+    // Normalize the input phone number
+    const normalizedInputPhone = normalizePhoneNumber(phone);
+    
+    // Check if normalized phone number already exists in the group
+    const existingContact = group.contacts.find(contact => {
+      const normalizedContactPhone = normalizePhoneNumber(contact.phone);
+      return normalizedContactPhone === normalizedInputPhone;
+    });
+    
     if (existingContact) {
       return res.status(409).json({ 
         success: false,
@@ -1655,13 +1692,14 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
           email: existingContact.email || '',
           createdAt: existingContact.createdAt
         },
-        message: `Phone number ${phone.trim()} is already assigned to contact "${existingContact.name}" in group "${group.name}"`
+        message: `Phone number ${phone.trim()} is already assigned to contact "${existingContact.name}" in group "${group.name}" (normalized: ${normalizedInputPhone})`
       });
     }
 
     const contact = {
       name: typeof name === 'string' ? name.trim() : '',
       phone: phone.trim(),
+      normalizedPhone: normalizedInputPhone, // Store normalized version for future comparisons
       email: typeof email === 'string' ? email.trim() : '',
       createdAt: new Date()
     };
@@ -2238,7 +2276,8 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
 
     // Find contacts to remove (contacts that are no longer in any group)
     for (const campaignContact of campaign.contacts) {
-      if (!validPhoneNumbers.has(campaignContact.phone)) {
+      const normalizedCampaignPhone = normalizePhoneNumber(campaignContact.phone);
+      if (!validPhoneNumbers.has(normalizedCampaignPhone)) {
         contactsToRemove.push(campaignContact);
       }
     }
@@ -2355,7 +2394,6 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
   }
 });
 
-
 // by-document via query on the original call-logs path; returns only transcript
 router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) => {
   try {
@@ -2393,6 +2431,120 @@ router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) 
   } catch (error) {
     console.error('Error fetching transcript by documentId (alias route):', error);
     return res.status(500).json({ success: false, error: 'Failed to fetch transcript' });
+  }
+});
+
+// Start campaign calling process
+router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { agentId, delayBetweenCalls = 2000 } = req.body;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    if (!campaign.contacts || campaign.contacts.length === 0) {
+      return res.status(400).json({ success: false, error: 'No contacts in campaign to call' });
+    }
+
+    // Check if campaign is already running
+    if (campaign.isRunning) {
+      return res.status(400).json({ success: false, error: 'Campaign is already running' });
+    }
+
+    // Resolve API key from Agent instead of Client
+    const agent = await Agent.findById(agentId).lean();
+    if (!agent) {
+      return res.status(404).json({ success: false, error: 'Agent not found' });
+    }
+    const apiKey = agent.X_API_KEY || '';
+    if (!apiKey) {
+      return res.status(400).json({ success: false, error: 'No API key found on agent' });
+    }
+
+    // Update campaign status
+    campaign.isRunning = true;
+    await campaign.save();
+
+    // Start calling process in background
+    startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, req.clientId);
+
+    res.json({
+      success: true,
+      message: 'Campaign calling started',
+      data: {
+        campaignId: campaign._id,
+        totalContacts: campaign.contacts.length,
+        status: 'started'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error starting campaign calling:', error);
+    res.status(500).json({ success: false, error: 'Failed to start campaign calling' });
+  }
+});
+
+// Stop campaign calling process
+router.post('/campaigns/:id/stop-calling', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Update campaign status
+    campaign.isRunning = false;
+    await campaign.save();
+
+    // Stop the calling process
+    stopCampaignCalling(campaign._id.toString());
+
+    res.json({
+      success: true,
+      message: 'Campaign calling stopped',
+      data: {
+        campaignId: campaign._id,
+        status: 'stopped'
+      }
+    });
+
+  } catch (error) {
+    console.error('Error stopping campaign calling:', error);
+    res.status(500).json({ success: false, error: 'Failed to stop campaign calling' });
+  }
+});
+
+// Get campaign calling status
+router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Get calling progress from memory
+    const callingProgress = getCampaignCallingProgress(campaign._id.toString());
+
+    res.json({
+      success: true,
+      data: {
+        campaignId: campaign._id,
+        isRunning: campaign.isRunning,
+        totalContacts: campaign.contacts.length,
+        progress: callingProgress
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting campaign calling status:', error);
+    res.status(500).json({ success: false, error: 'Failed to get campaign calling status' });
   }
 });
 
@@ -3566,189 +3718,6 @@ router.patch('/agents/:agentId/toggle-active', async (req, res) => {
   }
 });
 
-// Start campaign calling process
-router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { agentId, delayBetweenCalls = 2000 } = req.body;
-
-    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
-    }
-
-    if (!campaign.contacts || campaign.contacts.length === 0) {
-      return res.status(400).json({ success: false, error: 'No contacts in campaign to call' });
-    }
-
-    // Check if campaign is already running
-    if (campaign.isRunning) {
-      return res.status(400).json({ success: false, error: 'Campaign is already running' });
-    }
-
-    // Resolve API key from Agent instead of Client
-    const agent = await Agent.findById(agentId).lean();
-    if (!agent) {
-      return res.status(404).json({ success: false, error: 'Agent not found' });
-    }
-    const apiKey = agent.X_API_KEY || '';
-    if (!apiKey) {
-      return res.status(400).json({ success: false, error: 'No API key found on agent' });
-    }
-
-    // Update campaign status
-    campaign.isRunning = true;
-    await campaign.save();
-
-    // Start calling process in background
-    startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, req.clientId);
-
-    res.json({
-      success: true,
-      message: 'Campaign calling started',
-      data: {
-        campaignId: campaign._id,
-        totalContacts: campaign.contacts.length,
-        status: 'started'
-      }
-    });
-
-  } catch (error) {
-    console.error('Error starting campaign calling:', error);
-    res.status(500).json({ success: false, error: 'Failed to start campaign calling' });
-  }
-});
-
-// Stop campaign calling process
-router.post('/campaigns/:id/stop-calling', extractClientId, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
-    }
-
-    // Update campaign status
-    campaign.isRunning = false;
-    await campaign.save();
-
-    // Stop the calling process
-    stopCampaignCalling(campaign._id.toString());
-
-    res.json({
-      success: true,
-      message: 'Campaign calling stopped',
-      data: {
-        campaignId: campaign._id,
-        status: 'stopped'
-      }
-    });
-
-  } catch (error) {
-    console.error('Error stopping campaign calling:', error);
-    res.status(500).json({ success: false, error: 'Failed to stop campaign calling' });
-  }
-});
-
-// Get campaign calling status
-router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
-    }
-
-    // Get calling progress from memory
-    const callingProgress = getCampaignCallingProgress(campaign._id.toString());
-
-    res.json({
-      success: true,
-      data: {
-        campaignId: campaign._id,
-        isRunning: campaign.isRunning,
-        totalContacts: campaign.contacts.length,
-        progress: callingProgress
-      }
-    });
-
-  } catch (error) {
-    console.error('Error getting campaign calling status:', error);
-    res.status(500).json({ success: false, error: 'Failed to get campaign calling status' });
-  }
-});
-
-// Make single call (for testing or manual calls)
-router.post('/campaigns/:id/make-call', extractClientId, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { agentId, delayBetweenCalls = 2000 } = req.body;
-
-    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
-    }
-
-    if (!agentId) {
-      return res.status(400).json({ success: false, error: 'Agent ID is required' });
-    }
-
-    if (!Array.isArray(campaign.contacts) || campaign.contacts.length === 0) {
-      return res.status(400).json({ success: false, error: 'No contacts found in campaign' });
-    }
-
-    // Get API key from Agent
-    const agent = await Agent.findById(agentId).lean();
-    if (!agent) {
-      return res.status(404).json({ success: false, error: 'Agent not found' });
-    }
-    const apiKey = agent.X_API_KEY;
-    if (!apiKey) {
-      return res.status(400).json({ success: false, error: 'No API key found on agent' });
-    }
-
-    // Make calls to all contacts in this campaign
-    const results = [];
-    for (let i = 0; i < campaign.contacts.length; i++) {
-      const contact = campaign.contacts[i];
-      const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, req.clientId);
-      results.push(callResult);
-
-      // Persist uniqueId on success
-      if (callResult && callResult.success && callResult.uniqueId) {
-        if (!Array.isArray(campaign.uniqueIds)) {
-          campaign.uniqueIds = [];
-        }
-        if (!campaign.uniqueIds.includes(callResult.uniqueId)) {
-          campaign.uniqueIds.push(callResult.uniqueId);
-          await campaign.save();
-        }
-      }
-      if (i < campaign.contacts.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, delayBetweenCalls));
-      }
-    }
-
-    const successful = results.filter(r => r.success).length;
-    const failed = results.length - successful;
-
-    res.json({
-      success: true,
-      data: {
-        total: results.length,
-        successful,
-        failed,
-        results
-      }
-    });
-
-  } catch (error) {
-    console.error('Error making calls for campaign:', error);
-    res.status(500).json({ success: false, error: 'Failed to make calls for campaign' });
-  }
-});
 
 module.exports = router;
 
