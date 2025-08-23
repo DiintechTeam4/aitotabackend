@@ -1088,6 +1088,18 @@ router.post('/sync/contacts', extractClientId, async (req, res) => {
           }
         }
         
+        // Handle US numbers without + prefix (like 964-339-5853)
+        // If phone number is 10 digits and starts with common US area codes, assume it's US
+        if (!countryCode && cleanPhone.length === 10 && /^[2-9]\d{9}$/.test(cleanPhone)) {
+          countryCode = '+1';
+        }
+        
+        // Handle 11-digit US numbers starting with 1
+        if (!countryCode && cleanPhone.length === 11 && cleanPhone.startsWith('1')) {
+          countryCode = '+1';
+          cleanPhone = cleanPhone.substring(1);
+        }
+        
         // If phone starts with 0, remove it (common in many countries)
         if (cleanPhone.startsWith('0')) {
           cleanPhone = cleanPhone.substring(1);
