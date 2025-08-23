@@ -785,6 +785,91 @@ router.get('/inbound/logs', extractClientId, async (req, res) => {
   }
 });
 
+// Outbound logs API
+router.get('/outbound/logs', extractClientId, async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const { filter, startDate, endDate } = req.query;
+    
+    // Validate filter parameter
+    const allowedFilters = ['today', 'yesterday', 'last7days'];
+    if (filter && !allowedFilters.includes(filter) && (!startDate || !endDate)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid filter parameter',
+        message: `Filter must be one of: ${allowedFilters.join(', ')} or provide both startDate and endDate`,
+        allowedFilters: allowedFilters
+      });
+    }
+    
+    // Build date filter based on parameters
+    let dateFilter = {};
+    
+    if (filter === 'today') {
+      const today = new Date();
+      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfDay,
+          $lte: endOfDay
+        }
+      };
+    } else if (filter === 'yesterday') {
+      const today = new Date();
+      const yesterday = new Date(today.getTime() - (24 * 60 * 60 * 1000));
+      const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate());
+      const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: startOfYesterday,
+          $lte: endOfYesterday
+        }
+      };
+    } else if (filter === 'last7days') {
+      const today = new Date();
+      const sevenDaysAgo = new Date(today.getTime() - (7 * 24 * 60 * 60 * 1000));
+      dateFilter = {
+        createdAt: {
+          $gte: sevenDaysAgo,
+          $lte: today
+        }
+      };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter = {
+        createdAt: {
+          $gte: start,
+          $lte: end
+        }
+      };
+    }
+    
+    // Build the complete query - filter for outbound calls only
+    const query = { 
+      clientId, 
+      callDirection: "outbound",
+      ...dateFilter
+    };
+    
+    const clientName = await Client.findOne({ _id: clientId }).select('name');
+    const logs = await CallLog.find(query)
+      .sort({ createdAt: -1 })
+      .populate('agentId', 'agentName')
+      .lean();
+    const logsWithAgentName = logs.map(l => ({
+      ...l,
+      agentName: l.agentId && l.agentId.agentName ? l.agentId.agentName : null,
+    }));
+    res.json({success:'true', clientName: clientName ,data:logsWithAgentName});
+  } catch (error) {
+    console.error('Error in /outbound/logs:', error);
+    res.status(500).json({ error: 'Failed to fetch logs' });
+  }
+});
+
 // Inbound Leads
 router.get('/inbound/leads', extractClientId, async (req, res) => {
   try {
@@ -989,10 +1074,29 @@ router.post('/sync/contacts', extractClientId, async (req, res) => {
     for (let i = 0; i < contacts.length; i++) {
       const contact = contacts[i];
       try {
-        // Check if contact already exists
+        // Clean phone number: remove spaces and country code
+        let cleanPhone = contact.phone.trim().replace(/\s+/g, ''); // Remove all spaces
+        let countryCode = ''; // Default empty country code
+        
+        // Remove common country codes if present and save the country code
+        const countryCodes = ['+91', '+1', '+44', '+61', '+86', '+81', '+49', '+33', '+39', '+34', '+7', '+55', '+52', '+31', '+46', '+47', '+45', '+358', '+46', '+47', '+45', '+358'];
+        for (const code of countryCodes) {
+          if (cleanPhone.startsWith(code)) {
+            countryCode = code; // Save the country code
+            cleanPhone = cleanPhone.substring(code.length);
+            break;
+          }
+        }
+        
+        // If phone starts with 0, remove it (common in many countries)
+        if (cleanPhone.startsWith('0')) {
+          cleanPhone = cleanPhone.substring(1);
+        }
+        
+        // Check if contact already exists with cleaned phone
         const existingContact = await Contacts.findOne({ 
           clientId, 
-          phone: contact.phone.trim() 
+          phone: cleanPhone 
         });
 
         if (existingContact) {
@@ -1007,10 +1111,11 @@ router.post('/sync/contacts', extractClientId, async (req, res) => {
           continue;
         }
 
-        // Create new contact
+        // Create new contact with cleaned phone and country code
         const newContact = new Contacts({
           name: contact.name.trim(),
-          phone: contact.phone.trim(),
+          phone: cleanPhone,
+          countyCode: countryCode, // Save the country code
           email: contact.email?.trim() || '',
           clientId
         });
@@ -1770,10 +1875,16 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
     let totalContacts = 0;
     let totalGroups = groups.length;
     const newContacts = [];
+    const contactsToRemove = [];
 
+    // Collect all valid phone numbers from groups
+    const validPhoneNumbers = new Set();
+    
     for (const group of groups) {
       if (group.contacts && group.contacts.length > 0) {
         for (const groupContact of group.contacts) {
+          validPhoneNumbers.add(groupContact.phone);
+          
           // Check if phone number already exists in campaign contacts
           const existingContact = campaign.contacts.find(contact => contact.phone === groupContact.phone);
           if (!existingContact) {
@@ -1790,9 +1901,27 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
       }
     }
 
+    // Find contacts to remove (contacts that are no longer in any group)
+    for (const campaignContact of campaign.contacts) {
+      if (!validPhoneNumbers.has(campaignContact.phone)) {
+        contactsToRemove.push(campaignContact);
+      }
+    }
+
+    // Remove contacts that are no longer in groups
+    if (contactsToRemove.length > 0) {
+      campaign.contacts = campaign.contacts.filter(contact => 
+        !contactsToRemove.some(removedContact => removedContact.phone === contact.phone)
+      );
+    }
+
     // Add new contacts to campaign
     if (newContacts.length > 0) {
       campaign.contacts.push(...newContacts);
+    }
+
+    // Save campaign if there were any changes
+    if (newContacts.length > 0 || contactsToRemove.length > 0) {
       await campaign.save();
     }
 
@@ -1801,9 +1930,11 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
       data: {
         totalContacts: totalContacts,
         totalGroups: totalGroups,
-        newContactsAdded: newContacts.length
+        newContactsAdded: newContacts.length,
+        contactsRemoved: contactsToRemove.length,
+        totalContactsInCampaign: campaign.contacts.length
       },
-      message: `Synced ${newContacts.length} new contacts from ${totalGroups} groups`
+      message: `Synced ${newContacts.length} new contacts and removed ${contactsToRemove.length} contacts from ${totalGroups} groups`
     });
   } catch (error) {
     console.error('Error syncing contacts from groups:', error);

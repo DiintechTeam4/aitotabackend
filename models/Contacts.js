@@ -6,6 +6,10 @@ const contactSchema = new mongoose.Schema({
         require: true,
         trim: true
     },
+    countyCode:{
+        type: String,
+        trim: true
+    },
     phone:{
         type:String,
         require: true,
