@@ -13,6 +13,7 @@ function checkProfileCompleted(profile) {
     profile.city &&
     profile.state &&
     profile.website &&
+    profile.pancard &&
     profile.annualTurnover
   );
 }
