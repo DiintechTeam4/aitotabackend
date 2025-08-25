@@ -31,10 +31,35 @@ const campaignSchema = new mongoose.Schema({
     required: true,
     index: true
   },
-  // Array to store all unique IDs from campaign calls
-  uniqueIds: [{
-    type: String,
-    index: true
+  // Array to store detailed call information for campaign calls
+  details: [{
+    uniqueId: { 
+      type: String, 
+      required: true,
+      index: true 
+    },
+    contactId: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'Contact'
+      // Removed required: true to make it optional
+    },
+    time: { 
+      type: Date, 
+      default: Date.now 
+    },
+    status: { 
+      type: String, 
+      enum: ['ringing', 'ongoing', 'completed'], 
+      default: 'ringing' 
+    },
+    lastStatusUpdate: {
+      type: Date,
+      default: Date.now
+    },
+    callDuration: {
+      type: Number,
+      default: 0
+    }
   }],
   // Array to store campaign contacts (copied from groups but can be manipulated independently)
   contacts: [{
@@ -53,6 +78,9 @@ const campaignSchema = new mongoose.Schema({
     default: Date.now
   }
 });
+
+// Index for better performance on status queries
+campaignSchema.index({ 'details.status': 1 });
 
 // Ensure virtual fields are included when converting to JSON
 campaignSchema.set('toJSON', { virtuals: true });

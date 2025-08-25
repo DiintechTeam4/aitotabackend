@@ -22,10 +22,12 @@ const User = require('../models/User'); // Added User model import
 const { generateBusinessHash } = require('../utils/hashUtils');
 const {
   getClientApiKey,
-  makeSingleCall,
   startCampaignCalling,
   stopCampaignCalling,
-  getCampaignCallingProgress
+  getCampaignCallingProgress,
+  triggerManualStatusUpdate,
+  debugCallStatus,
+  migrateMissedToCompleted
 } = require('../services/campaignCallingService');
 
 
@@ -2002,16 +2004,36 @@ router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
       return res.status(404).json({ error: 'Campaign not found' });
     }
 
-    // Add unique ID if it doesn't already exist
-    if (!campaign.uniqueIds.includes(uniqueId)) {
-      campaign.uniqueIds.push(uniqueId);
+    // Add unique ID to campaign details if it doesn't already exist
+    const existingDetail = Array.isArray(campaign.details) && 
+      campaign.details.find(detail => detail.uniqueId === uniqueId);
+    
+    if (!existingDetail) {
+      const callDetail = {
+        uniqueId: uniqueId,
+        contactId: req.body.contactId || null,
+        time: new Date(),
+        status: 'ringing', // Start with 'ringing' status
+        lastStatusUpdate: new Date(),
+        callDuration: 0
+      };
+      
+      if (!Array.isArray(campaign.details)) {
+        campaign.details = [];
+      }
+      
+      campaign.details.push(callDetail);
       await campaign.save();
+      console.log(`✅ Added unique ID ${uniqueId} to campaign ${campaign._id} with contactId: ${req.body.contactId || 'null'}`);
     }
 
     res.json({ 
       success: true, 
       message: 'Unique ID added to campaign',
-      data: { uniqueId, totalUniqueIds: campaign.uniqueIds.length }
+      data: { 
+        uniqueId, 
+        totalDetails: Array.isArray(campaign.details) ? campaign.details.length : 0 
+      }
     });
   } catch (error) {
     console.error('Error adding unique ID to campaign:', error);
@@ -2242,6 +2264,22 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
       return res.status(400).json({ success: false, error: 'No groups in campaign to sync from' });
     }
 
+    // Local helper: normalize phone numbers for consistent comparison
+    const normalizePhoneNumber = (phoneNumber) => {
+      if (!phoneNumber) return '';
+      let normalized = phoneNumber.toString().trim();
+      normalized = normalized.replace(/[\s\-\.\(\)]/g, '');
+      normalized = normalized.replace(/^\+\d{1,3}/, '');
+      normalized = normalized.replace(/^0+/, '');
+      if (normalized.startsWith('91') && normalized.length > 10) {
+        normalized = normalized.substring(2);
+      }
+      if (normalized.startsWith('1') && normalized.length > 10) {
+        normalized = normalized.substring(1);
+      }
+      return normalized;
+    };
+
     // Fetch all groups and their contacts
     const groups = await Group.find({ _id: { $in: campaign.groupIds } });
     
@@ -2250,16 +2288,20 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
     const newContacts = [];
     const contactsToRemove = [];
 
-    // Collect all valid phone numbers from groups
+    // Collect all valid (normalized) phone numbers from groups
     const validPhoneNumbers = new Set();
     
     for (const group of groups) {
       if (group.contacts && group.contacts.length > 0) {
         for (const groupContact of group.contacts) {
-          validPhoneNumbers.add(groupContact.phone);
+          const normalizedGroupPhone = normalizePhoneNumber(groupContact.phone);
+          validPhoneNumbers.add(normalizedGroupPhone);
           
-          // Check if phone number already exists in campaign contacts
-          const existingContact = campaign.contacts.find(contact => contact.phone === groupContact.phone);
+          // Check if phone number already exists in campaign contacts (normalized compare)
+          const existingContact = campaign.contacts.find(contact => {
+            const normalizedExisting = normalizePhoneNumber(contact.phone);
+            return normalizedExisting === normalizedGroupPhone;
+          });
           if (!existingContact) {
             newContacts.push({
               _id: new mongoose.Types.ObjectId(),
@@ -2328,20 +2370,24 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    const uniqueIds = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
-    const totalItems = uniqueIds.length;
+    // Use the new details structure instead of uniqueIds
+    const details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
+    const totalItems = details.length;
 
     if (totalItems === 0) {
       return res.json({
         success: true,
         data: [],
-        campaign: { _id: campaign._id, name: campaign.name, uniqueIdsCount: 0 },
+        campaign: { _id: campaign._id, name: campaign.name, detailsCount: 0 },
         pagination: { currentPage: page, totalPages: 0, totalItems: 0, hasNextPage: false, hasPrevPage: false }
       });
     }
 
     const skip = (page - 1) * limit;
-    const pagedUniqueIds = uniqueIds.slice(skip, skip + limit);
+    const pagedDetails = details.slice(skip, skip + limit);
+
+    // Extract uniqueIds from the paged details
+    const pagedUniqueIds = pagedDetails.map(detail => detail.uniqueId);
 
     // Fetch logs for the paged uniqueIds and map latest log per id
     const logs = await CallLog.find({
@@ -2359,16 +2405,19 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
       }
     }
 
-    const minimal = pagedUniqueIds.map(uid => {
-      const log = latestLogByUid.get(uid);
+    const minimal = pagedDetails.map(detail => {
+      const log = latestLogByUid.get(detail.uniqueId);
       const name = log && (log.contactName || (log.metadata && log.metadata.customParams && log.metadata.customParams.name));
       const number = log && (log.mobile || (log.metadata && log.metadata.callerId));
       const leadStatus = (log && log.leadStatus) || 'not_connected';
       return {
-        documentId: uid,
+        documentId: detail.uniqueId,
         number: number || null,
         name: name || null,
-        leadStatus
+        leadStatus,
+        contactId: detail.contactId,
+        time: detail.time,
+        status: detail.status
       };
     });
 
@@ -2378,7 +2427,7 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
       campaign: {
         _id: campaign._id,
         name: campaign.name,
-        uniqueIdsCount: totalItems
+        detailsCount: totalItems
       },
       pagination: {
         currentPage: page,
@@ -2409,7 +2458,11 @@ router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) 
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    if (!Array.isArray(campaign.uniqueIds) || !campaign.uniqueIds.includes(documentId)) {
+    // Check if documentId exists in campaign details
+    const detailExists = Array.isArray(campaign.details) && 
+      campaign.details.some(detail => detail.uniqueId === documentId);
+    
+    if (!detailExists) {
       return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
     }
 
@@ -3715,6 +3768,135 @@ router.patch('/agents/:agentId/toggle-active', async (req, res) => {
       message: 'Failed to toggle agent status',
       error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
+  }
+});
+
+// MANUAL: Trigger immediate status update for testing (optional)
+router.post('/campaigns/:id/trigger-status-update', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Trigger immediate status update for this campaign
+    await triggerManualStatusUpdate(campaign._id);
+    
+    res.json({
+      success: true,
+      message: 'Manual status update triggered successfully',
+      data: { campaignId: campaign._id, timestamp: new Date() }
+    });
+
+  } catch (error) {
+    console.error('Error triggering manual status update:', error);
+    res.status(500).json({ success: false, error: 'Failed to trigger status update' });
+  }
+});
+
+// DEBUG: Check call status for debugging
+router.get('/debug/call-status/:uniqueId', extractClientId, async (req, res) => {
+  try {
+    const { uniqueId } = req.params;
+    
+    // Debug the call status
+    const debugInfo = await debugCallStatus(uniqueId);
+    
+    if (debugInfo) {
+      res.json({
+        success: true,
+        message: 'Call status debug information',
+        data: debugInfo
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        error: 'Call not found or debug failed'
+      });
+    }
+
+  } catch (error) {
+    console.error('Error debugging call status:', error);
+    res.status(500).json({ success: false, error: 'Failed to debug call status' });
+  }
+});
+
+// MIGRATION: Manually trigger migration from 'missed' to 'completed'
+router.post('/migrate/missed-to-completed', extractClientId, async (req, res) => {
+  try {
+    // Run the migration
+    await migrateMissedToCompleted();
+    
+    res.json({
+      success: true,
+      message: 'Migration from missed to completed completed successfully'
+    });
+
+  } catch (error) {
+    console.error('Error running migration:', error);
+    res.status(500).json({ success: false, error: 'Failed to run migration' });
+  }
+});
+
+// MANUAL: Trigger immediate status update for all campaigns
+router.post('/trigger-status-update', extractClientId, async (req, res) => {
+  try {
+    console.log('🔧 MANUAL: Triggering immediate status update for all campaigns...');
+    
+    // Trigger manual status update
+    await triggerManualStatusUpdate();
+    
+    res.json({
+      success: true,
+      message: 'Manual status update triggered successfully'
+    });
+
+  } catch (error) {
+    console.error('Error triggering manual status update:', error);
+    res.status(500).json({ success: false, error: 'Failed to trigger status update' });
+  }
+});
+
+// DEBUG: Check campaigns with active calls
+router.get('/debug/active-campaigns', extractClientId, async (req, res) => {
+  try {
+    const Campaign = require('../models/Campaign');
+    
+    // Find all campaigns with ringing or ongoing calls
+    const campaigns = await Campaign.find({
+      'details.status': { $in: ['ringing', 'ongoing'] }
+    }).lean();
+    
+    const activeCalls = [];
+    
+    for (const campaign of campaigns) {
+      const calls = campaign.details.filter(d => d.status === 'ringing' || d.status === 'ongoing');
+      calls.forEach(call => {
+        activeCalls.push({
+          campaignId: campaign._id,
+          campaignName: campaign.name,
+          uniqueId: call.uniqueId,
+          status: call.status,
+          timeSinceInitiation: Math.floor((new Date() - call.time) / 1000)
+        });
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: `Found ${activeCalls.length} active calls in ${campaigns.length} campaigns`,
+      data: {
+        totalCampaigns: campaigns.length,
+        totalActiveCalls: activeCalls.length,
+        activeCalls
+      }
+    });
+
+  } catch (error) {
+    console.error('Error checking active campaigns:', error);
+    res.status(500).json({ success: false, error: 'Failed to check active campaigns' });
   }
 });
 

@@ -352,6 +352,77 @@ app.get('/api/v1/public/business/:identifier', async (req, res) => {
   }
 });
 
+// Manual fix stuck calls endpoint (for debugging)
+app.post("/api/v1/debug/fix-stuck-calls", async (req, res) => {
+  try {
+    const { fixStuckCalls } = require('./services/campaignCallingService');
+    await fixStuckCalls();
+    res.json({ success: true, message: 'Stuck calls fixed successfully' });
+  } catch (error) {
+    console.error('❌ Error fixing stuck calls:', error);
+    res.status(500).json({ error: 'Failed to fix stuck calls', message: error.message });
+  }
+});
+
+// Manual fix specific stuck call endpoint (for debugging)
+app.post("/api/v1/debug/fix-specific-call", async (req, res) => {
+  try {
+    const { uniqueId } = req.body;
+    if (!uniqueId) {
+      return res.status(400).json({ error: 'uniqueId is required' });
+    }
+    
+    const CallLog = require('./models/CallLog');
+    const Campaign = require('./models/Campaign');
+    
+    console.log(`🔧 MANUAL: Fixing specific stuck call: ${uniqueId}`);
+    
+    // Find the CallLog
+    const callLog = await CallLog.findOne({
+      'metadata.customParams.uniqueid': uniqueId
+    });
+    
+    if (!callLog) {
+      return res.status(404).json({ error: 'CallLog not found' });
+    }
+    
+    // Update CallLog to mark as inactive
+    await CallLog.findByIdAndUpdate(callLog._id, {
+      'metadata.isActive': false,
+      'metadata.callEndTime': new Date(),
+      leadStatus: 'not_connected'
+    });
+    
+    // Find and update campaign details
+    const campaigns = await Campaign.find({
+      'details.uniqueId': uniqueId
+    });
+    
+    let updatedCampaigns = 0;
+    for (const campaign of campaigns) {
+      const callDetail = campaign.details.find(d => d.uniqueId === uniqueId);
+      if (callDetail && callDetail.status !== 'completed') {
+        callDetail.status = 'completed';
+        callDetail.lastStatusUpdate = new Date();
+        callDetail.callDuration = Math.floor((new Date() - callDetail.time) / 1000);
+        await campaign.save();
+        updatedCampaigns++;
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      message: `Fixed stuck call ${uniqueId}`,
+      updatedCampaigns,
+      callLogId: callLog._id
+    });
+    
+  } catch (error) {
+    console.error('❌ Error fixing specific stuck call:', error);
+    res.status(500).json({ error: 'Failed to fix stuck call', message: error.message });
+  }
+});
+
 const PORT = process.env.PORT || 4000;
 
 connectDB().then(() => {
