@@ -19,7 +19,6 @@ const server = http.createServer(app);
 // Add these routes to your main index.js or create a separate cashfree routes file
 
 // Import required modules (add these to your existing imports)
-const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 
 // Cashfree payment initiation endpoint - add this to your clientRoutes or main app
 app.post('/api/v1/client/payments/initiate/cashfree', async (req, res) => {
