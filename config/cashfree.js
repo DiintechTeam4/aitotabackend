@@ -1,5 +1,4 @@
 const dotenv = require('dotenv');
-const envConfig = require('./environment');
 dotenv.config();
 
 const ENV = (process.env.CASHFREE_ENV || 'sandbox').toLowerCase();
@@ -16,7 +15,7 @@ module.exports = {
   CLIENT_SECRET: (ENV === 'prod' || ENV === 'production')
     ? process.env.CASHFREE_SECRET_KEY
     : process.env.CASHFREE_SECRET_KEY_TEST,
-  RETURN_URL: process.env.CASHFREE_RETURN_URL || `${envConfig.BACKEND_URL}/api/v1/cashfree/callback?order_id={order_id}`,
+  RETURN_URL: process.env.CASHFREE_RETURN_URL || `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/v1/cashfree/callback?order_id={order_id}`,
 };
 
 
