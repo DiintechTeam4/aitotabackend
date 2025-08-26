@@ -5098,32 +5098,70 @@ router.get('/payments/initiate/direct', async (req, res) => {
         });
       }
       
-      // Determine the correct checkout URL based on environment
-      // Based on Cashfree documentation, the correct format is /order/{sessionId} (path, not hash)
+      // Try different URL formats based on Cashfree documentation
+      // Start with the most likely correct format
       let checkoutUrl;
+      let urlFormat = 'path';
+      
       if (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production') {
+        // Try path format first (most common for hosted checkout)
         checkoutUrl = `https://payments.cashfree.com/order/${sessionId}`;
-        console.log('Using PRODUCTION checkout URL (corrected format):', checkoutUrl);
+        urlFormat = 'path';
+        console.log('Using PRODUCTION checkout URL (path format):', checkoutUrl);
       } else {
         checkoutUrl = `https://sandbox.cashfree.com/pg/orders/${sessionId}`;
-        console.log('Using SANDBOX checkout URL (corrected format):', checkoutUrl);
+        urlFormat = 'path';
+        console.log('Using SANDBOX checkout URL (path format):', checkoutUrl);
       }
       
-      // Alternative URL formats for testing (in case the main format doesn't work)
+      // Alternative URL formats to try if the main one fails
       const alternativeUrls = [
-        `https://payments.cashfree.com/order/${sessionId}`,           // ✅ Correct format (path)
-        `https://payments.cashfree.com/order?session_id=${sessionId}`, // Query parameter format
-        `https://payments.cashfree.com/order?session=${sessionId}`,    // Alternative query format
-        `https://payments.cashfree.com/order/#${sessionId}`            // Hash format (old, may not work)
+        {
+          format: 'path',
+          url: `https://payments.cashfree.com/order/${sessionId}`,
+          description: 'Path format (most common)'
+        },
+        {
+          format: 'query_session_id',
+          url: `https://payments.cashfree.com/order?session_id=${sessionId}`,
+          description: 'Query parameter with session_id'
+        },
+        {
+          format: 'query_session',
+          url: `https://payments.cashfree.com/order?session=${sessionId}`,
+          description: 'Query parameter with session'
+        },
+        {
+          format: 'hash',
+          url: `https://payments.cashfree.com/order/#${sessionId}`,
+          description: 'Hash format (old, may not work)'
+        },
+        {
+          format: 'checkout_path',
+          url: `https://payments.cashfree.com/checkout/${sessionId}`,
+          description: 'Checkout path format'
+        }
       ];
       
-      console.log('Alternative URL formats to try:', alternativeUrls);
-      console.log('Redirecting to Cashfree hosted checkout with corrected URL format');
+      console.log('Alternative URL formats to try:', alternativeUrls.map(a => `${a.format}: ${a.url}`));
+      console.log('Redirecting to Cashfree hosted checkout with path format');
       
       // Store alternative URLs in session for potential fallback
       req.session = req.session || {};
       req.session.cashfreeAlternativeUrls = alternativeUrls;
       req.session.cashfreeSessionId = sessionId;
+      req.session.cashfreeCurrentFormat = urlFormat;
+      
+      // Additional debugging: Log the exact redirect
+      console.log('=== FINAL REDIRECT DEBUG ===');
+      console.log('Session ID (original):', cf.payment_session_id);
+      console.log('Session ID (cleaned):', sessionId);
+      console.log('URL Format:', urlFormat);
+      console.log('Final Checkout URL:', checkoutUrl);
+      console.log('Environment:', CashfreeConfig.ENV);
+      console.log('Base URL:', CashfreeConfig.BASE_URL);
+      console.log('Client ID Prefix:', CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.substring(0, 4) : 'N/A');
+      console.log('==========================');
       
       return res.redirect(302, checkoutUrl);
     }
@@ -5155,15 +5193,130 @@ router.get('/payments/initiate/direct', async (req, res) => {
   }
 });
 
+// Fallback endpoint to try different Cashfree URL formats
+router.get('/payments/cashfree/fallback', (req, res) => {
+  try {
+    const { format, sessionId } = req.query;
+    
+    if (!sessionId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'sessionId parameter is required' 
+      });
+    }
+    
+    // Clean session ID if it ends with 'payment'
+    let cleanedSessionId = sessionId;
+    if (sessionId.endsWith('payment')) {
+      cleanedSessionId = sessionId.replace(/payment$/, '');
+      console.log('Cleaned session ID for fallback:', cleanedSessionId);
+    }
+    
+    // Generate URL based on requested format
+    let checkoutUrl;
+    switch (format) {
+      case 'path':
+        checkoutUrl = `https://payments.cashfree.com/order/${cleanedSessionId}`;
+        break;
+      case 'query_session_id':
+        checkoutUrl = `https://payments.cashfree.com/order?session_id=${cleanedSessionId}`;
+        break;
+      case 'query_session':
+        checkoutUrl = `https://payments.cashfree.com/order?session=${cleanedSessionId}`;
+        break;
+      case 'hash':
+        checkoutUrl = `https://payments.cashfree.com/order/#${cleanedSessionId}`;
+        break;
+      case 'checkout_path':
+        checkoutUrl = `https://payments.cashfree.com/checkout/${cleanedSessionId}`;
+        break;
+      default:
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid format. Use: path, query_session_id, query_session, hash, or checkout_path' 
+        });
+    }
+    
+    console.log(`Fallback redirect to ${format} format:`, checkoutUrl);
+    return res.redirect(302, checkoutUrl);
+    
+  } catch (error) {
+    console.error('Fallback endpoint error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Comprehensive Cashfree diagnostic endpoint
+router.get('/debug/cashfree-diagnostics', async (req, res) => {
+  try {
+    const diagnostics = {
+      timestamp: new Date().toISOString(),
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        CASHFREE_ENV: process.env.CASHFREE_ENV,
+        CASHFREE_CLIENT_ID: process.env.CASHFREE_CLIENT_ID ? `${process.env.CASHFREE_CLIENT_ID.substring(0, 4)}...` : 'NOT_SET',
+        CASHFREE_SECRET_KEY: process.env.CASHFREE_SECRET_KEY ? `${process.env.CASHFREE_SECRET_KEY.substring(0, 8)}...` : 'NOT_SET',
+        CASHFREE_SECRET_KEY_TEST: process.env.CASHFREE_SECRET_KEY_TEST ? `${process.env.CASHFREE_SECRET_KEY.substring(0, 8)}...` : 'NOT_SET'
+      },
+      config: {
+        ENV: CashfreeConfig.ENV,
+        BASE_URL: CashfreeConfig.BASE_URL,
+        CLIENT_ID: CashfreeConfig.CLIENT_ID ? `${CashfreeConfig.CLIENT_ID.substring(0, 4)}...` : 'NOT_SET',
+        CLIENT_SECRET: CashfreeConfig.CLIENT_SECRET ? `${CashfreeConfig.CLIENT_SECRET.substring(0, 8)}...` : 'NOT_SET',
+        RETURN_URL: CashfreeConfig.RETURN_URL
+      },
+      urlFormats: {
+        production: {
+          path: 'https://payments.cashfree.com/order/{sessionId}',
+          query_session_id: 'https://payments.cashfree.com/order?session_id={sessionId}',
+          query_session: 'https://payments.cashfree.com/order?session={sessionId}',
+          hash: 'https://payments.cashfree.com/order/#{sessionId}',
+          checkout_path: 'https://payments.cashfree.com/checkout/{sessionId}'
+        },
+        sandbox: {
+          path: 'https://sandbox.cashfree.com/pg/orders/{sessionId}',
+          query_session_id: 'https://sandbox.cashfree.com/pg/orders?session_id={sessionId}',
+          query_session: 'https://sandbox.cashfree.com/pg/orders?session={sessionId}',
+          hash: 'https://sandbox.cashfree.com/pg/orders/#{sessionId}',
+          checkout_path: 'https://sandbox.cashfree.com/checkout/{sessionId}'
+        }
+      },
+      testSessionIds: [
+        {
+          original: 'session_hN9kFZIn9f71raO3G41brM9lrbHUTiyKMJ1R_CB8t_Fe86dg-A2uzFUH43NcuW-G-p97plFrIW44RU8aqrDs12N37BYpxQVs5dj4l8fJLge0-h1ngYqHrcVvMfQpayment',
+          cleaned: 'session_hN9kFZIn9f71raO3G41brM9lrbHUTiyKMJ1R_CB8t_Fe86dg-A2uzFUH43NcuW-G-p97plFrIW44RU8aqrDs12N37BYpxQVs5dj4l8fJLge0-h1ngYqHrcVvMfQ',
+          hasPaymentSuffix: true,
+          length: 131
+        }
+      ],
+      recommendations: [
+        'All URL formats are failing - this suggests a fundamental issue with the session ID or configuration',
+        'Check if Cashfree credentials are correct for the environment being used',
+        'Verify the session ID format in Cashfree documentation',
+        'Consider testing with a fresh order creation',
+        'Check Cashfree support for session ID format requirements'
+      ]
+    };
+    
+    res.json({
+      success: true,
+      message: 'Cashfree comprehensive diagnostics',
+      data: diagnostics
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Debug endpoint to test session ID cleaning
-router.get('/debug/session-id-clean', (req, res) => {
   try {
     const testSessionIds = [
       'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvUGZK2DnJ_QvBCiug3WPM93cpayment',
       'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvBCiug3WPM93c',
       'session_normal_id',
       'invalid_id_payment',
-      'session_GEqmGFcAuKJIXDdQjRj1XinL_zIw_JSvEMNQKkU_zBb22ROs6f65FRIW5ES18s01cb09LMU8qxjdplIOaRgiZ7t1qipSxemUUv0W7mxy8OjquhooHUnqtNaSC5spayment'
+      'session_GEqmGFcAuKJIXDdQjRj1XinL_zIw_JSvEMNQKkU_zBb22ROs6f65FRIW5ES18s01cb09LMU8qxjdplIOaRgiZ7t1qipSxemUUv0W7mxy8OjquhooHUnqtNaSC5spayment',
+      'session_hN9kFZIn9f71raO3G41brM9lrbHUTiyKMJ1R_CB8t_Fe86dg-A2uzFUH43NcuW-G-p97plFrIW44RU8aqrDs12N37BYpxQVs5dj4l8fJLge0-h1ngYqHrcVvMfQpayment'
     ];
     
     const results = testSessionIds.map(originalId => {
@@ -5177,10 +5330,11 @@ router.get('/debug/session-id-clean', (req, res) => {
       
       // Generate different URL formats for testing
       const urlFormats = {
-        hashFormat: `https://payments.cashfree.com/order/#${cleanedId}`,
         pathFormat: `https://payments.cashfree.com/order/${cleanedId}`,
-        queryFormat: `https://payments.cashfree.com/order?session_id=${cleanedId}`,
-        sessionQueryFormat: `https://payments.cashfree.com/order?session=${cleanedId}`
+        querySessionIdFormat: `https://payments.cashfree.com/order?session_id=${cleanedId}`,
+        querySessionFormat: `https://payments.cashfree.com/order?session=${cleanedId}`,
+        hashFormat: `https://payments.cashfree.com/order/#${cleanedId}`,
+        checkoutPathFormat: `https://payments.cashfree.com/checkout/${cleanedId}`
       };
       
       return {
