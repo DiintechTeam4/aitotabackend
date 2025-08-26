@@ -4451,6 +4451,14 @@ router.get('/payments/initiate/direct', async (req, res) => {
       sessionId = sessionId.replace(/(payment)+$/i, '');
       return res.redirect(302, hostedBase + sessionId);
     }
+    // Final fallback to Cashfree order view URL
+    if (cf.order_id || cf.cf_order_id) {
+      const orderIdView = String(cf.order_id || cf.cf_order_id);
+      const viewBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
+        ? 'https://payments.cashfree.com/pg/view/order/'
+        : 'https://sandbox.cashfree.com/pg/view/order/';
+      return res.redirect(302, viewBase + orderIdView);
+    }
     console.error('Cashfree response missing both payment_link and payment_session_id:', cf);
     return res.status(500).json({ success: false, message: 'Failed to get Cashfree payment link', data: cf });
   } catch (error) {
