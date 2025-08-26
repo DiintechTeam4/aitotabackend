@@ -4902,9 +4902,10 @@ router.post('/payments/initiate', verifyClientOrAdminAndExtractClientId, async (
 // 2. Extract payment_session_id from response
 // 3. Clean session ID if it ends with 'payment' (Cashfree API bug)
 // 4. Redirect to hosted checkout using cleaned session ID
-// 5. Environment determines checkout URL:
-//    - PROD: https://payments.cashfree.com/order/#{sessionId}
-//    - SANDBOX: https://sandbox.cashfree.com/pg/orders/#{sessionId}
+// 5. Environment determines checkout URL (corrected format):
+//    - PROD: https://payments.cashfree.com/order/{sessionId} (path format)
+//    - SANDBOX: https://sandbox.cashfree.com/pg/orders/{sessionId} (path format)
+//    - Note: Using path format, not hash (#) format
 //
 router.get('/payments/initiate/direct', async (req, res) => {
   try {
@@ -5098,25 +5099,31 @@ router.get('/payments/initiate/direct', async (req, res) => {
       }
       
       // Determine the correct checkout URL based on environment
+      // Based on Cashfree documentation, the correct format is /order/{sessionId} (path, not hash)
       let checkoutUrl;
       if (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production') {
-        checkoutUrl = `https://payments.cashfree.com/order/#${sessionId}`;
-        console.log('Using PRODUCTION checkout URL:', checkoutUrl);
+        checkoutUrl = `https://payments.cashfree.com/order/${sessionId}`;
+        console.log('Using PRODUCTION checkout URL (corrected format):', checkoutUrl);
       } else {
-        checkoutUrl = `https://sandbox.cashfree.com/pg/orders/#${sessionId}`;
-        console.log('Using SANDBOX checkout URL:', checkoutUrl);
+        checkoutUrl = `https://sandbox.cashfree.com/pg/orders/${sessionId}`;
+        console.log('Using SANDBOX checkout URL (corrected format):', checkoutUrl);
       }
       
-      // Test alternative URL formats if the main one fails
+      // Alternative URL formats for testing (in case the main format doesn't work)
       const alternativeUrls = [
-        `https://payments.cashfree.com/order/#${sessionId}`,
-        `https://payments.cashfree.com/order/${sessionId}`,
-        `https://payments.cashfree.com/order?session_id=${sessionId}`,
-        `https://payments.cashfree.com/order?session=${sessionId}`
+        `https://payments.cashfree.com/order/${sessionId}`,           // ✅ Correct format (path)
+        `https://payments.cashfree.com/order?session_id=${sessionId}`, // Query parameter format
+        `https://payments.cashfree.com/order?session=${sessionId}`,    // Alternative query format
+        `https://payments.cashfree.com/order/#${sessionId}`            // Hash format (old, may not work)
       ];
       
       console.log('Alternative URL formats to try:', alternativeUrls);
-      console.log('Redirecting to Cashfree hosted checkout with cleaned session ID');
+      console.log('Redirecting to Cashfree hosted checkout with corrected URL format');
+      
+      // Store alternative URLs in session for potential fallback
+      req.session = req.session || {};
+      req.session.cashfreeAlternativeUrls = alternativeUrls;
+      req.session.cashfreeSessionId = sessionId;
       
       return res.redirect(302, checkoutUrl);
     }
