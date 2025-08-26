@@ -4431,11 +4431,18 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.error('Cashfree create order failed:', status, data || e.message);
       return res.status(502).json({ success: false, message: 'Cashfree create order failed', status, data });
     }
-    if (!cf.payment_link) {
-      console.error('Cashfree response missing payment_link:', cf);
-      return res.status(500).json({ success: false, message: 'Failed to get Cashfree payment link', data: cf });
+    // Prefer payment_link. If missing, fallback to hosted checkout via payment_session_id
+    if (cf.payment_link) {
+      return res.redirect(302, cf.payment_link);
     }
-    return res.redirect(302, cf.payment_link);
+    if (cf.payment_session_id) {
+      const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
+        ? 'https://payments.cashfree.com/order/#'
+        : 'https://payments-test.cashfree.com/order/#';
+      return res.redirect(302, hostedBase + cf.payment_session_id);
+    }
+    console.error('Cashfree response missing both payment_link and payment_session_id:', cf);
+    return res.status(500).json({ success: false, message: 'Failed to get Cashfree payment link', data: cf });
   } catch (error) {
     console.error('Error in direct initiate:', error.message || error);
     const msg = error?.message || 'Failed to initiate payment';
