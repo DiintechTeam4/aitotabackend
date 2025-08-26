@@ -80,6 +80,42 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
   }
 });
 
+// Lightweight Cashfree Drop-in host page to avoid hosted 500 issues
+app.get('/api/v1/cashfree/hosted', (req, res) => {
+  try {
+    const { session_id } = req.query || {};
+    if (!session_id) return res.status(400).send('session_id required');
+    const { ENV } = require('./config/cashfree');
+    const sdkSrc = (ENV === 'prod' || ENV === 'production')
+      ? 'https://sdk.cashfree.com/js/ui/2.0.0/cashfree.js'
+      : 'https://sdk.cashfree.com/js/ui/2.0.0/cashfree.sandbox.js';
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Redirecting to payment…</title>
+      <style>html,body,#cf-dropin{height:100%;margin:0}</style>
+      <script src="${sdkSrc}"></script>
+      </head><body>
+      <div id="cf-dropin"></div>
+      <script>
+        (function(){
+          var el = document.getElementById('cf-dropin');
+          if (!window.Cashfree) { location.href = '/'; return; }
+          var config = { components: ["order-details", "card", "netbanking", "upi"], paymentSessionId: ${JSON.stringify(session_id)}, redirectTarget: "_self" };
+          try {
+            window.Cashfree && window.Cashfree.initialiseDropin && window.Cashfree.initialiseDropin(el, config);
+          } catch(e) {
+            console.error('Cashfree dropin init failed', e);
+          }
+        })();
+      </script>
+    </body></html>`;
+    res.set('Content-Type', 'text/html');
+    res.send(html);
+  } catch (e) {
+    res.status(500).send('Failed to render');
+  }
+});
+
 dotenv.config();
 
 // Increase payload size limit to handle audio data

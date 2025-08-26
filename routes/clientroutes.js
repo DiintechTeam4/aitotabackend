@@ -4443,13 +4443,11 @@ router.get('/payments/initiate/direct', async (req, res) => {
       return res.redirect(302, cf.payment_link);
     }
     if (cf.payment_session_id) {
-      const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
-        ? 'https://payments.cashfree.com/order/#'
-        : 'https://payments-test.cashfree.com/order/#';
       let sessionId = String(cf.payment_session_id);
-      // Some responses contain an erroneous trailing 'paymentpayment' suffix causing 500 on hosted page
       sessionId = sessionId.replace(/(payment)+$/i, '');
-      return res.redirect(302, hostedBase + sessionId);
+      // Use our own drop-in host page to avoid hosted 500 issues
+      const backendBase = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 4000}`;
+      return res.redirect(302, `${backendBase}/api/v1/cashfree/hosted?session_id=${encodeURIComponent(sessionId)}`);
     }
     // Final fallback to Cashfree order view URL
     if (cf.order_id || cf.cf_order_id) {
