@@ -4390,6 +4390,13 @@ router.get('/payments/initiate/direct', async (req, res) => {
     const client = await Client.findById(clientId);
     let email = client?.email || 'client@example.com';
     let phone = client?.mobileNo || '9999999999';
+    // Normalize phone to 10 digits as Cashfree expects
+    try {
+      const digits = String(phone || '').replace(/\D/g, '');
+      if (digits.length >= 10) {
+        phone = digits.slice(-10);
+      }
+    } catch {}
     let name = client?.name || 'Client';
 
     // Create Cashfree order and redirect to hosted checkout
@@ -4439,7 +4446,10 @@ router.get('/payments/initiate/direct', async (req, res) => {
       const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
         ? 'https://payments.cashfree.com/order/#'
         : 'https://payments-test.cashfree.com/order/#';
-      return res.redirect(302, hostedBase + cf.payment_session_id);
+      let sessionId = String(cf.payment_session_id);
+      // Some responses contain an erroneous trailing 'paymentpayment' suffix causing 500 on hosted page
+      sessionId = sessionId.replace(/(payment)+$/i, '');
+      return res.redirect(302, hostedBase + sessionId);
     }
     console.error('Cashfree response missing both payment_link and payment_session_id:', cf);
     return res.status(500).json({ success: false, message: 'Failed to get Cashfree payment link', data: cf });
