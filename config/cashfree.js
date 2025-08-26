@@ -7,7 +7,14 @@ if (envFromEnv) {
   console.log('CASHFREE_ENV from environment:', envFromEnv);
 }
 
-const ENV = (process.env.CASHFREE_ENV || 'sandbox').toLowerCase();
+// Force production environment if we have production credentials
+let ENV = (process.env.CASHFREE_ENV || 'sandbox').toLowerCase();
+
+// If we have production credentials, force production environment
+if (process.env.CASHFREE_CLIENT_ID && !process.env.CASHFREE_CLIENT_ID.startsWith('TEST')) {
+  ENV = 'prod';
+  console.log('Forcing production environment due to production credentials');
+}
 const BASE_URL = ENV === 'prod' || ENV === 'production'
   ? 'https://api.cashfree.com'
   : 'https://sandbox.cashfree.com';
