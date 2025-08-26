@@ -4972,7 +4972,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
     const headers = {
       'x-client-id': CashfreeConfig.CLIENT_ID,
       'x-client-secret': CashfreeConfig.CLIENT_SECRET,
-      'x-api-version': '2023-08-01', // Use latest API version
+      'x-api-version': '2022-09-01', // Use stable API version
       'Content-Type': 'application/json'
     };
     const payload = {
@@ -5011,15 +5011,20 @@ router.get('/payments/initiate/direct', async (req, res) => {
     
 
     
+    // Check if the order already has a payment link
+    if (cf.payment_link) {
+      console.log('Order already has payment link:', cf.payment_link);
+      return res.redirect(302, cf.payment_link);
+    }
+    
     // Try to create a payment link first (preferred method)
     if (cf.order_id) {
       console.log('Attempting to create payment link for order:', cf.order_id);
       try {
-        // Method 1: Try creating payment link using the order ID
+        // Method 1: Try creating payment link using the /payments endpoint
         const paymentLinkResp = await axios.post(
-          `${CashfreeConfig.BASE_URL}/pg/payment-links`,
+          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/payments`,
           {
-            order_id: cf.order_id,
             payment_method: {
               upi: { enabled: true },
               card: { enabled: true },
@@ -5035,7 +5040,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
           { 
             headers: {
               ...headers,
-              'x-api-version': '2023-08-01'
+              'x-api-version': '2022-09-01'
             },
             timeout: 30000
           }
