@@ -1,6 +1,12 @@
 const dotenv = require('dotenv');
 dotenv.config();
 
+// Check for conflicting environment variables
+const envFromEnv = process.env.CASHFREE_ENV;
+if (envFromEnv) {
+  console.log('CASHFREE_ENV from environment:', envFromEnv);
+}
+
 const ENV = (process.env.CASHFREE_ENV || 'sandbox').toLowerCase();
 const BASE_URL = ENV === 'prod' || ENV === 'production'
   ? 'https://api.cashfree.com'

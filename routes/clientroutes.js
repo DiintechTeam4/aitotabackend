@@ -3953,6 +3953,61 @@ router.get('/debug/cashfree-config', async (req, res) => {
   }
 });
 
+// DEBUG: Test session ID cleaning
+router.get('/debug/session-id-test', async (req, res) => {
+  try {
+    const testSessionIds = [
+      'A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpayment',
+      'session_A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpayment',
+      'A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpaymentpayment',
+      'normal_session_id_12345',
+      'session_with_underscores_and_dashes-123'
+    ];
+    
+    const results = testSessionIds.map(originalId => {
+      let sessionId = String(originalId);
+      
+      // Clean the session ID - remove any invalid characters and ensure it's properly formatted
+      sessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+      
+      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
+      sessionId = sessionId.replace(/payment$/i, '');
+      sessionId = sessionId.replace(/paymentpayment$/i, '');
+      
+      // Remove any other problematic suffixes that might cause issues
+      sessionId = sessionId.replace(/session$/i, '');
+      sessionId = sessionId.replace(/order$/i, '');
+      
+      // Clean up any double underscores or dashes that might have been created
+      sessionId = sessionId.replace(/_{2,}/g, '_');
+      sessionId = sessionId.replace(/-{2,}/g, '-');
+      
+      // Remove leading/trailing underscores and dashes
+      sessionId = sessionId.replace(/^[_-]+/, '').replace(/[_-]+$/, '');
+      
+      return {
+        original: originalId,
+        cleaned: sessionId,
+        isValid: sessionId.length >= 10 && /^[a-zA-Z0-9_-]+$/.test(sessionId),
+        length: sessionId.length
+      };
+    });
+    
+    res.json({
+      success: true,
+      message: 'Session ID cleaning test results',
+      data: results
+    });
+  } catch (error) {
+    console.error('Error testing session ID cleaning:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test session ID cleaning',
+      error: error.message
+    });
+  }
+});
+
 // DEBUG: Test Cashfree order creation
 router.get('/debug/cashfree-test-order', async (req, res) => {
   try {
@@ -4528,6 +4583,14 @@ router.get('/payments/initiate/direct', async (req, res) => {
       });
     }
     
+    console.log('Cashfree configuration:', {
+      env: CashfreeConfig.ENV,
+      baseUrl: CashfreeConfig.BASE_URL,
+      hasClientId: !!CashfreeConfig.CLIENT_ID,
+      hasClientSecret: !!CashfreeConfig.CLIENT_SECRET,
+      clientIdLength: CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.length : 0
+    });
+    
     // Persist INITIATED payment
     try {
       const Payment = require('../models/Payment');
@@ -4579,8 +4642,27 @@ router.get('/payments/initiate/direct', async (req, res) => {
         : 'https://payments-test.cashfree.com/order/#';
       let sessionId = String(cf.payment_session_id);
       
+      console.log('Original session ID from Cashfree:', sessionId);
+      
       // Clean the session ID - remove any invalid characters and ensure it's properly formatted
       sessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+      
+      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
+      sessionId = sessionId.replace(/payment$/i, '');
+      sessionId = sessionId.replace(/paymentpayment$/i, '');
+      
+      // Remove any other problematic suffixes that might cause issues
+      sessionId = sessionId.replace(/session$/i, '');
+      sessionId = sessionId.replace(/order$/i, '');
+      
+      // Clean up any double underscores or dashes that might have been created
+      sessionId = sessionId.replace(/_{2,}/g, '_');
+      sessionId = sessionId.replace(/-{2,}/g, '-');
+      
+      // Remove leading/trailing underscores and dashes
+      sessionId = sessionId.replace(/^[_-]+/, '').replace(/[_-]+$/, '');
+      
+      console.log('Cleaned session ID:', sessionId);
       
       // Validate session ID format (should be alphanumeric with possible underscores/dashes)
       if (!sessionId || sessionId.length < 10) {
@@ -4606,7 +4688,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.log('Redirecting to Cashfree hosted checkout:', redirectUrl);
       
       // If session ID looks problematic, try to create a payment link instead
-      if (sessionId.includes('payment') || sessionId.length > 100) {
+      if (sessionId.includes('payment') || sessionId.length > 100 || sessionId.includes('paymentpayment')) {
         console.log('Session ID looks problematic, attempting to create payment link instead');
         try {
           const paymentLinkResp = await axios.post(
