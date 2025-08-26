@@ -4008,6 +4008,103 @@ router.get('/debug/session-id-test', async (req, res) => {
   }
 });
 
+// DEBUG: Test payment link creation
+router.get('/debug/cashfree-payment-link-test', async (req, res) => {
+  try {
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Cashfree configuration missing'
+      });
+    }
+
+    const axios = require('axios');
+    const orderId = `TEST_LINK_${Date.now()}`;
+    
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2022-09-01',
+      'Content-Type': 'application/json'
+    };
+    
+    // Step 1: Create order
+    const orderPayload = {
+      order_id: orderId,
+      order_amount: 1.00,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: 'test_customer',
+        customer_email: 'test@example.com',
+        customer_phone: '9999999999',
+        customer_name: 'Test Customer'
+      },
+      order_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      }
+    };
+
+    console.log('Creating test order with payload:', JSON.stringify(orderPayload, null, 2));
+    
+    const orderResponse = await axios.post(`${CashfreeConfig.BASE_URL}/pg/orders`, orderPayload, { headers });
+    const orderData = orderResponse.data || {};
+    
+    console.log('Order created successfully:', JSON.stringify(orderData, null, 2));
+    
+    // Step 2: Create payment link
+    if (orderData.order_id) {
+      const paymentLinkPayload = {
+        payment_method: {
+          upi: { enabled: true },
+          card: { enabled: true },
+          netbanking: { enabled: true },
+          app: { enabled: true }
+        },
+        order_meta: {
+          return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+        }
+      };
+      
+      console.log('Creating payment link with payload:', JSON.stringify(paymentLinkPayload, null, 2));
+      
+      const linkResponse = await axios.post(
+        `${CashfreeConfig.BASE_URL}/pg/orders/${orderId}/payments`,
+        paymentLinkPayload,
+        { headers }
+      );
+      
+      const linkData = linkResponse.data || {};
+      console.log('Payment link created successfully:', JSON.stringify(linkData, null, 2));
+      
+      res.json({
+        success: true,
+        message: 'Payment link test completed successfully',
+        data: {
+          orderId: orderId,
+          orderResponse: orderData,
+          paymentLinkResponse: linkData,
+          hasPaymentLink: !!linkData.payment_link,
+          paymentLink: linkData.payment_link
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to create order for payment link test',
+        data: orderData
+      });
+    }
+  } catch (error) {
+    console.error('Error in payment link test:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test payment link creation',
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
 // DEBUG: Test Cashfree order creation
 router.get('/debug/cashfree-test-order', async (req, res) => {
   try {
@@ -4588,8 +4685,17 @@ router.get('/payments/initiate/direct', async (req, res) => {
       baseUrl: CashfreeConfig.BASE_URL,
       hasClientId: !!CashfreeConfig.CLIENT_ID,
       hasClientSecret: !!CashfreeConfig.CLIENT_SECRET,
-      clientIdLength: CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.length : 0
+      clientIdLength: CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.length : 0,
+      clientIdPrefix: CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.substring(0, 4) : 'N/A'
     });
+    
+    // Check if we're using the right environment
+    if (CashfreeConfig.ENV === 'prod' && CashfreeConfig.CLIENT_ID && CashfreeConfig.CLIENT_ID.startsWith('TEST')) {
+      console.error('WARNING: Using TEST credentials in PROD environment!');
+    }
+    if (CashfreeConfig.ENV === 'sandbox' && CashfreeConfig.CLIENT_ID && !CashfreeConfig.CLIENT_ID.startsWith('TEST')) {
+      console.error('WARNING: Using PROD credentials in SANDBOX environment!');
+    }
     
     // Persist INITIATED payment
     try {
@@ -4630,66 +4736,48 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.error('Request payload was:', JSON.stringify(payload, null, 2));
       return res.status(502).json({ success: false, message: 'Cashfree create order failed', status, data });
     }
-    // Prefer payment_link. If missing, fallback to hosted checkout via payment_session_id
+    // Force using payment_link instead of hosted checkout to avoid session issues
     if (cf.payment_link) {
       console.log('Using Cashfree payment link:', cf.payment_link);
       return res.redirect(302, cf.payment_link);
     }
     
+    // If no payment_link, try to create one instead of using hosted checkout
+    if (cf.order_id && !cf.payment_link) {
+      console.log('No payment link available, creating one manually for order:', cf.order_id);
+      try {
+        const paymentLinkResp = await axios.post(
+          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/payments`,
+          {
+            payment_method: {
+              upi: { enabled: true },
+              card: { enabled: true },
+              netbanking: { enabled: true },
+              app: { enabled: true }
+            },
+            order_meta: {
+              return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`
+            }
+          },
+          { headers }
+        );
+        
+        const paymentLinkData = paymentLinkResp.data || {};
+        if (paymentLinkData.payment_link) {
+          console.log('Created payment link successfully:', paymentLinkData.payment_link);
+          return res.redirect(302, paymentLinkData.payment_link);
+        }
+      } catch (linkError) {
+        console.error('Failed to create payment link:', linkError.message);
+        // Continue to hosted checkout as fallback
+      }
+    }
+    
+    // Skip hosted checkout entirely and always use payment links to avoid session issues
     if (cf.payment_session_id) {
-      const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
-        ? 'https://payments.cashfree.com/order/#'
-        : 'https://payments-test.cashfree.com/order/#';
-      let sessionId = String(cf.payment_session_id);
+      console.log('Skipping hosted checkout due to session issues, creating payment link instead');
       
-      console.log('Original session ID from Cashfree:', sessionId);
-      
-      // Clean the session ID - remove any invalid characters and ensure it's properly formatted
-      sessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
-      
-      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
-      sessionId = sessionId.replace(/payment$/i, '');
-      sessionId = sessionId.replace(/paymentpayment$/i, '');
-      
-      // Remove any other problematic suffixes that might cause issues
-      sessionId = sessionId.replace(/session$/i, '');
-      sessionId = sessionId.replace(/order$/i, '');
-      
-      // Clean up any double underscores or dashes that might have been created
-      sessionId = sessionId.replace(/_{2,}/g, '_');
-      sessionId = sessionId.replace(/-{2,}/g, '-');
-      
-      // Remove leading/trailing underscores and dashes
-      sessionId = sessionId.replace(/^[_-]+/, '').replace(/[_-]+$/, '');
-      
-      console.log('Cleaned session ID:', sessionId);
-      
-      // Validate session ID format (should be alphanumeric with possible underscores/dashes)
-      if (!sessionId || sessionId.length < 10) {
-        console.error('Invalid session ID format:', cf.payment_session_id);
-        return res.status(500).json({ 
-          success: false, 
-          message: 'Invalid payment session ID received from Cashfree',
-          data: { originalSessionId: cf.payment_session_id, cleanedSessionId: sessionId }
-        });
-      }
-      
-      // Additional validation for session ID format
-      if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) {
-        console.error('Session ID contains invalid characters:', sessionId);
-        return res.status(500).json({ 
-          success: false, 
-          message: 'Payment session ID contains invalid characters',
-          data: { sessionId }
-        });
-      }
-      
-      const redirectUrl = hostedBase + sessionId;
-      console.log('Redirecting to Cashfree hosted checkout:', redirectUrl);
-      
-      // If session ID looks problematic, try to create a payment link instead
-      if (sessionId.includes('payment') || sessionId.length > 100 || sessionId.includes('paymentpayment')) {
-        console.log('Session ID looks problematic, attempting to create payment link instead');
+      if (cf.order_id) {
         try {
           const paymentLinkResp = await axios.post(
             `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/payments`,
@@ -4709,54 +4797,21 @@ router.get('/payments/initiate/direct', async (req, res) => {
           
           const paymentLinkData = paymentLinkResp.data || {};
           if (paymentLinkData.payment_link) {
-            console.log('Created payment link as fallback:', paymentLinkData.payment_link);
+            console.log('Created payment link successfully:', paymentLinkData.payment_link);
             return res.redirect(302, paymentLinkData.payment_link);
           }
         } catch (linkError) {
-          console.error('Failed to create payment link as fallback:', linkError.message);
+          console.error('Failed to create payment link:', linkError.message);
+          return res.status(500).json({ 
+            success: false, 
+            message: 'Failed to create payment link',
+            error: linkError.message 
+          });
         }
       }
-      
-      return res.redirect(302, redirectUrl);
     }
     
-    // If neither payment_link nor payment_session_id is available, try to create a payment link manually
-    if (cf.order_id) {
-      try {
-        console.log('Attempting to create payment link manually for order:', cf.order_id);
-        const paymentLinkResp = await axios.post(
-          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/payments`,
-          {
-            payment_method: {
-              upi: {
-                enabled: true
-              },
-              card: {
-                enabled: true
-              },
-              netbanking: {
-                enabled: true
-              },
-              app: {
-                enabled: true
-              }
-            },
-            order_meta: {
-              return_url: CashfreeConfig.RETURN_URL
-            }
-          },
-          { headers }
-        );
-        
-        const paymentLinkData = paymentLinkResp.data || {};
-        if (paymentLinkData.payment_link) {
-          console.log('Created payment link manually:', paymentLinkData.payment_link);
-          return res.redirect(302, paymentLinkData.payment_link);
-        }
-      } catch (linkError) {
-        console.error('Failed to create payment link manually:', linkError.message);
-      }
-    }
+
     
     console.error('Cashfree response missing both payment_link and payment_session_id:', cf);
     return res.status(500).json({ success: false, message: 'Failed to get Cashfree payment link', data: cf });
