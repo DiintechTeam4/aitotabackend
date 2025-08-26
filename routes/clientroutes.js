@@ -5309,6 +5309,7 @@ router.get('/debug/cashfree-diagnostics', async (req, res) => {
 });
 
 // Debug endpoint to test session ID cleaning
+router.get('/debug/session-id-clean', (req, res) => {
   try {
     const testSessionIds = [
       'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvUGZK2DnJ_QvBCiug3WPM93cpayment',
