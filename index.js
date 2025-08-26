@@ -89,8 +89,8 @@ app.post('/api/v1/client/payments/initiate/cashfree', async (req, res) => {
         customer_phone: client.phone || client.mobile || '9999999999'
       },
       order_meta: {
-        return_url: `${process.env.BACKEND_URL}/api/v1/cashfree/callback`,
-        notify_url: `${process.env.BACKEND_URL}/api/v1/cashfree/webhook`,
+        return_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/webhook`,
         payment_methods: 'cc,dc,nb,upi,paylater,emi,cardlessemi,wallet'
       },
       order_tags: {
@@ -212,8 +212,8 @@ app.get('/api/v1/client/payments/initiate/cashfree-direct', async (req, res) => 
         customer_phone: client.phone || client.mobile || '9999999999'
       },
       order_meta: {
-        return_url: `${process.env.BACKEND_URL}/api/v1/cashfree/callback`,
-        notify_url: `${process.env.BACKEND_URL}/api/v1/cashfree/webhook`,
+        return_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/webhook`,
         payment_methods: 'cc,dc,nb,upi,paylater,emi,cardlessemi,wallet'
       },
       order_tags: {
