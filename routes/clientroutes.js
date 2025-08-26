@@ -4988,6 +4988,11 @@ router.get('/payments/initiate/direct', async (req, res) => {
       order_meta: {
         return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`,
         notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      },
+      order_note: `Payment for ${planKeyNorm} plan`,
+      order_tags: {
+        plan: planKeyNorm,
+        client_id: String(clientId)
       }
     };
     let cf;
@@ -5061,9 +5066,112 @@ router.get('/payments/initiate/direct', async (req, res) => {
       }
     }
     
+    // Try alternative approach: Use Cashfree Checkout API
+    if (cf.order_id) {
+      console.log('Trying Cashfree Checkout API approach');
+      try {
+        const checkoutPayload = {
+          order_id: cf.order_id,
+          order_amount: cf.order_amount,
+          order_currency: cf.order_currency,
+          customer_details: cf.customer_details,
+          order_meta: {
+            return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`,
+            notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`
+          }
+        };
+        
+        console.log('Checkout API payload:', JSON.stringify(checkoutPayload, null, 2));
+        
+        const checkoutResp = await axios.post(
+          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/checkout`,
+          checkoutPayload,
+          { 
+            headers: {
+              ...headers,
+              'x-api-version': '2022-09-01'
+            },
+            timeout: 30000
+          }
+        );
+        
+        const checkoutData = checkoutResp.data || {};
+        console.log('Checkout API response:', JSON.stringify(checkoutData, null, 2));
+        
+        if (checkoutData.payment_link) {
+          console.log('Successfully created checkout payment link:', checkoutData.payment_link);
+          return res.redirect(302, checkoutData.payment_link);
+        } else if (checkoutData.payment_session_id) {
+          console.log('Successfully created checkout session:', checkoutData.payment_session_id);
+          
+          const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
+            ? 'https://payments.cashfree.com/order/#'
+            : 'https://payments-test.cashfree.com/order/#';
+          
+          const redirectUrl = hostedBase + checkoutData.payment_session_id;
+          console.log('Redirecting to Cashfree checkout:', redirectUrl);
+          return res.redirect(302, redirectUrl);
+        }
+      } catch (checkoutError) {
+        console.error('Checkout API failed:', checkoutError.message);
+        console.error('Checkout error response:', checkoutError.response?.data);
+      }
+    }
+    
     // Fallback to hosted checkout if payment link creation fails
     if (cf.payment_session_id) {
-      console.log('Payment link creation failed, falling back to hosted checkout');
+      console.log('Payment link creation failed, trying alternative approach');
+      
+      // Try to create a payment session using a different method
+      try {
+        console.log('Attempting to create payment session using alternative method');
+        
+        const sessionPayload = {
+          order_id: cf.order_id,
+          order_amount: cf.order_amount,
+          order_currency: cf.order_currency,
+          customer_details: cf.customer_details,
+          order_meta: {
+            return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`,
+            notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`
+          }
+        };
+        
+        console.log('Session creation payload:', JSON.stringify(sessionPayload, null, 2));
+        
+        const sessionResp = await axios.post(
+          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/sessions`,
+          sessionPayload,
+          { 
+            headers: {
+              ...headers,
+              'x-api-version': '2022-09-01'
+            },
+            timeout: 30000
+          }
+        );
+        
+        const sessionData = sessionResp.data || {};
+        console.log('Session creation response:', JSON.stringify(sessionData, null, 2));
+        
+        if (sessionData.payment_session_id) {
+          console.log('Successfully created new payment session:', sessionData.payment_session_id);
+          
+          const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
+            ? 'https://payments.cashfree.com/order/#'
+            : 'https://payments-test.cashfree.com/order/#';
+          
+          const redirectUrl = hostedBase + sessionData.payment_session_id;
+          console.log('Redirecting to Cashfree with new session:', redirectUrl);
+          return res.redirect(302, redirectUrl);
+        }
+      } catch (sessionError) {
+        console.error('Session creation failed:', sessionError.message);
+        console.error('Session error response:', sessionError.response?.data);
+      }
+      
+      // Final fallback: Use the original hosted checkout
+      console.log('All payment methods failed, using original hosted checkout as final fallback');
       
       const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
         ? 'https://payments.cashfree.com/order/#'
