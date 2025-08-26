@@ -4949,6 +4949,8 @@ router.get('/payments/initiate/direct', async (req, res) => {
       
       console.log('Attempting Paytm payment with payload:', JSON.stringify(payload, null, 2));
       
+      // Ensure axios is properly imported
+      const axios = require('axios');
       const gwResp = await axios.post(`${gatewayBase}/api/paytm/initiate`, payload, { timeout: 15000 });
       const data = gwResp.data || {};
 
@@ -5018,6 +5020,12 @@ router.get('/payments/initiate/direct', async (req, res) => {
       const razorpayKey = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder';
       const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || 'test_secret_placeholder';
       
+      console.log('Razorpay configuration:', {
+        hasKey: !!razorpayKey,
+        hasSecret: !!razorpaySecret,
+        keyType: razorpayKey.startsWith('rzp_test_') ? 'test' : razorpayKey.startsWith('rzp_live_') ? 'live' : 'unknown'
+      });
+      
       if (razorpayKey === 'rzp_test_placeholder' || razorpaySecret === 'test_secret_placeholder') {
         console.log('Using placeholder Razorpay keys, creating test payment page');
         
@@ -5051,6 +5059,10 @@ router.get('/payments/initiate/direct', async (req, res) => {
               
               <div class="note">
                 <strong>Note:</strong> This is a test payment page. For production, please configure proper Razorpay API keys.
+                <br><br>
+                <strong>Expected Behavior:</strong> You may see 401 (Unauthorized) errors in the console - this is normal with placeholder keys.
+                <br>
+                Use the test buttons below to simulate payment scenarios.
               </div>
               
               <div style="margin-top: 20px; text-align: center;">
@@ -5102,7 +5114,19 @@ router.get('/payments/initiate/direct', async (req, res) => {
                
                function testPayment() {
                  console.log('Test payment success');
-                 alert('Test payment successful! Redirecting to dashboard...');
+                 
+                 // Show success message
+                 const container = document.querySelector('.container');
+                 const successDiv = document.createElement('div');
+                 successDiv.innerHTML = '<div style="background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 20px; border-radius: 5px; margin: 20px 0; text-align: center;"><h3 style="margin: 0 0 10px 0; color: #155724;">✅ Payment Successful!</h3><p style="margin: 0 0 15px 0;">Your test payment has been processed successfully.</p><button onclick="redirectToDashboard()" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer;">Go to Dashboard</button></div>';
+                 container.appendChild(successDiv);
+                 
+                 // Remove test buttons
+                 const testButtons = document.querySelector('div[style*="margin-top: 20px"]');
+                 if (testButtons) testButtons.remove();
+               }
+               
+               function redirectToDashboard() {
                  window.location.href = '${process.env.FRONTEND_URL || 'https://www.aitota.com'}/auth/dashboard?payment_id=test_success_${Date.now()}&order_id=${razorpayOrderId}&status=success';
                }
                
