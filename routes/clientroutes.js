@@ -4929,8 +4929,72 @@ router.get('/payments/initiate/direct', async (req, res) => {
     } catch {}
     let name = client?.name || 'Client';
 
+    // Try Paytm first since Cashfree is having issues
+    console.log('Cashfree is having issues, trying Paytm payment gateway');
+    
+    try {
+      // Call external Paytm gateway API
+      const gatewayBase = 'https://paytm-gateway-n0py.onrender.com';
+      const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const orderId = `AITOTA_${Date.now()}`;
+      
+      const payload = {
+        amount,
+        customerEmail: email,
+        customerPhone: phone,
+        customerName: name,
+        projectId: 'aitota-pricing',
+        redirectUrl: `${FRONTEND_URL}/auth/dashboard`
+      };
+      
+      console.log('Attempting Paytm payment with payload:', JSON.stringify(payload, null, 2));
+      
+      const gwResp = await axios.post(`${gatewayBase}/api/paytm/initiate`, payload, { timeout: 15000 });
+      const data = gwResp.data || {};
+
+      if (data.success) {
+        console.log('Paytm payment initiated successfully');
+        
+        // Persist INITIATED payment
+        try {
+          const Payment = require('../models/Payment');
+          await Payment.create({ clientId, orderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'paytm' });
+        } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
+        
+        // Prefer gateway redirectUrl if present
+        if (data.redirectUrl) {
+          console.log('Redirecting to Paytm payment page:', data.redirectUrl);
+          return res.redirect(302, data.redirectUrl);
+        }
+
+        // Otherwise render an HTML form auto-submitting to Paytm
+        const paytmUrl = data.paytmUrl;
+        const params = data.paytmParams || {};
+        if (!paytmUrl) {
+          return res.status(500).json({ success: false, message: 'Missing paytmUrl from gateway' });
+        }
+        
+        const inputs = Object.entries(params)
+          .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v)}"/>`)
+          .join('');
+        const html = `<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Redirecting…</title></head><body>
+          <form id=\"paytmForm\" method=\"POST\" action=\"${paytmUrl}\">${inputs}</form>
+          <script>document.getElementById('paytmForm').submit();</script>
+        </body></html>`;
+        res.status(200).send(html);
+        return;
+      } else {
+        console.error('Paytm payment failed:', data.message);
+      }
+    } catch (paytmError) {
+      console.error('Paytm payment error:', paytmError.message);
+    }
+    
+    // Fallback to Cashfree if Paytm fails
+    console.log('Paytm failed, falling back to Cashfree');
+    
     // Create Cashfree order and redirect to hosted checkout
-    const orderId = `AITOTA_${Date.now()}`;
+    const cashfreeOrderId = `AITOTA_CF_${Date.now()}`;
     const axios = require('axios');
     
     // Validate Cashfree configuration
@@ -4966,7 +5030,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
     // Persist INITIATED payment
     try {
       const Payment = require('../models/Payment');
-      await Payment.create({ clientId, orderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED' });
+      await Payment.create({ clientId, orderId: cashfreeOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'cashfree' });
     } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
 
     const headers = {
@@ -4976,7 +5040,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
       'Content-Type': 'application/json'
     };
     const payload = {
-      order_id: orderId,
+      order_id: cashfreeOrderId,
       order_amount: Number(amount),
       order_currency: 'INR',
       customer_details: {
@@ -4986,8 +5050,8 @@ router.get('/payments/initiate/direct', async (req, res) => {
         customer_name: name
       },
       order_meta: {
-        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`,
-        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cashfreeOrderId}`,
+        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cashfreeOrderId}`
       },
       order_note: `Payment for ${planKeyNorm} plan`,
       order_tags: {
