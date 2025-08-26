@@ -13,6 +13,72 @@ const Business = require('./models/MyBussiness');
 
 const app = express();
 const server = http.createServer(app);
+// Cashfree callback (return_url handler)
+app.get('/api/v1/cashfree/callback', async (req, res) => {
+  try {
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    const { order_id, order_token } = req.query || {};
+    if (!order_id) return res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED`);
+
+    // Verify payment status with Cashfree
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+    const axios = require('axios');
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2022-09-01'
+    };
+    let status = 'FAILED';
+    let transactionId = undefined;
+    try {
+      const resp = await axios.get(`${BASE_URL}/pg/orders/${order_id}`, { headers });
+      const data = resp.data || {};
+      status = (data.order_status === 'PAID') ? 'SUCCESS' : data.order_status || 'FAILED';
+      transactionId = data.cf_payment_id || data.reference_id;
+    } catch (e) {
+      console.error('Cashfree status fetch failed:', e.message);
+    }
+
+    // Update payment record
+    let paymentDoc = null;
+    try {
+      const Payment = require('./models/Payment');
+      paymentDoc = await Payment.findOneAndUpdate(
+        { orderId: order_id },
+        { status, transactionId, rawCallback: req.query },
+        { new: true }
+      );
+    } catch (e) {
+      console.error('Payment update failed:', e.message);
+    }
+
+    // Auto-credit if success
+    if (paymentDoc && status === 'SUCCESS' && !paymentDoc.credited) {
+      try {
+        const Credit = require('./models/Credit');
+        const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+        const key = (paymentDoc.planKey || '').toLowerCase();
+        const creditsToAdd = mapping[key] || 0;
+        if (creditsToAdd > 0 && paymentDoc.clientId) {
+          const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
+            gateway: 'cashfree', orderId: order_id, transactionId
+          });
+          const Payment = require('./models/Payment');
+          await Payment.findOneAndUpdate({ orderId: order_id }, { credited: true, creditsAdded: creditsToAdd });
+        }
+      } catch (e) {
+        console.error('Auto-credit on Cashfree failed:', e.message);
+      }
+    }
+
+    return res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?orderId=${encodeURIComponent(order_id)}&status=${encodeURIComponent(status)}`);
+  } catch (e) {
+    console.error('Cashfree callback error:', e.message);
+    res.status(200).send('OK');
+  }
+});
 
 dotenv.config();
 
@@ -36,6 +102,71 @@ app.get('/ws/status', (req, res) => {
         success: true,
         data: status
     });
+});
+
+// Paytm callback handler - redirects to frontend with orderId/status
+app.post('/api/v1/paytm/callback', async (req, res) => {
+  try {
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    const body = req.body || {};
+    const orderId = body.ORDERID || body.orderId || '';
+    const status = body.STATUS || body.status || 'SUCCESS';
+    let paymentDoc = null;
+    try {
+      const Payment = require('./models/Payment');
+      paymentDoc = await Payment.findOneAndUpdate(
+        { orderId },
+        {
+          status: (status === 'TXN_SUCCESS' || status === 'SUCCESS') ? 'SUCCESS' : (status || 'FAILED'),
+          transactionId: body.TXNID || body.transactionId,
+          responseCode: body.RESPCODE || body.responseCode,
+          responseMsg: body.RESPMSG || body.responseMsg,
+          rawCallback: body,
+        },
+        { new: true }
+      );
+    } catch (e) {
+      console.error('Failed to upsert Payment from callback:', e.message);
+    }
+
+    // Auto-credit on SUCCESS
+    if (paymentDoc && (paymentDoc.status === 'TXN_SUCCESS' || paymentDoc.status === 'SUCCESS' || status === 'TXN_SUCCESS' || status === 'SUCCESS')) {
+      try {
+        if (!paymentDoc.credited) {
+          const Credit = require('./models/Credit');
+          const mapping = {
+            basic: 1000,
+            professional: 5500,
+            enterprise: 11000,
+          };
+          const key = (paymentDoc.planKey || '').toLowerCase();
+          const creditsToAdd = mapping[key] || 0;
+          if (creditsToAdd > 0 && paymentDoc.clientId) {
+            const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
+            // Idempotent by using orderId as transactionId in history if your addCredits supports metadata
+            await creditRecord.addCredits(creditsToAdd, 'purchase', `Paytm order ${orderId} • ${key} plan`, {
+              gateway: 'paytm',
+              orderId,
+              transactionId: body.TXNID || paymentDoc.transactionId,
+            });
+            const Payment = require('./models/Payment');
+            await Payment.findOneAndUpdate(
+              { orderId },
+              { credited: true, creditsAdded: creditsToAdd }
+            );
+          }
+        }
+      } catch (e) {
+        console.error('Auto-credit after callback failed:', e.message);
+      }
+    }
+    const redirect = `${FRONTEND_URL}${SUCCESS_PATH}?orderId=${encodeURIComponent(orderId)}&status=${encodeURIComponent(status)}`;
+    return res.redirect(302, redirect);
+  } catch (e) {
+    console.error('Paytm callback error:', e.message);
+    res.status(200).send('OK');
+  }
 });
 
 // Call Logs APIs
@@ -392,6 +523,17 @@ app.post("/api/v1/debug/fix-specific-call", async (req, res) => {
       'metadata.callEndTime': new Date(),
       leadStatus: 'not_connected'
     });
+    // Deduct credits for completed call if possible
+    try {
+      const { deductCreditsForCall } = require('./services/creditUsageService');
+      const uniqueId = callLog?.metadata?.customParams?.uniqueid;
+      const clientId = callLog?.clientId;
+      if (clientId && uniqueId) {
+        await deductCreditsForCall({ clientId, uniqueId });
+      }
+    } catch (e) {
+      console.error('Credit deduction failed:', e.message);
+    }
     
     // Find and update campaign details
     const campaigns = await Campaign.find({

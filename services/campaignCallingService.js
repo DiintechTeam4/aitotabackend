@@ -113,6 +113,17 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
       // Calculate call duration if call ended
       if (newStatus === 'completed') {
         callDetail.callDuration = timeSinceCallStart;
+        // Deduct credits for the call
+        try {
+          const { deductCreditsForCall } = require('./creditUsageService');
+          const clientId = campaign.clientId || callLog?.clientId;
+          const uniqueId = callDetail.uniqueId;
+          if (clientId && uniqueId) {
+            await deductCreditsForCall({ clientId, uniqueId });
+          }
+        } catch (e) {
+          console.error('Credit deduction failed:', e.message);
+        }
       }
       
       await campaign.save();

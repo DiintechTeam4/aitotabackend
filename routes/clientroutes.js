@@ -20,6 +20,10 @@ const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
 const User = require('../models/User'); // Added User model import
 const { generateBusinessHash } = require('../utils/hashUtils');
+const crypto = require('crypto');
+const PaytmConfig = require('../config/paytm');
+const PaytmChecksum = require('paytmchecksum');
+const CashfreeConfig = require('../config/cashfree');
 const {
   getClientApiKey,
   startCampaignCalling,
@@ -3897,6 +3901,577 @@ router.get('/debug/active-campaigns', extractClientId, async (req, res) => {
   } catch (error) {
     console.error('Error checking active campaigns:', error);
     res.status(500).json({ success: false, error: 'Failed to check active campaigns' });
+  }
+});
+
+// Plan and Credit Routes for Clients
+router.get('/plans',  async (req, res) => {
+  try {
+    const Plan = require('../models/Plan');
+    const plans = await Plan.getActivePlans();
+    
+    res.json({
+      success: true,
+      data: plans
+    });
+  } catch (error) {
+    console.error('Error fetching plans:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch plans'
+    });
+  }
+});
+
+router.get('/plans/popular',  async (req, res) => {
+  try {
+    const Plan = require('../models/Plan');
+    const plans = await Plan.getPopularPlans();
+    
+    res.json({
+      success: true,
+      data: plans
+    });
+  } catch (error) {
+    console.error('Error fetching popular plans:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch popular plans'
+    });
+  }
+});
+
+router.get('/credits/balance', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const Credit = require('../models/Credit');
+    const clientId = req.clientId;
+    
+    const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+    
+    res.json({
+      success: true,
+      data: creditRecord
+    });
+  } catch (error) {
+    console.error('Error fetching credit balance:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch credit balance'
+    });
+  }
+});
+
+router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const Credit = require('../models/Credit');
+    const clientId = req.clientId;
+    const { page = 1, limit = 20, type } = req.query;
+    
+    const creditRecord = await Credit.findOne({ clientId })
+      .populate('history.planId', 'name')
+      .lean();
+    
+    if (!creditRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Credit record not found'
+      });
+    }
+    
+    // Filter and paginate history
+    let history = creditRecord.history;
+    if (type) {
+      history = history.filter(h => h.type === type);
+    }
+    
+    const total = history.length;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const paginatedHistory = history
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(skip, skip + parseInt(limit));
+    
+    res.json({
+      success: true,
+      data: {
+        history: paginatedHistory,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching credit history:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch credit history'
+    });
+  }
+});
+
+router.post('/plans/purchase', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { planId, billingCycle, couponCode, autoRenew } = req.body;
+    const clientId = req.clientId;
+    
+    if (!planId || !billingCycle) {
+      return res.status(400).json({
+        success: false,
+        message: 'Plan ID and billing cycle are required'
+      });
+    }
+    
+    const Plan = require('../models/Plan');
+    const Credit = require('../models/Credit');
+    const Coupon = require('../models/Coupon');
+    
+    // Get plan
+    const plan = await Plan.findById(planId);
+    if (!plan || !plan.isActive) {
+      return res.status(404).json({
+        success: false,
+        message: 'Plan not found or inactive'
+      });
+    }
+    
+    // Get or create credit record
+    let creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+    
+    // Calculate price
+    let finalPrice = plan.price;
+    let discountApplied = 0;
+    let couponUsed = null;
+    
+    // Apply billing cycle discount
+    const cycleDiscount = plan.discounts[`${billingCycle}Discount`] || 0;
+    if (cycleDiscount > 0) {
+      discountApplied = (finalPrice * cycleDiscount) / 100;
+      finalPrice -= discountApplied;
+    }
+    
+    // Apply coupon if provided
+    if (couponCode) {
+      const coupon = await Coupon.findValidCoupon(couponCode);
+      if (coupon && coupon.appliesToPlan(planId, plan.category)) {
+        const couponDiscount = coupon.calculateDiscount(finalPrice);
+        finalPrice -= couponDiscount;
+        discountApplied += couponDiscount;
+        couponUsed = coupon.code;
+      }
+    }
+    
+    // Calculate credits to add
+    const creditsToAdd = plan.creditsIncluded + plan.bonusCredits;
+    
+    // Add credits to client account
+    await creditRecord.addCredits(
+      creditsToAdd,
+      'purchase',
+      `Plan purchase: ${plan.name} (${billingCycle})`,
+      planId,
+      `TXN_${Date.now()}`
+    );
+    
+    // Update current plan information
+    const startDate = new Date();
+    let endDate = new Date();
+    
+    switch (billingCycle) {
+      case 'monthly':
+        endDate.setMonth(endDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        endDate.setMonth(endDate.getMonth() + 3);
+        break;
+      case 'yearly':
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        break;
+    }
+    
+    creditRecord.currentPlan = {
+      planId: planId,
+      startDate: startDate,
+      endDate: endDate,
+      billingCycle: billingCycle,
+      autoRenew: autoRenew || false
+    };
+    
+    await creditRecord.save();
+    
+    // Apply coupon usage if used
+    if (couponUsed) {
+      const coupon = await Coupon.findValidCoupon(couponCode);
+      if (coupon) {
+        await coupon.applyCoupon(clientId, planId, plan.price);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Plan purchased successfully',
+      data: {
+        plan: plan.name,
+        creditsAdded: creditsToAdd,
+        price: plan.price,
+        discountApplied: discountApplied,
+        finalPrice: finalPrice,
+        billingCycle: billingCycle,
+        startDate: startDate,
+        endDate: endDate,
+        couponUsed: couponUsed,
+        newBalance: creditRecord.currentBalance
+      }
+    });
+  } catch (error) {
+    console.error('Error purchasing plan:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to purchase plan'
+    });
+  }
+});
+
+router.post('/coupons/validate',  async (req, res) => {
+  try {
+    const { couponCode, planId } = req.body;
+    const clientId = req.clientId;
+    
+    if (!couponCode || !planId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Coupon code and plan ID are required'
+      });
+    }
+    
+    const Coupon = require('../models/Coupon');
+    const Plan = require('../models/Plan');
+    
+    const coupon = await Coupon.findValidCoupon(couponCode);
+    if (!coupon) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invalid or expired coupon'
+      });
+    }
+    
+    const plan = await Plan.findById(planId);
+    if (!plan) {
+      return res.status(404).json({
+        success: false,
+        message: 'Plan not found'
+      });
+    }
+    
+    // Check if coupon applies to plan
+    if (!coupon.appliesToPlan(planId, plan.category)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Coupon not applicable to this plan'
+      });
+    }
+    
+    // Check if user can use coupon
+    const canUse = await coupon.canBeUsedBy(clientId);
+    if (!canUse.valid) {
+      return res.status(400).json({
+        success: false,
+        message: canUse.reason
+      });
+    }
+    
+    const discount = coupon.calculateDiscount(plan.price);
+    
+    res.json({
+      success: true,
+      message: 'Coupon is valid',
+      data: {
+        coupon: {
+          code: coupon.code,
+          name: coupon.name,
+          description: coupon.description,
+          discountType: coupon.discountType,
+          discountValue: coupon.discountValue
+        },
+        discount: discount,
+        finalPrice: plan.price - discount
+      }
+    });
+  } catch (error) {
+    console.error('Error validating coupon:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to validate coupon'
+    });
+  }
+});
+
+router.put('/credits/settings', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { lowBalanceAlert, autoPurchase } = req.body;
+    const clientId = req.clientId;
+    
+    const Credit = require('../models/Credit');
+    const creditRecord = await Credit.findOne({ clientId });
+    
+    if (!creditRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Credit record not found'
+      });
+    }
+    
+    if (lowBalanceAlert) {
+      creditRecord.settings.lowBalanceAlert = {
+        ...creditRecord.settings.lowBalanceAlert,
+        ...lowBalanceAlert
+      };
+    }
+    
+    if (autoPurchase) {
+      creditRecord.settings.autoPurchase = {
+        ...creditRecord.settings.autoPurchase,
+        ...autoPurchase
+      };
+    }
+    
+    await creditRecord.save();
+    
+    res.json({
+      success: true,
+      message: 'Credit settings updated successfully',
+      data: creditRecord.settings
+    });
+  } catch (error) {
+    console.error('Error updating credit settings:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update credit settings'
+    });
+  }
+});
+
+// Confirm Paytm payment and credit static plan
+router.post('/credits/paytm/confirm', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { orderId, planKey } = req.body;
+    const clientId = req.clientId;
+
+    if (!orderId || !planKey) {
+      return res.status(400).json({ success: false, message: 'orderId and planKey are required' });
+    }
+
+    const Credit = require('../models/Credit');
+    const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+
+    // Idempotency: don't apply if this orderId already in history
+    const alreadyApplied = (creditRecord.history || []).some(h => h.transactionId === String(orderId));
+    if (alreadyApplied) {
+      return res.json({ success: true, message: 'Payment already applied', data: { balance: creditRecord.currentBalance } });
+    }
+
+    const mapping = {
+      basic: { credits: 1000, bonus: 0, price: 1000 },
+      professional: { credits: 5000, bonus: 500, price: 5000 },
+      enterprise: { credits: 10000, bonus: 1000, price: 10000 },
+    };
+
+    const key = String(planKey).toLowerCase();
+    const plan = mapping[key];
+    if (!plan) {
+      return res.status(400).json({ success: false, message: 'Invalid planKey' });
+    }
+
+    const totalCredits = plan.credits + (plan.bonus || 0);
+
+    await creditRecord.addCredits(totalCredits, 'purchase', `Paytm order ${orderId} • ${key} plan`, null, String(orderId));
+
+    return res.json({ success: true, message: 'Credits added', data: { balance: creditRecord.currentBalance, added: totalCredits } });
+  } catch (error) {
+    console.error('Error confirming Paytm payment:', error);
+    res.status(500).json({ success: false, message: 'Failed to confirm payment' });
+  }
+});
+
+// Initiate Paytm payment from backend and handle redirect server-side
+router.post('/payments/initiate', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { amount, customerEmail, customerPhone, customerName, planKey } = req.body || {};
+    if (!amount) {
+      return res.status(400).json({ success: false, message: 'amount is required' });
+    }
+
+    // Fallback billing data from client profile if not provided
+    let email = customerEmail;
+    let phone = customerPhone;
+    let name = customerName;
+    try {
+      const Client = require('../models/Client');
+      const client = await Client.findById(req.clientId);
+      if (client) {
+        if (!email) email = client.email;
+        if (!phone) phone = client.mobileNo;
+        if (!name) name = client.name;
+      }
+    } catch {}
+
+    // Final fallbacks
+    if (!email) email = 'client@example.com';
+    if (!phone) phone = '9999999999';
+    if (!name) name = 'Client';
+
+    // Call external Paytm gateway API
+    const axios = require('axios');
+    const gatewayBase = 'https://paytm-gateway-n0py.onrender.com';
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const payload = {
+      amount,
+      customerEmail: email,
+      customerPhone: phone,
+      customerName: name,
+      projectId: 'aitota-pricing',
+      redirectUrl: `${FRONTEND_URL}/auth/dashboard`
+    };
+    const gwResp = await axios.post(`${gatewayBase}/api/paytm/initiate`, payload, { timeout: 15000 });
+    const data = gwResp.data || {};
+
+    if (!data.success) {
+      return res.status(500).json({ success: false, message: data.message || 'Payment initiation failed' });
+    }
+
+    // Prefer gateway redirectUrl if present
+    if (data.redirectUrl) {
+      return res.redirect(302, data.redirectUrl);
+    }
+
+    // Otherwise render an HTML form auto-submitting to Paytm
+    const paytmUrl = data.paytmUrl;
+    const params = data.paytmParams || {};
+    if (!paytmUrl) {
+      return res.status(500).json({ success: false, message: 'Missing paytmUrl from gateway' });
+    }
+    const inputs = Object.entries(params)
+      .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v)}"/>`)
+      .join('');
+    const html = `<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Redirecting…</title></head><body>
+      <form id=\"paytmForm\" method=\"POST\" action=\"${paytmUrl}\">${inputs}</form>
+      <script>document.getElementById('paytmForm').submit();</script>
+    </body></html>`;
+    res.status(200).send(html);
+  } catch (error) {
+    console.error('Error initiating payment:', error.message);
+    res.status(500).json({ success: false, message: 'Failed to initiate payment' });
+  }
+});
+
+// GET variant for browser redirects without Authorization header. Token passed as query param 't'.
+router.get('/payments/initiate/direct', async (req, res) => {
+  try {
+    const jwt = require('jsonwebtoken');
+    const { t, amount, planKey } = req.query || {};
+    try { console.log('[INITIATE/DIRECT] query:', req.query); } catch {}
+    if (!t) return res.status(401).send('Missing token');
+    if (!amount) return res.status(400).send('Missing amount');
+    const planKeyNorm = (typeof planKey === 'string' ? planKey : String(planKey || '')).toLowerCase();
+    if (!planKeyNorm) return res.status(400).send('Missing planKey');
+
+    let clientId;
+    try {
+      const decoded = jwt.verify(t, process.env.JWT_SECRET);
+      if (decoded?.userType !== 'client') return res.status(401).send('Invalid token');
+      clientId = decoded.id;
+    } catch (e) {
+      return res.status(401).send('Invalid token');
+    }
+
+    // Billing info from client profile
+    const Client = require('../models/Client');
+    const client = await Client.findById(clientId);
+    let email = client?.email || 'client@example.com';
+    let phone = client?.mobileNo || '9999999999';
+    let name = client?.name || 'Client';
+
+    // Create Cashfree order and redirect to hosted checkout
+    const orderId = `AITOTA_${Date.now()}`;
+    const axios = require('axios');
+    // Persist INITIATED payment
+    try {
+      const Payment = require('../models/Payment');
+      await Payment.create({ clientId, orderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED' });
+    } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
+
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2022-09-01',
+      'Content-Type': 'application/json'
+    };
+    const payload = {
+      order_id: orderId,
+      order_amount: Number(amount),
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: String(clientId),
+        customer_email: email,
+        customer_phone: phone,
+        customer_name: name
+      },
+      order_meta: {
+        return_url: CashfreeConfig.RETURN_URL
+      }
+    };
+    let cf;
+    try {
+      const cfResp = await axios.post(`${CashfreeConfig.BASE_URL}/pg/orders`, payload, { headers });
+      cf = cfResp.data || {};
+    } catch (e) {
+      const status = e.response?.status;
+      const data = e.response?.data;
+      console.error('Cashfree create order failed:', status, data || e.message);
+      return res.status(502).json({ success: false, message: 'Cashfree create order failed', status, data });
+    }
+    if (!cf.payment_link) {
+      console.error('Cashfree response missing payment_link:', cf);
+      return res.status(500).json({ success: false, message: 'Failed to get Cashfree payment link', data: cf });
+    }
+    return res.redirect(302, cf.payment_link);
+  } catch (error) {
+    console.error('Error in direct initiate:', error.message || error);
+    const msg = error?.message || 'Failed to initiate payment';
+    res.status(500).json({ success: false, message: msg });
+  }
+});
+
+// POST /api/v1/client/credits/paytm/confirm
+// Accepts { orderId, planKey } from frontend after redirect
+router.post('/credits/paytm/confirm', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { orderId, planKey } = req.body || {};
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId missing' });
+    }
+    const plan = (planKey || '').toLowerCase();
+    let creditsToAdd = 0;
+    if (plan === 'basic') creditsToAdd = 1000;
+    else if (plan === 'professional') creditsToAdd = 5500; // includes 500 bonus
+    else if (plan === 'enterprise') creditsToAdd = 11000; // includes 1000 bonus
+
+    if (!creditsToAdd) {
+      return res.status(400).json({ success: false, message: 'Unknown planKey' });
+    }
+
+    const Credit = require('../models/Credit');
+    const credit = await Credit.getOrCreateCreditRecord(req.clientId);
+    await credit.addCredits(creditsToAdd, 'purchase', `Paytm order ${orderId}`, {
+      gateway: 'paytm',
+      orderId,
+      planKey: plan,
+    });
+    return res.json({ success: true, message: 'Credits applied', data: { balance: credit.currentBalance } });
+  } catch (e) {
+    console.error('Paytm confirm error:', e.message);
+    return res.status(500).json({ success: false, message: 'Failed to apply credits' });
   }
 });
 
