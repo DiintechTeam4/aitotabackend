@@ -3960,6 +3960,7 @@ router.get('/debug/session-id-test', async (req, res) => {
       'A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpayment',
       'session_A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpayment',
       'A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpaymentpayment',
+      'session_Hwy4YTM7uaVyBVyocz3_qjmXYqd3K--eUXcP6PkojjRtU95L6eQD6hYp95qGyifvAb7U7jZy0kSrp2ZWukiH36kwZNKI5NKXLfQhtdEds2J5zgva2vqfJy1aKLopayment',
       'normal_session_id_12345',
       'session_with_underscores_and_dashes-123'
     ];
@@ -4004,6 +4005,73 @@ router.get('/debug/session-id-test', async (req, res) => {
       success: false,
       message: 'Failed to test session ID cleaning',
       error: error.message
+    });
+  }
+});
+
+// DEBUG: Test specific failed order
+router.get('/debug/test-failed-order', async (req, res) => {
+  try {
+    const orderId = 'AITOTA_1756232359917'; // The order that failed
+    
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Cashfree configuration missing'
+      });
+    }
+
+    const axios = require('axios');
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2022-09-01',
+      'Content-Type': 'application/json'
+    };
+    
+    // Try to create payment link for the failed order
+    console.log('Testing payment link creation for failed order:', orderId);
+    
+    const paymentLinkPayload = {
+      payment_method: {
+        upi: { enabled: true },
+        card: { enabled: true },
+        netbanking: { enabled: true },
+        app: { enabled: true }
+      },
+      order_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      }
+    };
+    
+    console.log('Payment link payload:', JSON.stringify(paymentLinkPayload, null, 2));
+    
+    const response = await axios.post(
+      `${CashfreeConfig.BASE_URL}/pg/orders/${orderId}/payments`,
+      paymentLinkPayload,
+      { headers }
+    );
+    
+    const data = response.data || {};
+    console.log('Payment link response:', JSON.stringify(data, null, 2));
+    
+    res.json({
+      success: true,
+      message: 'Test completed for failed order',
+      data: {
+        orderId: orderId,
+        response: data,
+        hasPaymentLink: !!data.payment_link,
+        paymentLink: data.payment_link
+      }
+    });
+  } catch (error) {
+    console.error('Error testing failed order:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test failed order',
+      error: error.message,
+      response: error.response?.data
     });
   }
 });
@@ -4773,12 +4841,13 @@ router.get('/payments/initiate/direct', async (req, res) => {
       }
     }
     
-    // Skip hosted checkout entirely and always use payment links to avoid session issues
+    // Try payment link first, fallback to hosted checkout with cleaned session ID
     if (cf.payment_session_id) {
-      console.log('Skipping hosted checkout due to session issues, creating payment link instead');
+      console.log('Attempting to create payment link first...');
       
       if (cf.order_id) {
         try {
+          console.log('Creating payment link for order:', cf.order_id);
           const paymentLinkResp = await axios.post(
             `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/payments`,
             {
@@ -4796,19 +4865,63 @@ router.get('/payments/initiate/direct', async (req, res) => {
           );
           
           const paymentLinkData = paymentLinkResp.data || {};
+          console.log('Payment link response:', JSON.stringify(paymentLinkData, null, 2));
+          
           if (paymentLinkData.payment_link) {
             console.log('Created payment link successfully:', paymentLinkData.payment_link);
             return res.redirect(302, paymentLinkData.payment_link);
+          } else {
+            console.log('No payment_link in response, falling back to hosted checkout');
+            // Fallback to hosted checkout with cleaned session ID
           }
         } catch (linkError) {
-          console.error('Failed to create payment link:', linkError.message);
-          return res.status(500).json({ 
-            success: false, 
-            message: 'Failed to create payment link',
-            error: linkError.message 
-          });
+          console.error('Failed to create payment link, falling back to hosted checkout:', linkError.message);
+          // Fallback to hosted checkout with cleaned session ID
         }
       }
+      
+      // Fallback: Use hosted checkout with cleaned session ID
+      console.log('Using hosted checkout fallback with cleaned session ID');
+      const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
+        ? 'https://payments.cashfree.com/order/#'
+        : 'https://payments-test.cashfree.com/order/#';
+      
+      let sessionId = String(cf.payment_session_id);
+      console.log('Original session ID:', sessionId);
+      
+      // Clean the session ID - remove any invalid characters and ensure it's properly formatted
+      sessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+      
+      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
+      sessionId = sessionId.replace(/payment$/i, '');
+      sessionId = sessionId.replace(/paymentpayment$/i, '');
+      
+      // Remove any other problematic suffixes that might cause issues
+      sessionId = sessionId.replace(/session$/i, '');
+      sessionId = sessionId.replace(/order$/i, '');
+      
+      // Clean up any double underscores or dashes that might have been created
+      sessionId = sessionId.replace(/_{2,}/g, '_');
+      sessionId = sessionId.replace(/-{2,}/g, '-');
+      
+      // Remove leading/trailing underscores and dashes
+      sessionId = sessionId.replace(/^[_-]+/, '').replace(/[_-]+$/, '');
+      
+      console.log('Cleaned session ID:', sessionId);
+      
+      // Validate session ID format
+      if (!sessionId || sessionId.length < 10) {
+        console.error('Invalid session ID format after cleaning:', sessionId);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Invalid payment session ID after cleaning',
+          data: { originalSessionId: cf.payment_session_id, cleanedSessionId: sessionId }
+        });
+      }
+      
+      const redirectUrl = hostedBase + sessionId;
+      console.log('Redirecting to Cashfree hosted checkout (fallback):', redirectUrl);
+      return res.redirect(302, redirectUrl);
     }
     
 
