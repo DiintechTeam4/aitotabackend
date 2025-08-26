@@ -4900,8 +4900,8 @@ router.post('/payments/initiate', verifyClientOrAdminAndExtractClientId, async (
 // Cashfree PG v2 Hosted Checkout Flow:
 // 1. Create order using POST /pg/orders
 // 2. Extract payment_session_id from response
-// 3. Redirect to hosted checkout using exact session ID
-// 4. No session ID cleaning/modification needed
+// 3. Clean session ID if it ends with 'payment' (Cashfree API bug)
+// 4. Redirect to hosted checkout using cleaned session ID
 // 5. Environment determines checkout URL:
 //    - PROD: https://payments.cashfree.com/order/#{sessionId}
 //    - SANDBOX: https://sandbox.cashfree.com/pg/orders/#{sessionId}
@@ -5016,6 +5016,9 @@ router.get('/payments/initiate/direct', async (req, res) => {
       
       const cfResp = await axios.post(`${CashfreeConfig.BASE_URL}/pg/orders`, payload, { headers });
       cf = cfResp.data || {};
+      
+      // Log raw response for debugging
+      console.log('Raw Cashfree API response:', JSON.stringify(cfResp.data, null, 2));
       console.log('Cashfree order created successfully:', JSON.stringify(cf, null, 2));
       
       // Log key response fields
@@ -5024,6 +5027,12 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.log('Payment Session ID:', cf.payment_session_id);
       console.log('Order Status:', cf.order_status);
       console.log('Has Payment Link:', !!cf.payment_link);
+      
+      // Check if session ID ends with 'payment' (which is invalid)
+      if (cf.payment_session_id && cf.payment_session_id.endsWith('payment')) {
+        console.error('WARNING: Session ID ends with "payment" - this is invalid!');
+        console.error('Original session ID:', cf.payment_session_id);
+      }
       
     } catch (e) {
       const status = e.response?.status;
@@ -5044,9 +5053,29 @@ router.get('/payments/initiate/direct', async (req, res) => {
     if (cf.payment_session_id) {
       console.log('Using Cashfree PG v2 Hosted Checkout with exact session ID');
       
-      // Use the exact session ID without any modifications
-      const sessionId = String(cf.payment_session_id);
-      console.log('Exact session ID from Cashfree:', sessionId);
+      // Get the session ID and clean it if it ends with 'payment' (invalid suffix)
+      let sessionId = String(cf.payment_session_id);
+      console.log('Original session ID from Cashfree:', sessionId);
+      
+      // Fix: Remove 'payment' suffix if present (Cashfree API bug)
+      if (sessionId.endsWith('payment')) {
+        const cleanedSessionId = sessionId.replace(/payment$/, '');
+        console.log('WARNING: Session ID ended with "payment" - cleaning it');
+        console.log('Cleaned session ID:', cleanedSessionId);
+        sessionId = cleanedSessionId;
+      }
+      
+      // Additional safety: Ensure session ID starts with 'session_'
+      if (!sessionId.startsWith('session_')) {
+        console.error('Invalid session ID format - must start with "session_"');
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Invalid payment session ID format from Cashfree',
+          data: { sessionId, orderId: cf.order_id }
+        });
+      }
+      
+      console.log('Final session ID to use:', sessionId);
       
       // Validate session ID format
       if (!sessionId || sessionId.length < 10) {
@@ -5096,6 +5125,43 @@ router.get('/payments/initiate/direct', async (req, res) => {
     console.error('Error in direct initiate:', error.message || error);
     const msg = error?.message || 'Failed to initiate payment';
     res.status(500).json({ success: false, message: msg });
+  }
+});
+
+// Debug endpoint to test session ID cleaning
+router.get('/debug/session-id-clean', (req, res) => {
+  try {
+    const testSessionIds = [
+      'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvUGZK2DnJ_QvBCiug3WPM93cpayment',
+      'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvUGZK2DnJ_QvBCiug3WPM93c',
+      'session_normal_id',
+      'invalid_id_payment'
+    ];
+    
+    const results = testSessionIds.map(originalId => {
+      let cleanedId = originalId;
+      if (originalId.endsWith('payment')) {
+        cleanedId = originalId.replace(/payment$/, '');
+      }
+      
+      const isValid = cleanedId.startsWith('session_') && cleanedId.length >= 10;
+      
+      return {
+        original: originalId,
+        cleaned: cleanedId,
+        isValid,
+        endsWithPayment: originalId.endsWith('payment'),
+        length: cleanedId.length
+      };
+    });
+    
+    res.json({
+      success: true,
+      message: 'Session ID cleaning test results',
+      data: results
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
