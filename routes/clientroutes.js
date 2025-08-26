@@ -4950,23 +4950,30 @@ router.get('/payments/initiate/direct', async (req, res) => {
       let sessionId = String(cf.payment_session_id);
       console.log('Original session ID:', sessionId);
       
-      // Clean the session ID - remove any invalid characters and ensure it's properly formatted
-      sessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+      // Try the original session ID first (without cleaning)
+      const originalSessionId = String(cf.payment_session_id);
+      const originalRedirectUrl = hostedBase + originalSessionId;
+      console.log('Trying original session ID first:', originalRedirectUrl);
       
-      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
+      // Clean the session ID more carefully - preserve the session_ prefix
+      // First, check if it starts with 'session_'
+      const hasSessionPrefix = sessionId.startsWith('session_');
+      
+      // Remove only the problematic 'payment' suffix at the end
       sessionId = sessionId.replace(/payment$/i, '');
       sessionId = sessionId.replace(/paymentpayment$/i, '');
-      
-      // Remove any other problematic suffixes that might cause issues
-      sessionId = sessionId.replace(/session$/i, '');
-      sessionId = sessionId.replace(/order$/i, '');
       
       // Clean up any double underscores or dashes that might have been created
       sessionId = sessionId.replace(/_{2,}/g, '_');
       sessionId = sessionId.replace(/-{2,}/g, '-');
       
-      // Remove leading/trailing underscores and dashes
-      sessionId = sessionId.replace(/^[_-]+/, '').replace(/[_-]+$/, '');
+      // Remove trailing underscores and dashes (but preserve leading session_)
+      sessionId = sessionId.replace(/[_-]+$/, '');
+      
+      // Ensure we have the session_ prefix if it was originally present
+      if (hasSessionPrefix && !sessionId.startsWith('session_')) {
+        sessionId = 'session_' + sessionId;
+      }
       
       console.log('Cleaned session ID:', sessionId);
       
@@ -4981,8 +4988,53 @@ router.get('/payments/initiate/direct', async (req, res) => {
       }
       
       const redirectUrl = hostedBase + sessionId;
-      console.log('Redirecting to Cashfree hosted checkout:', redirectUrl);
-      return res.redirect(302, redirectUrl);
+      console.log('Redirecting to Cashfree hosted checkout with cleaned session ID:', redirectUrl);
+      
+      // Try the original session ID first (without cleaning)
+      console.log('Redirecting to Cashfree hosted checkout with original session ID:', originalRedirectUrl);
+      return res.redirect(302, originalRedirectUrl);
+    }
+    
+    // If no payment_session_id, try to create a payment link as fallback
+    if (cf.order_id) {
+      console.log('No payment_session_id available, trying to create payment link as fallback');
+      try {
+        // Try a different approach - create a payment link using the order ID
+        const paymentLinkResp = await axios.post(
+          `${CashfreeConfig.BASE_URL}/pg/payment-links`,
+          {
+            order_id: cf.order_id,
+            payment_method: {
+              upi: { enabled: true },
+              card: { enabled: true },
+              netbanking: { enabled: true },
+              app: { enabled: true }
+            },
+            order_meta: {
+              return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`
+            }
+          },
+          { 
+            headers: {
+              ...headers,
+              'x-api-version': '2023-08-01'
+            }
+          }
+        );
+        
+        const paymentLinkData = paymentLinkResp.data || {};
+        console.log('Payment link fallback response:', JSON.stringify(paymentLinkData, null, 2));
+        
+        if (paymentLinkData.payment_link) {
+          console.log('Created payment link successfully via fallback:', paymentLinkData.payment_link);
+          return res.redirect(302, paymentLinkData.payment_link);
+        } else {
+          console.error('No payment_link in fallback response:', paymentLinkData);
+        }
+      } catch (fallbackError) {
+        console.error('Payment link fallback failed:', fallbackError.message);
+        console.error('Fallback error response:', fallbackError.response?.data);
+      }
     }
     
 
