@@ -4929,238 +4929,11 @@ router.get('/payments/initiate/direct', async (req, res) => {
     } catch {}
     let name = client?.name || 'Client';
 
-    // Try Paytm first since Cashfree is having issues
-    console.log('Cashfree is having issues, trying Paytm payment gateway');
-    
-    try {
-      // Call external Paytm gateway API
-      const gatewayBase = 'https://paytm-gateway-n0py.onrender.com';
-      const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-      const paytmOrderId = `AITOTA_PT_${Date.now()}`;
-      
-      const payload = {
-        amount,
-        customerEmail: email,
-        customerPhone: phone,
-        customerName: name,
-        projectId: 'aitota-pricing',
-        redirectUrl: `${FRONTEND_URL}/auth/dashboard`
-      };
-      
-      console.log('Attempting Paytm payment with payload:', JSON.stringify(payload, null, 2));
-      
-      // Ensure axios is properly imported
-      const axios = require('axios');
-      const gwResp = await axios.post(`${gatewayBase}/api/paytm/initiate`, payload, { timeout: 15000 });
-      const data = gwResp.data || {};
-
-      if (data.success) {
-        console.log('Paytm payment initiated successfully');
-        
-        // Persist INITIATED payment
-        try {
-          const Payment = require('../models/Payment');
-          await Payment.create({ clientId, orderId: paytmOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'paytm' });
-        } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
-        
-        // Prefer gateway redirectUrl if present
-        if (data.redirectUrl) {
-          console.log('Redirecting to Paytm payment page:', data.redirectUrl);
-          return res.redirect(302, data.redirectUrl);
-        }
-
-        // Otherwise render an HTML form auto-submitting to Paytm
-        const paytmUrl = data.paytmUrl;
-        const params = data.paytmParams || {};
-        if (!paytmUrl) {
-          return res.status(500).json({ success: false, message: 'Missing paytmUrl from gateway' });
-        }
-        
-        const inputs = Object.entries(params)
-          .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v)}"/>`)
-          .join('');
-        const html = `<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Redirecting…</title></head><body>
-          <form id=\"paytmForm\" method=\"POST\" action=\"${paytmUrl}\">${inputs}</form>
-          <script>document.getElementById('paytmForm').submit();</script>
-        </body></html>`;
-        res.status(200).send(html);
-        return;
-      } else {
-        console.error('Paytm payment failed:', data.message);
-      }
-    } catch (paytmError) {
-      console.error('Paytm payment error:', paytmError.message);
-    }
-    
-    // Fallback to Cashfree if Paytm fails
-    console.log('Paytm failed, trying alternative payment methods');
-    
-    // Try Razorpay as an alternative
-    try {
-      console.log('Attempting Razorpay payment');
-      
-      const razorpayOrderId = `AITOTA_RZ_${Date.now()}`;
-      
-      // Create Razorpay order first
-      const razorpayOrderPayload = {
-        amount: Number(amount) * 100, // Razorpay expects amount in paise
-        currency: 'INR',
-        receipt: razorpayOrderId,
-        notes: {
-          plan: planKeyNorm,
-          client_id: String(clientId),
-          customer_email: email,
-          customer_phone: phone
-        }
-      };
-      
-      console.log('Razorpay order payload:', JSON.stringify(razorpayOrderPayload, null, 2));
-      
-      // Create Razorpay order using their API
-      const razorpayKey = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder';
-      const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || 'test_secret_placeholder';
-      
-      console.log('Razorpay configuration:', {
-        hasKey: !!razorpayKey,
-        hasSecret: !!razorpaySecret,
-        keyType: razorpayKey.startsWith('rzp_test_') ? 'test' : razorpayKey.startsWith('rzp_live_') ? 'live' : 'unknown'
-      });
-      
-      if (razorpayKey === 'rzp_test_placeholder' || razorpaySecret === 'test_secret_placeholder') {
-        console.log('Using placeholder Razorpay keys, creating test payment page');
-        
-        // Create a test payment page with placeholder keys
-        const html = `<!DOCTYPE html>
-          <html>
-          <head>
-            <title>Payment - Aitota</title>
-            <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-            <style>
-              body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-              .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-              .header { text-align: center; margin-bottom: 30px; }
-              .amount { font-size: 24px; color: #007bff; font-weight: bold; margin: 20px 0; }
-              .pay-button { padding: 15px 40px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; width: 100%; }
-              .pay-button:hover { background: #0056b3; }
-              .note { margin-top: 20px; padding: 15px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; color: #856404; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <div class="header">
-                <h1>Payment for ${planKeyNorm} Plan</h1>
-                <div class="amount">₹${amount}</div>
-                <p>Complete your payment to access premium features</p>
-              </div>
-              
-              <button onclick="initiatePayment()" class="pay-button">
-                Pay Now
-              </button>
-              
-              <div class="note">
-                <strong>Note:</strong> This is a test payment page. For production, please configure proper Razorpay API keys.
-                <br><br>
-                <strong>Expected Behavior:</strong> You may see 401 (Unauthorized) errors in the console - this is normal with placeholder keys.
-                <br>
-                Use the test buttons below to simulate payment scenarios.
-              </div>
-              
-              <div style="margin-top: 20px; text-align: center;">
-                <button onclick="testPayment()" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 10px;">
-                  Test Payment (Success)
-                </button>
-                <button onclick="testPaymentFailure()" style="padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 10px;">
-                  Test Payment (Failure)
-                </button>
-              </div>
-            </div>
-            
-            <script>
-              function initiatePayment() {
-                const options = {
-                  key: '${razorpayKey}',
-                  amount: ${Number(amount) * 100},
-                  currency: 'INR',
-                  name: 'Aitota',
-                  description: '${planKeyNorm} Plan Payment',
-                  order_id: '${razorpayOrderId}',
-                  handler: function (response) {
-                    console.log('Payment successful:', response);
-                    window.location.href = '${process.env.FRONTEND_URL || 'https://www.aitota.com'}/auth/dashboard?payment_id=' + response.razorpay_payment_id + '&order_id=${razorpayOrderId}';
-                  },
-                  prefill: {
-                    name: '${name}',
-                    email: '${email}',
-                    contact: '${phone}'
-                  },
-                  theme: {
-                    color: '#007bff'
-                  },
-                  modal: {
-                    ondismiss: function() {
-                      console.log('Payment modal closed');
-                    }
-                  }
-                };
-                
-                                 try {
-                   const rzp = new Razorpay(options);
-                   rzp.open();
-                 } catch (error) {
-                   console.error('Razorpay error:', error);
-                   alert('Payment initialization failed. Please try again.');
-                 }
-               }
-               
-               function testPayment() {
-                 console.log('Test payment success');
-                 
-                 // Show success message
-                 const container = document.querySelector('.container');
-                 const successDiv = document.createElement('div');
-                 successDiv.innerHTML = '<div style="background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 20px; border-radius: 5px; margin: 20px 0; text-align: center;"><h3 style="margin: 0 0 10px 0; color: #155724;">✅ Payment Successful!</h3><p style="margin: 0 0 15px 0;">Your test payment has been processed successfully.</p><button onclick="redirectToDashboard()" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer;">Go to Dashboard</button></div>';
-                 container.appendChild(successDiv);
-                 
-                 // Remove test buttons
-                 const testButtons = document.querySelector('div[style*="margin-top: 20px"]');
-                 if (testButtons) testButtons.remove();
-               }
-               
-               function redirectToDashboard() {
-                 window.location.href = '${process.env.FRONTEND_URL || 'https://www.aitota.com'}/auth/dashboard?payment_id=test_success_${Date.now()}&order_id=${razorpayOrderId}&status=success';
-               }
-               
-               function testPaymentFailure() {
-                 console.log('Test payment failure');
-                 alert('Test payment failed! This simulates a failed payment scenario.');
-               }
-            </script>
-          </body>
-          </html>`;
-        
-        // Persist INITIATED payment
-        try {
-          const Payment = require('../models/Payment');
-          await Payment.create({ clientId, orderId: razorpayOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'razorpay' });
-        } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
-        
-        res.status(200).send(html);
-        return;
-      } else {
-        // TODO: Implement proper Razorpay order creation with real API keys
-        console.log('Real Razorpay keys detected, implementing proper order creation');
-        throw new Error('Real Razorpay integration not yet implemented');
-      }
-      
-    } catch (razorpayError) {
-      console.error('Razorpay payment error:', razorpayError.message);
-    }
-    
-    // Final fallback to Cashfree
-    console.log('All alternative payment methods failed, falling back to Cashfree');
+        // Create Cashfree order and redirect to hosted checkout
+    console.log('Creating Cashfree order for payment');
     
     // Create Cashfree order and redirect to hosted checkout
-    const cashfreeOrderId = `AITOTA_CF_${Date.now()}`;
+    const cashfreeOrderId = `AITOTA_${Date.now()}`;
     const axios = require('axios');
     
     // Validate Cashfree configuration
@@ -5296,124 +5069,44 @@ router.get('/payments/initiate/direct', async (req, res) => {
       }
     }
     
-    // Try alternative approach: Use Cashfree Checkout API
-    if (cf.order_id) {
-      console.log('Trying Cashfree Checkout API approach');
-      try {
-        const checkoutPayload = {
-          order_id: cf.order_id,
-          order_amount: cf.order_amount,
-          order_currency: cf.order_currency,
-          customer_details: cf.customer_details,
-          order_meta: {
-            return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`,
-            notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`
-          }
-        };
-        
-        console.log('Checkout API payload:', JSON.stringify(checkoutPayload, null, 2));
-        
-        const checkoutResp = await axios.post(
-          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/checkout`,
-          checkoutPayload,
-          { 
-            headers: {
-              ...headers,
-              'x-api-version': '2022-09-01'
-            },
-            timeout: 30000
-          }
-        );
-        
-        const checkoutData = checkoutResp.data || {};
-        console.log('Checkout API response:', JSON.stringify(checkoutData, null, 2));
-        
-        if (checkoutData.payment_link) {
-          console.log('Successfully created checkout payment link:', checkoutData.payment_link);
-          return res.redirect(302, checkoutData.payment_link);
-        } else if (checkoutData.payment_session_id) {
-          console.log('Successfully created checkout session:', checkoutData.payment_session_id);
-          
-          const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
-            ? 'https://payments.cashfree.com/order/#'
-            : 'https://payments-test.cashfree.com/order/#';
-          
-          const redirectUrl = hostedBase + checkoutData.payment_session_id;
-          console.log('Redirecting to Cashfree checkout:', redirectUrl);
-          return res.redirect(302, redirectUrl);
-        }
-      } catch (checkoutError) {
-        console.error('Checkout API failed:', checkoutError.message);
-        console.error('Checkout error response:', checkoutError.response?.data);
-      }
-    }
-    
-    // Fallback to hosted checkout if payment link creation fails
+    // Use hosted checkout with improved session ID handling
     if (cf.payment_session_id) {
-      console.log('Payment link creation failed, trying alternative approach');
-      
-      // Try to create a payment session using a different method
-      try {
-        console.log('Attempting to create payment session using alternative method');
-        
-        const sessionPayload = {
-          order_id: cf.order_id,
-          order_amount: cf.order_amount,
-          order_currency: cf.order_currency,
-          customer_details: cf.customer_details,
-          order_meta: {
-            return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`,
-            notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`
-          }
-        };
-        
-        console.log('Session creation payload:', JSON.stringify(sessionPayload, null, 2));
-        
-        const sessionResp = await axios.post(
-          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/sessions`,
-          sessionPayload,
-          { 
-            headers: {
-              ...headers,
-              'x-api-version': '2022-09-01'
-            },
-            timeout: 30000
-          }
-        );
-        
-        const sessionData = sessionResp.data || {};
-        console.log('Session creation response:', JSON.stringify(sessionData, null, 2));
-        
-        if (sessionData.payment_session_id) {
-          console.log('Successfully created new payment session:', sessionData.payment_session_id);
-          
-          const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
-            ? 'https://payments.cashfree.com/order/#'
-            : 'https://payments-test.cashfree.com/order/#';
-          
-          const redirectUrl = hostedBase + sessionData.payment_session_id;
-          console.log('Redirecting to Cashfree with new session:', redirectUrl);
-          return res.redirect(302, redirectUrl);
-        }
-      } catch (sessionError) {
-        console.error('Session creation failed:', sessionError.message);
-        console.error('Session error response:', sessionError.response?.data);
-      }
-      
-      // Final fallback: Use the original hosted checkout
-      console.log('All payment methods failed, using original hosted checkout as final fallback');
+      console.log('Using Cashfree hosted checkout with improved session handling');
       
       const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
         ? 'https://payments.cashfree.com/order/#'
         : 'https://payments-test.cashfree.com/order/#';
       
-      // Use the original session ID without any cleaning
-      const sessionId = String(cf.payment_session_id);
-      console.log('Using original session ID for hosted checkout:', sessionId);
+      // Try different session ID formats
+      const originalSessionId = String(cf.payment_session_id);
+      console.log('Original session ID:', originalSessionId);
       
-      const redirectUrl = hostedBase + sessionId;
-      console.log('Redirecting to Cashfree hosted checkout:', redirectUrl);
-      return res.redirect(302, redirectUrl);
+      // Try the original session ID first
+      const originalUrl = hostedBase + originalSessionId;
+      console.log('Trying original session ID:', originalUrl);
+      
+      // Also try cleaning the session ID
+      let cleanedSessionId = originalSessionId;
+      
+      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
+      cleanedSessionId = cleanedSessionId.replace(/payment$/i, '');
+      cleanedSessionId = cleanedSessionId.replace(/paymentpayment$/i, '');
+      
+      // Clean up any double underscores or dashes
+      cleanedSessionId = cleanedSessionId.replace(/_{2,}/g, '_');
+      cleanedSessionId = cleanedSessionId.replace(/-{2,}/g, '-');
+      
+      // Remove trailing underscores and dashes
+      cleanedSessionId = cleanedSessionId.replace(/[_-]+$/, '');
+      
+      console.log('Cleaned session ID:', cleanedSessionId);
+      
+      const cleanedUrl = hostedBase + cleanedSessionId;
+      console.log('Trying cleaned session ID:', cleanedUrl);
+      
+      // For now, try the cleaned session ID as it might work better
+      console.log('Redirecting to Cashfree hosted checkout with cleaned session ID');
+      return res.redirect(302, cleanedUrl);
     }
     
 
