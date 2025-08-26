@@ -4936,7 +4936,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
       // Call external Paytm gateway API
       const gatewayBase = 'https://paytm-gateway-n0py.onrender.com';
       const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-      const orderId = `AITOTA_${Date.now()}`;
+      const paytmOrderId = `AITOTA_PT_${Date.now()}`;
       
       const payload = {
         amount,
@@ -4958,7 +4958,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
         // Persist INITIATED payment
         try {
           const Payment = require('../models/Payment');
-          await Payment.create({ clientId, orderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'paytm' });
+          await Payment.create({ clientId, orderId: paytmOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'paytm' });
         } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
         
         // Prefer gateway redirectUrl if present
@@ -4991,7 +4991,86 @@ router.get('/payments/initiate/direct', async (req, res) => {
     }
     
     // Fallback to Cashfree if Paytm fails
-    console.log('Paytm failed, falling back to Cashfree');
+    console.log('Paytm failed, trying alternative payment methods');
+    
+    // Try Razorpay as an alternative
+    try {
+      console.log('Attempting Razorpay payment');
+      
+      const razorpayOrderId = `AITOTA_RZ_${Date.now()}`;
+      const razorpayPayload = {
+        amount: Number(amount) * 100, // Razorpay expects amount in paise
+        currency: 'INR',
+        receipt: razorpayOrderId,
+        notes: {
+          plan: planKeyNorm,
+          client_id: String(clientId),
+          customer_email: email,
+          customer_phone: phone
+        }
+      };
+      
+      console.log('Razorpay payload:', JSON.stringify(razorpayPayload, null, 2));
+      
+      // For now, let's create a simple payment form that users can use
+      const razorpayKey = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder';
+      const html = `<!DOCTYPE html>
+        <html>
+        <head>
+          <title>Payment - Aitota</title>
+          <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+        </head>
+        <body>
+          <div style="text-align: center; padding: 50px;">
+            <h2>Payment for ${planKeyNorm} Plan</h2>
+            <p>Amount: ₹${amount}</p>
+            <button onclick="initiatePayment()" style="padding: 15px 30px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">
+              Pay Now
+            </button>
+          </div>
+          <script>
+            function initiatePayment() {
+              const options = {
+                key: '${razorpayKey}',
+                amount: ${Number(amount) * 100},
+                currency: 'INR',
+                name: 'Aitota',
+                description: '${planKeyNorm} Plan Payment',
+                order_id: '${razorpayOrderId}',
+                handler: function (response) {
+                  window.location.href = '${process.env.FRONTEND_URL || 'https://www.aitota.com'}/auth/dashboard?payment_id=' + response.razorpay_payment_id;
+                },
+                prefill: {
+                  name: '${name}',
+                  email: '${email}',
+                  contact: '${phone}'
+                },
+                theme: {
+                  color: '#007bff'
+                }
+              };
+              const rzp = new Razorpay(options);
+              rzp.open();
+            }
+          </script>
+        </body>
+        </html>`;
+      
+      // Persist INITIATED payment
+      try {
+        const Payment = require('../models/Payment');
+        await Payment.create({ clientId, orderId: razorpayOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'razorpay' });
+      } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
+      
+      res.status(200).send(html);
+      return;
+      
+    } catch (razorpayError) {
+      console.error('Razorpay payment error:', razorpayError.message);
+    }
+    
+    // Final fallback to Cashfree
+    console.log('All alternative payment methods failed, falling back to Cashfree');
     
     // Create Cashfree order and redirect to hosted checkout
     const cashfreeOrderId = `AITOTA_CF_${Date.now()}`;
