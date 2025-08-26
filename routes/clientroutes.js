@@ -5077,6 +5077,16 @@ router.get('/payments/initiate/direct', async (req, res) => {
       
       console.log('Final session ID to use:', sessionId);
       
+      // Additional debugging: Log session ID characteristics
+      console.log('Session ID analysis:', {
+        length: sessionId.length,
+        startsWithSession: sessionId.startsWith('session_'),
+        containsSpecialChars: /[^a-zA-Z0-9_-]/.test(sessionId),
+        hasValidFormat: /^session_[a-zA-Z0-9_-]+$/.test(sessionId),
+        originalLength: cf.payment_session_id.length,
+        cleanedLength: sessionId.length
+      });
+      
       // Validate session ID format
       if (!sessionId || sessionId.length < 10) {
         console.error('Invalid session ID format:', sessionId);
@@ -5097,7 +5107,17 @@ router.get('/payments/initiate/direct', async (req, res) => {
         console.log('Using SANDBOX checkout URL:', checkoutUrl);
       }
       
-      console.log('Redirecting to Cashfree hosted checkout with exact session ID');
+      // Test alternative URL formats if the main one fails
+      const alternativeUrls = [
+        `https://payments.cashfree.com/order/#${sessionId}`,
+        `https://payments.cashfree.com/order/${sessionId}`,
+        `https://payments.cashfree.com/order?session_id=${sessionId}`,
+        `https://payments.cashfree.com/order?session=${sessionId}`
+      ];
+      
+      console.log('Alternative URL formats to try:', alternativeUrls);
+      console.log('Redirecting to Cashfree hosted checkout with cleaned session ID');
+      
       return res.redirect(302, checkoutUrl);
     }
     
@@ -5133,9 +5153,10 @@ router.get('/debug/session-id-clean', (req, res) => {
   try {
     const testSessionIds = [
       'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvUGZK2DnJ_QvBCiug3WPM93cpayment',
-      'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvUGZK2DnJ_QvBCiug3WPM93c',
+      'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvBCiug3WPM93c',
       'session_normal_id',
-      'invalid_id_payment'
+      'invalid_id_payment',
+      'session_GEqmGFcAuKJIXDdQjRj1XinL_zIw_JSvEMNQKkU_zBb22ROs6f65FRIW5ES18s01cb09LMU8qxjdplIOaRgiZ7t1qipSxemUUv0W7mxy8OjquhooHUnqtNaSC5spayment'
     ];
     
     const results = testSessionIds.map(originalId => {
@@ -5145,19 +5166,30 @@ router.get('/debug/session-id-clean', (req, res) => {
       }
       
       const isValid = cleanedId.startsWith('session_') && cleanedId.length >= 10;
+      const hasValidFormat = /^session_[a-zA-Z0-9_-]+$/.test(cleanedId);
+      
+      // Generate different URL formats for testing
+      const urlFormats = {
+        hashFormat: `https://payments.cashfree.com/order/#${cleanedId}`,
+        pathFormat: `https://payments.cashfree.com/order/${cleanedId}`,
+        queryFormat: `https://payments.cashfree.com/order?session_id=${cleanedId}`,
+        sessionQueryFormat: `https://payments.cashfree.com/order?session=${cleanedId}`
+      };
       
       return {
         original: originalId,
         cleaned: cleanedId,
         isValid,
+        hasValidFormat,
         endsWithPayment: originalId.endsWith('payment'),
-        length: cleanedId.length
+        length: cleanedId.length,
+        urlFormats
       };
     });
     
     res.json({
       success: true,
-      message: 'Session ID cleaning test results',
+      message: 'Session ID cleaning test results with URL formats',
       data: results
     });
   } catch (error) {
