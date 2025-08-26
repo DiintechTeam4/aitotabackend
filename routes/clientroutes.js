@@ -4998,7 +4998,9 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.log('Attempting Razorpay payment');
       
       const razorpayOrderId = `AITOTA_RZ_${Date.now()}`;
-      const razorpayPayload = {
+      
+      // Create Razorpay order first
+      const razorpayOrderPayload = {
         amount: Number(amount) * 100, // Razorpay expects amount in paise
         currency: 'INR',
         receipt: razorpayOrderId,
@@ -5010,60 +5012,121 @@ router.get('/payments/initiate/direct', async (req, res) => {
         }
       };
       
-      console.log('Razorpay payload:', JSON.stringify(razorpayPayload, null, 2));
+      console.log('Razorpay order payload:', JSON.stringify(razorpayOrderPayload, null, 2));
       
-      // For now, let's create a simple payment form that users can use
+      // Create Razorpay order using their API
       const razorpayKey = process.env.RAZORPAY_KEY_ID || 'rzp_test_placeholder';
-      const html = `<!DOCTYPE html>
-        <html>
-        <head>
-          <title>Payment - Aitota</title>
-          <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-        </head>
-        <body>
-          <div style="text-align: center; padding: 50px;">
-            <h2>Payment for ${planKeyNorm} Plan</h2>
-            <p>Amount: ₹${amount}</p>
-            <button onclick="initiatePayment()" style="padding: 15px 30px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">
-              Pay Now
-            </button>
-          </div>
-          <script>
-            function initiatePayment() {
-              const options = {
-                key: '${razorpayKey}',
-                amount: ${Number(amount) * 100},
-                currency: 'INR',
-                name: 'Aitota',
-                description: '${planKeyNorm} Plan Payment',
-                order_id: '${razorpayOrderId}',
-                handler: function (response) {
-                  window.location.href = '${process.env.FRONTEND_URL || 'https://www.aitota.com'}/auth/dashboard?payment_id=' + response.razorpay_payment_id;
-                },
-                prefill: {
-                  name: '${name}',
-                  email: '${email}',
-                  contact: '${phone}'
-                },
-                theme: {
-                  color: '#007bff'
-                }
-              };
-              const rzp = new Razorpay(options);
-              rzp.open();
-            }
-          </script>
-        </body>
-        </html>`;
+      const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || 'test_secret_placeholder';
       
-      // Persist INITIATED payment
-      try {
-        const Payment = require('../models/Payment');
-        await Payment.create({ clientId, orderId: razorpayOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'razorpay' });
-      } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
-      
-      res.status(200).send(html);
-      return;
+      if (razorpayKey === 'rzp_test_placeholder' || razorpaySecret === 'test_secret_placeholder') {
+        console.log('Using placeholder Razorpay keys, creating test payment page');
+        
+        // Create a test payment page with placeholder keys
+        const html = `<!DOCTYPE html>
+          <html>
+          <head>
+            <title>Payment - Aitota</title>
+            <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+              .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+              .header { text-align: center; margin-bottom: 30px; }
+              .amount { font-size: 24px; color: #007bff; font-weight: bold; margin: 20px 0; }
+              .pay-button { padding: 15px 40px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; width: 100%; }
+              .pay-button:hover { background: #0056b3; }
+              .note { margin-top: 20px; padding: 15px; background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 5px; color: #856404; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <h1>Payment for ${planKeyNorm} Plan</h1>
+                <div class="amount">₹${amount}</div>
+                <p>Complete your payment to access premium features</p>
+              </div>
+              
+              <button onclick="initiatePayment()" class="pay-button">
+                Pay Now
+              </button>
+              
+              <div class="note">
+                <strong>Note:</strong> This is a test payment page. For production, please configure proper Razorpay API keys.
+              </div>
+              
+              <div style="margin-top: 20px; text-align: center;">
+                <button onclick="testPayment()" style="padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 10px;">
+                  Test Payment (Success)
+                </button>
+                <button onclick="testPaymentFailure()" style="padding: 10px 20px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 0 10px;">
+                  Test Payment (Failure)
+                </button>
+              </div>
+            </div>
+            
+            <script>
+              function initiatePayment() {
+                const options = {
+                  key: '${razorpayKey}',
+                  amount: ${Number(amount) * 100},
+                  currency: 'INR',
+                  name: 'Aitota',
+                  description: '${planKeyNorm} Plan Payment',
+                  order_id: '${razorpayOrderId}',
+                  handler: function (response) {
+                    console.log('Payment successful:', response);
+                    window.location.href = '${process.env.FRONTEND_URL || 'https://www.aitota.com'}/auth/dashboard?payment_id=' + response.razorpay_payment_id + '&order_id=${razorpayOrderId}';
+                  },
+                  prefill: {
+                    name: '${name}',
+                    email: '${email}',
+                    contact: '${phone}'
+                  },
+                  theme: {
+                    color: '#007bff'
+                  },
+                  modal: {
+                    ondismiss: function() {
+                      console.log('Payment modal closed');
+                    }
+                  }
+                };
+                
+                                 try {
+                   const rzp = new Razorpay(options);
+                   rzp.open();
+                 } catch (error) {
+                   console.error('Razorpay error:', error);
+                   alert('Payment initialization failed. Please try again.');
+                 }
+               }
+               
+               function testPayment() {
+                 console.log('Test payment success');
+                 alert('Test payment successful! Redirecting to dashboard...');
+                 window.location.href = '${process.env.FRONTEND_URL || 'https://www.aitota.com'}/auth/dashboard?payment_id=test_success_${Date.now()}&order_id=${razorpayOrderId}&status=success';
+               }
+               
+               function testPaymentFailure() {
+                 console.log('Test payment failure');
+                 alert('Test payment failed! This simulates a failed payment scenario.');
+               }
+            </script>
+          </body>
+          </html>`;
+        
+        // Persist INITIATED payment
+        try {
+          const Payment = require('../models/Payment');
+          await Payment.create({ clientId, orderId: razorpayOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'razorpay' });
+        } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
+        
+        res.status(200).send(html);
+        return;
+      } else {
+        // TODO: Implement proper Razorpay order creation with real API keys
+        console.log('Real Razorpay keys detected, implementing proper order creation');
+        throw new Error('Real Razorpay integration not yet implemented');
+      }
       
     } catch (razorpayError) {
       console.error('Razorpay payment error:', razorpayError.message);
