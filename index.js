@@ -10,14 +10,15 @@ const adminRoutes = require('./routes/adminroutes');
 const clientRoutes = require('./routes/clientroutes')
 const profileRoutes = require('./routes/profileroutes')
 const Business = require('./models/MyBussiness');
+const envConfig = require('./config/environment');
 
 const app = express();
 const server = http.createServer(app);
 // Cashfree callback (return_url handler)
 app.get('/api/v1/cashfree/callback', async (req, res) => {
   try {
-    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    const FRONTEND_URL = envConfig.FRONTEND_URL;
+    const SUCCESS_PATH = envConfig.PAYMENT_SUCCESS_PATH;
     const { order_id, order_token } = req.query || {};
     if (!order_id) return res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED`);
 
@@ -128,7 +129,8 @@ app.use(cors());
 const wsServer = new VoiceChatWebSocketServer(server);
 
 app.get('/', (req,res)=>{
-    res.send("hello world")
+    // Redirect root requests to frontend
+    res.redirect(302, envConfig.FRONTEND_URL);
 })
 
 // WebSocket server status endpoint
@@ -143,8 +145,8 @@ app.get('/ws/status', (req, res) => {
 // Paytm callback handler - redirects to frontend with orderId/status
 app.post('/api/v1/paytm/callback', async (req, res) => {
   try {
-    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
-    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    const FRONTEND_URL = envConfig.FRONTEND_URL;
+    const SUCCESS_PATH = envConfig.PAYMENT_SUCCESS_PATH;
     const body = req.body || {};
     const orderId = body.ORDERID || body.orderId || '';
     const status = body.STATUS || body.status || 'SUCCESS';

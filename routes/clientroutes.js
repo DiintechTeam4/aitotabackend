@@ -24,6 +24,7 @@ const crypto = require('crypto');
 const PaytmConfig = require('../config/paytm');
 const PaytmChecksum = require('paytmchecksum');
 const CashfreeConfig = require('../config/cashfree');
+const envConfig = require('../config/environment');
 const {
   getClientApiKey,
   startCampaignCalling,
@@ -4324,7 +4325,7 @@ router.post('/payments/initiate', verifyClientOrAdminAndExtractClientId, async (
     // Call external Paytm gateway API
     const axios = require('axios');
     const gatewayBase = 'https://paytm-gateway-n0py.onrender.com';
-    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const FRONTEND_URL = envConfig.FRONTEND_URL;
     const payload = {
       amount,
       customerEmail: email,
@@ -4446,7 +4447,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
       let sessionId = String(cf.payment_session_id);
       sessionId = sessionId.replace(/(payment)+$/i, '');
       // Use our own drop-in host page to avoid hosted 500 issues
-      const backendBase = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 4000}`;
+      const backendBase = envConfig.BACKEND_URL;
       return res.redirect(302, `${backendBase}/api/v1/cashfree/hosted?session_id=${encodeURIComponent(sessionId)}`);
     }
     // Final fallback to Cashfree order view URL
