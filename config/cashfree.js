@@ -9,8 +9,12 @@ const BASE_URL = ENV === 'prod' || ENV === 'production'
 module.exports = {
   ENV,
   BASE_URL,
-  CLIENT_ID: process.env.CASHFREE_CLIENT_ID || process.env.CASHFREE_CLIENT_ID_TEST,
-  CLIENT_SECRET: process.env.CASHFREE_SECRET_KEY || process.env.CASHFREE_SECRET_KEY_TEST,
+  CLIENT_ID: (ENV === 'prod' || ENV === 'production')
+    ? process.env.CASHFREE_CLIENT_ID
+    : process.env.CASHFREE_CLIENT_ID_TEST,
+  CLIENT_SECRET: (ENV === 'prod' || ENV === 'production')
+    ? process.env.CASHFREE_SECRET_KEY
+    : process.env.CASHFREE_SECRET_KEY_TEST,
   RETURN_URL: process.env.CASHFREE_RETURN_URL || `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/v1/cashfree/callback?order_id={order_id}`,
 };
 
