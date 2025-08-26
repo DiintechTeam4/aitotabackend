@@ -4896,6 +4896,16 @@ router.post('/payments/initiate', verifyClientOrAdminAndExtractClientId, async (
 });
 
 // GET variant for browser redirects without Authorization header. Token passed as query param 't'.
+// 
+// Cashfree PG v2 Hosted Checkout Flow:
+// 1. Create order using POST /pg/orders
+// 2. Extract payment_session_id from response
+// 3. Redirect to hosted checkout using exact session ID
+// 4. No session ID cleaning/modification needed
+// 5. Environment determines checkout URL:
+//    - PROD: https://payments.cashfree.com/order/#{sessionId}
+//    - SANDBOX: https://sandbox.cashfree.com/pg/orders/#{sessionId}
+//
 router.get('/payments/initiate/direct', async (req, res) => {
   try {
     const jwt = require('jsonwebtoken');
@@ -5001,9 +5011,20 @@ router.get('/payments/initiate/direct', async (req, res) => {
     let cf;
     try {
       console.log('Creating Cashfree order with payload:', JSON.stringify(payload, null, 2));
+      console.log('Using Cashfree API URL:', `${CashfreeConfig.BASE_URL}/pg/orders`);
+      console.log('Using API version:', headers['x-api-version']);
+      
       const cfResp = await axios.post(`${CashfreeConfig.BASE_URL}/pg/orders`, payload, { headers });
       cf = cfResp.data || {};
       console.log('Cashfree order created successfully:', JSON.stringify(cf, null, 2));
+      
+      // Log key response fields
+      console.log('Order ID:', cf.order_id);
+      console.log('CF Order ID:', cf.cf_order_id);
+      console.log('Payment Session ID:', cf.payment_session_id);
+      console.log('Order Status:', cf.order_status);
+      console.log('Has Payment Link:', !!cf.payment_link);
+      
     } catch (e) {
       const status = e.response?.status;
       const data = e.response?.data;
@@ -5019,102 +5040,58 @@ router.get('/payments/initiate/direct', async (req, res) => {
     
 
     
-    // Check if the order already has a payment link
-    if (cf.payment_link) {
-      console.log('Order already has payment link:', cf.payment_link);
-      return res.redirect(302, cf.payment_link);
-    }
-    
-    // Try to create a payment link first (preferred method)
-    if (cf.order_id) {
-      console.log('Attempting to create payment link for order:', cf.order_id);
-      try {
-        // Method 1: Try creating payment link using the /payments endpoint
-        const paymentLinkResp = await axios.post(
-          `${CashfreeConfig.BASE_URL}/pg/orders/${cf.order_id}/payments`,
-          {
-            payment_method: {
-              upi: { enabled: true },
-              card: { enabled: true },
-              netbanking: { enabled: true },
-              app: { enabled: true },
-              paylater: { enabled: true }
-            },
-            order_meta: {
-              return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`,
-              notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cf.order_id}`
-            }
-          },
-          { 
-            headers: {
-              ...headers,
-              'x-api-version': '2022-09-01'
-            },
-            timeout: 30000
-          }
-        );
-        
-        const paymentLinkData = paymentLinkResp.data || {};
-        console.log('Payment link creation response:', JSON.stringify(paymentLinkData, null, 2));
-        
-        if (paymentLinkData.payment_link) {
-          console.log('Successfully created payment link:', paymentLinkData.payment_link);
-          return res.redirect(302, paymentLinkData.payment_link);
-        } else {
-          console.error('No payment_link in response:', paymentLinkData);
-        }
-      } catch (linkError) {
-        console.error('Payment link creation failed:', linkError.message);
-        console.error('Error response:', linkError.response?.data);
-      }
-    }
-    
-    // Use hosted checkout with improved session ID handling
+    // Use the exact payment_session_id from order creation (Cashfree PG v2 Hosted Checkout)
     if (cf.payment_session_id) {
-      console.log('Using Cashfree hosted checkout with improved session handling');
+      console.log('Using Cashfree PG v2 Hosted Checkout with exact session ID');
       
-      const hostedBase = (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production')
-        ? 'https://payments.cashfree.com/order/#'
-        : 'https://payments-test.cashfree.com/order/#';
+      // Use the exact session ID without any modifications
+      const sessionId = String(cf.payment_session_id);
+      console.log('Exact session ID from Cashfree:', sessionId);
       
-      // Try different session ID formats
-      const originalSessionId = String(cf.payment_session_id);
-      console.log('Original session ID:', originalSessionId);
+      // Validate session ID format
+      if (!sessionId || sessionId.length < 10) {
+        console.error('Invalid session ID format:', sessionId);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Invalid payment session ID from Cashfree',
+          data: { sessionId, orderId: cf.order_id }
+        });
+      }
       
-      // Try the original session ID first
-      const originalUrl = hostedBase + originalSessionId;
-      console.log('Trying original session ID:', originalUrl);
+      // Determine the correct checkout URL based on environment
+      let checkoutUrl;
+      if (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production') {
+        checkoutUrl = `https://payments.cashfree.com/order/#${sessionId}`;
+        console.log('Using PRODUCTION checkout URL:', checkoutUrl);
+      } else {
+        checkoutUrl = `https://sandbox.cashfree.com/pg/orders/#${sessionId}`;
+        console.log('Using SANDBOX checkout URL:', checkoutUrl);
+      }
       
-      // Also try cleaning the session ID
-      let cleanedSessionId = originalSessionId;
-      
-      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
-      cleanedSessionId = cleanedSessionId.replace(/payment$/i, '');
-      cleanedSessionId = cleanedSessionId.replace(/paymentpayment$/i, '');
-      
-      // Clean up any double underscores or dashes
-      cleanedSessionId = cleanedSessionId.replace(/_{2,}/g, '_');
-      cleanedSessionId = cleanedSessionId.replace(/-{2,}/g, '-');
-      
-      // Remove trailing underscores and dashes
-      cleanedSessionId = cleanedSessionId.replace(/[_-]+$/, '');
-      
-      console.log('Cleaned session ID:', cleanedSessionId);
-      
-      const cleanedUrl = hostedBase + cleanedSessionId;
-      console.log('Trying cleaned session ID:', cleanedUrl);
-      
-      // For now, try the cleaned session ID as it might work better
-      console.log('Redirecting to Cashfree hosted checkout with cleaned session ID');
-      return res.redirect(302, cleanedUrl);
+      console.log('Redirecting to Cashfree hosted checkout with exact session ID');
+      return res.redirect(302, checkoutUrl);
     }
     
 
     
 
     
+    // If we reach here, something is wrong with the Cashfree response
     console.error('Cashfree response missing both payment_link and payment_session_id:', cf);
-    return res.status(500).json({ success: false, message: 'Failed to get Cashfree payment link', data: cf });
+    console.error('Full Cashfree response:', JSON.stringify(cf, null, 2));
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Cashfree order created but no payment session available. Please try again.',
+      data: {
+        orderId: cf.order_id,
+        cfOrderId: cf.cf_order_id,
+        orderStatus: cf.order_status,
+        hasPaymentLink: !!cf.payment_link,
+        hasPaymentSessionId: !!cf.payment_session_id,
+        fullResponse: cf
+      }
+    });
   } catch (error) {
     console.error('Error in direct initiate:', error.message || error);
     const msg = error?.message || 'Failed to initiate payment';
