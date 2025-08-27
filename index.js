@@ -330,7 +330,7 @@ app.post('/api/v1/payments/cashfree/create-order', cors({
   origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'https://www.aitota.com'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   methods: ['POST', 'OPTIONS']
-}), async (req, res) => {
+}), express.json(), async (req, res) => {
   try {
     const { amount, planKey } = req.body || {};
     console.log('🧾 [CREATE-ORDER] headers:', req.headers);
