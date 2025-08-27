@@ -2,7 +2,10 @@
 const dotenv = require('dotenv');
 dotenv.config();
 
-const isProduction = process.env.NODE_ENV === 'prod' || process.env.NODE_ENV === 'production' || process.env.CASHFREE_ENV === 'production';
+// Force production mode for debugging - remove this line after fixing
+const forceProduction = process.env.FORCE_PRODUCTION === 'true';
+
+const isProduction = forceProduction || process.env.NODE_ENV === 'prod' || process.env.NODE_ENV === 'production' || process.env.CASHFREE_ENV === 'production';
 
 const config = {
   CLIENT_ID: isProduction 
@@ -23,7 +26,9 @@ console.log(`🏦 Cashfree initialized in ${config.ENVIRONMENT} mode`);
 console.log(`🏦 Environment variables:`, {
   NODE_ENV: process.env.NODE_ENV,
   CASHFREE_ENV: process.env.CASHFREE_ENV,
-  isProduction: isProduction
+  isProduction: isProduction,
+  CASHFREE_CLIENT_ID: process.env.CASHFREE_CLIENT_ID ? process.env.CASHFREE_CLIENT_ID.substring(0, 10) + '...' : 'NOT_SET',
+  CASHFREE_CLIENT_ID_TEST: process.env.CASHFREE_CLIENT_ID_TEST ? process.env.CASHFREE_CLIENT_ID_TEST.substring(0, 10) + '...' : 'NOT_SET'
 });
 console.log(`🏦 Cashfree config:`, {
   ENV: config.ENV,
