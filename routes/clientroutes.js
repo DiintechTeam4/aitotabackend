@@ -5030,10 +5030,9 @@ router.get('/payments/initiate/direct', async (req, res) => {
       return res.status(502).json({ success: false, message: 'Cashfree create order failed', status, data });
     }
 
-    // Step 2: Skip payment link creation and construct direct payment URL
-    // Based on the error response, the payment link APIs are not working as expected
-    // Instead, we'll construct the direct payment URL using the order ID
-    console.log('Step 2: Constructing direct payment URL from order');
+    // Step 2: Create payment link using Cashfree's payment link API
+    // Based on Cashfree documentation, we need to create a payment link through their API
+    console.log('Step 2: Creating payment link through Cashfree API');
     
     let paymentLinkResponse = {};
     
@@ -5044,22 +5043,55 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.log('Cleaned session ID:', sessionId);
     }
     
-    // Construct the direct payment URL
-    // For sandbox: https://payments-test.cashfree.com/links/{orderId}
-    // For production: https://payments.cashfree.com/links/{orderId}
-    const directPaymentUrl = `https://payments${CashfreeConfig.BASE_URL.includes('sandbox') ? '-test' : ''}.cashfree.com/links/${orderResponse.order_id}`;
+    // Try to create payment link using Cashfree's payment link API
+    const paymentLinkPayload = {
+      link_id: `link_${orderResponse.order_id}`,
+      link_amount: orderResponse.order_amount,
+      link_currency: orderResponse.order_currency,
+      link_purpose: `Payment for ${planKeyNorm} plan`,
+      customer_details: {
+        customer_id: orderResponse.customer_details.customer_id,
+        customer_name: orderResponse.customer_details.customer_name,
+        customer_email: orderResponse.customer_details.customer_email,
+        customer_phone: orderResponse.customer_details.customer_phone
+      },
+      link_auto_reminders: true,
+      link_notify: {
+        send_sms: true,
+        send_email: true
+      },
+      link_expiry_time: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
+      link_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderResponse.order_id}`,
+        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderResponse.order_id}`
+      }
+    };
     
-    console.log('🔗 Constructed direct payment URL:', directPaymentUrl);
-    console.log('📋 Order ID:', orderResponse.order_id);
-    console.log('🔑 Session ID:', sessionId);
-    console.log('🌍 Environment:', CashfreeConfig.ENV);
-    
-    // Set the payment link in our response object
-    paymentLinkResponse.payment_link = directPaymentUrl;
+    try {
+      console.log('Creating payment link with payload:', JSON.stringify(paymentLinkPayload, null, 2));
+      console.log('Using Cashfree API URL:', `${CashfreeConfig.BASE_URL}/pg/links`);
+      
+      const linkResp = await axios.post(`${CashfreeConfig.BASE_URL}/pg/links`, paymentLinkPayload, { headers });
+      paymentLinkResponse = linkResp.data || {};
+      
+      console.log('Payment link created successfully:', JSON.stringify(paymentLinkResponse, null, 2));
+      console.log('Has Payment Link:', !!paymentLinkResponse.link_url);
+      console.log('Payment Link:', paymentLinkResponse.link_url);
+      
+    } catch (e) {
+      console.error('Payment link creation failed:', e.response?.data || e.message);
+      
+      // Fallback: Use the session ID to create a hosted checkout URL
+      console.log('Fallback: Using hosted checkout with session ID');
+      const hostedCheckoutUrl = `https://${CashfreeConfig.BASE_URL.includes('sandbox') ? 'sandbox.' : ''}cashfree.com/pg/orders/${sessionId}`;
+      
+      paymentLinkResponse.link_url = hostedCheckoutUrl;
+      console.log('Fallback URL:', hostedCheckoutUrl);
+    }
 
     // Check if we got a payment link
-    if (paymentLinkResponse.payment_link) {
-      console.log('✅ Using Cashfree direct payment link:', paymentLinkResponse.payment_link);
+    if (paymentLinkResponse.link_url) {
+      console.log('✅ Using Cashfree payment link:', paymentLinkResponse.link_url);
       
       // Update payment record with link details
       try {
@@ -5067,20 +5099,20 @@ router.get('/payments/initiate/direct', async (req, res) => {
         await Payment.findOneAndUpdate(
           { orderId: cashfreeOrderId },
           { 
-            paymentLink: paymentLinkResponse.payment_link,
+            paymentLink: paymentLinkResponse.link_url,
             sessionId: sessionId,
             rawResponse: { order: orderResponse, paymentLink: paymentLinkResponse }
           }
         );
       } catch (e) { console.error('Payment link update failed:', e.message); }
       
-      return res.redirect(302, paymentLinkResponse.payment_link);
+      return res.redirect(302, paymentLinkResponse.link_url);
     }
 
 
 
-    // If we reach here, something is wrong with the order creation
-    console.error('Failed to construct payment link from order:', orderResponse);
+    // If we reach here, something is wrong with the payment link creation
+    console.error('Failed to create payment link:', paymentLinkResponse);
     
     return res.status(500).json({ 
       success: false, 
@@ -5090,7 +5122,9 @@ router.get('/payments/initiate/direct', async (req, res) => {
         cfOrderId: orderResponse.cf_order_id,
         orderStatus: orderResponse.order_status,
         hasPaymentSessionId: !!orderResponse.payment_session_id,
-        fullOrderResponse: orderResponse
+        hasPaymentLink: !!paymentLinkResponse.link_url,
+        fullOrderResponse: orderResponse,
+        fullPaymentLinkResponse: paymentLinkResponse
       }
     });
   } catch (error) {
