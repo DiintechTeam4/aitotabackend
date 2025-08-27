@@ -304,24 +304,6 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       }
     );
 
-    // Store call log
-    const callLog = new CallLog({
-      clientId,
-      campaignId,
-      agentId,
-      phoneNumber: contact.phone,
-      contactName: contact.name,
-      callType: 'outbound',
-      status: 'initiated',
-      metadata: {
-        uniqueId,
-        customParams: callPayload.custom_param,
-        externalResponse: response.data
-      },
-      createdAt: new Date()
-    });
-    await callLog.save();
-
     return {
       success: true,
       uniqueId,
@@ -333,28 +315,6 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
   } catch (error) {
     console.error('Error making single call:', error);
     
-    // Log failed call
-    const callLog = new CallLog({
-      clientId,
-      campaignId,
-      agentId,
-      phoneNumber: contact.phone,
-      contactName: contact.name,
-      callType: 'outbound',
-      status: 'failed',
-      metadata: {
-        uniqueId,
-        error: error.message,
-        customParams: {
-          campaignId: campaignId.toString(),
-          agentId: agentId,
-          contactId: contact._id.toString()
-        }
-      },
-      createdAt: new Date()
-    });
-    await callLog.save();
-
     return {
       success: false,
       uniqueId, // Return uniqueId even for failed calls
@@ -426,12 +386,13 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
         
         // Add call details to campaign with new structure
         if (callResult.uniqueId) {
+          const initiatedAt = new Date();
           const callDetail = {
             uniqueId: callResult.uniqueId,
             contactId: contact._id || null,
-            time: new Date(),
+            time: initiatedAt,
             status: 'ringing', // Start with 'ringing' status when call is initiated
-            lastStatusUpdate: new Date(),
+            lastStatusUpdate: initiatedAt,
             callDuration: 0
           };
           
@@ -442,53 +403,17 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
             await campaign.save();
             
           }
+          // Schedule a status check after ~40s to mirror frontend behavior
+          setTimeout(() => {
+            updateCallStatusFromLogs(campaign._id, callResult.uniqueId).catch(() => {});
+          }, 40000);
         }
-
-        // Sequential dialing: wait until this call completes before next
-        if (callResult.uniqueId) {
-          const callStartTime = Date.now();
-          const maxWaitMs = 6 * 60 * 1000; // safety cap 6 minutes
-          let proceeded = false;
-          while (!proceeded && activeCampaigns.get(campaignId)) {
-            // Trigger status update and inspect result
-            try {
-              const result = await updateCallStatusFromLogs(campaign._id, callResult.uniqueId);
-              // If the updater marked it completed or log shows inactive, move on
-              if (result === 'completed' || (result && (result.newStatus === 'completed' || result.isActive === false))) {
-                proceeded = true;
-                break;
-              }
-            } catch (e) {
-              
-            }
-
-            // Timeout-based proceed if exceeded 45s with no definitive status handled by updater,
-            // or if overall max wait exceeded
-            const elapsed = Date.now() - callStartTime;
-            if (elapsed >= maxWaitMs) {
-              
-              proceeded = true;
-              break;
-            }
-            // Sleep 3s before next check
-            await new Promise(resolve => setTimeout(resolve, 3000));
-          }
-        }
+        // Do not wait for call to complete; proceed to next number immediately
       } else {
         progress.failedCalls++;
         
-        // Add failed call details to campaign
-        const callDetail = {
-          uniqueId: callResult.uniqueId || `failed-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          contactId: contact._id || null,
-          time: new Date(),
-          status: 'completed', // Failed calls are marked as 'completed' (not connected)
-          lastStatusUpdate: new Date(),
-          callDuration: Math.floor((new Date() - callDetail.time) / 1000)
-        };
-        
-        campaign.details.push(callDetail);
-        await campaign.save();
+        // Do not add a Campaign.details entry on failed send (schema allows only ringing/ongoing/completed)
+        // We already logged a CallLog with status 'failed'
         
       }
 

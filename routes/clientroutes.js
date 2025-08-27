@@ -2046,118 +2046,118 @@ router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
 });
 
 // Get call logs for a campaign using stored uniqueIds
-// router.get('/campaigns/:id/call-logs', extractClientId, async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const page = parseInt(req.query.page || '1', 10);
-//     const limit = parseInt(req.query.limit || '50', 10);
-//     const sortBy = req.query.sortBy || 'createdAt';
-//     const sortOrder = (req.query.sortOrder || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = parseInt(req.query.page || '1', 10);
+    const limit = parseInt(req.query.limit || '50', 10);
+    const sortBy = req.query.sortBy || 'createdAt';
+    const sortOrder = (req.query.sortOrder || 'desc').toLowerCase() === 'asc' ? 1 : -1;
 
-//     const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-//     if (!campaign) {
-//       return res.status(404).json({ success: false, error: 'Campaign not found' });
-//     }
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
 
-//     // If a specific documentId is provided, return only its logs (convenience path)
-//     const documentId = req.query.documentId;
-//     if (documentId) {
-//       if (!Array.isArray(campaign.uniqueIds) || !campaign.uniqueIds.includes(documentId)) {
-//         return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
-//       }
+    // If a specific documentId is provided, return only its logs (convenience path)
+    const documentId = req.query.documentId;
+    if (documentId) {
+      const documentExists = campaign.details && campaign.details.some(detail => detail.uniqueId === documentId);
+      if (!documentExists) {
+        return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
+      }
 
-//       const logsByDoc = await CallLog.find({
-//         clientId: req.clientId,
-//         campaignId: campaign._id,
-//         'metadata.customParams.uniqueid': documentId
-//       })
-//         .sort({ createdAt: sortOrder })
-//         .populate('campaignId', 'name description')
-//         .populate('agentId', 'agentName')
-//         .lean();
+      const logsByDoc = await CallLog.find({
+        clientId: req.clientId,
+        campaignId: campaign._id,
+        'metadata.customParams.uniqueid': documentId
+      })
+        .sort({ createdAt: sortOrder })
+        .populate('campaignId', 'name description')
+        .populate('agentId', 'agentName')
+        .lean();
 
-//       return res.json({
-//         success: true,
-//         data: logsByDoc,
-//         campaign: { _id: campaign._id, name: campaign.name },
-//         documentId
-//       });
-//     }
+      return res.json({
+        success: true,
+        data: logsByDoc,
+        campaign: { _id: campaign._id, name: campaign.name },
+        documentId
+      });
+    }
 
-//     const uniqueIds = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
-//     if (uniqueIds.length === 0) {
-//       return res.json({
-//         success: true,
-//         data: [],
-//         campaign: { _id: campaign._id, name: campaign.name, uniqueIdsCount: 0 },
-//         pagination: { currentPage: page, totalPages: 0, totalLogs: 0, hasNextPage: false, hasPrevPage: false }
-//       });
-//     }
+    const uniqueIds = campaign.details ? campaign.details.map(detail => detail.uniqueId).filter(Boolean) : [];
+    if (uniqueIds.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        campaign: { _id: campaign._id, name: campaign.name, uniqueIdsCount: 0 },
+        pagination: { currentPage: page, totalPages: 0, totalLogs: 0, hasNextPage: false, hasPrevPage: false }
+      });
+    }
 
-//     const query = {
-//       clientId: req.clientId,
-//       'metadata.customParams.uniqueid': { $in: uniqueIds }
-//     };
+    const query = {
+      clientId: req.clientId,
+      'metadata.customParams.uniqueid': { $in: uniqueIds }
+    };
 
-//     const totalLogs = await CallLog.countDocuments(query);
-//     const skip = (page - 1) * limit;
-//     const sortSpec = { [sortBy]: sortOrder };
+    const totalLogs = await CallLog.countDocuments(query);
+    const skip = (page - 1) * limit;
+    const sortSpec = { [sortBy]: sortOrder };
 
-//     const logs = await CallLog.find(query)
-//       .sort(sortSpec)
-//       .skip(skip)
-//       .limit(limit)
-//       .populate('campaignId', 'name description')
-//       .populate('agentId', 'agentName')
-//       .lean();
+    const logs = await CallLog.find(query)
+      .sort(sortSpec)
+      .skip(skip)
+      .limit(limit)
+      .populate('campaignId', 'name description')
+      .populate('agentId', 'agentName')
+      .lean();
 
-//     // Build placeholders for uniqueIds without logs
-//     const loggedUniqueIds = new Set(
-//       (logs || [])
-//         .map(l => l && l.metadata && l.metadata.customParams && l.metadata.customParams.uniqueid)
-//         .filter(Boolean)
-//     );
-//     const missingUniqueIds = uniqueIds.filter(uid => !loggedUniqueIds.has(uid));
+    // Build placeholders for uniqueIds without logs
+    const loggedUniqueIds = new Set(
+      (logs || [])
+        .map(l => l && l.metadata && l.metadata.customParams && l.metadata.customParams.uniqueid)
+        .filter(Boolean)
+    );
+    const missingUniqueIds = uniqueIds.filter(uid => !loggedUniqueIds.has(uid));
 
-//     const placeholderLogs = missingUniqueIds.map(uid => ({
-//       _id: new mongoose.Types.ObjectId(),
-//       clientId: req.clientId,
-//       campaignId: { _id: campaign._id, name: campaign.name },
-//       agentId: null,
-//       mobile: null,
-//       duration: 0,
-//       callType: 'outbound',
-//       leadStatus: 'not_connected',
-//       statusText: 'Not Accepted / Busy / Disconnected',
-//       createdAt: null,
-//       time: null,
-//       metadata: { customParams: { uniqueid: uid }, isActive: false }
-//     }));
+    const placeholderLogs = missingUniqueIds.map(uid => ({
+      _id: new mongoose.Types.ObjectId(),
+      clientId: req.clientId,
+      campaignId: { _id: campaign._id, name: campaign.name },
+      agentId: null,
+      mobile: null,
+      callType: 'outbound',
+      leadStatus: 'not_connected',
+      statusText: 'Not Accepted / Busy / Disconnected',
+      createdAt: null,
+      time: null,
+      metadata: { customParams: { uniqueid: uid }, isActive: false }
+    }));
 
-//     const allLogs = [...logs, ...placeholderLogs];
+    const allLogs = [...logs, ...placeholderLogs];
 
-//     return res.json({
-//       success: true,
-//       data: allLogs,
-//       campaign: {
-//         _id: campaign._id,
-//         name: campaign.name,
-//         uniqueIdsCount: uniqueIds.length,
-//         missingUniqueIdsCount: missingUniqueIds.length
-//       },
-//       pagination: {
-//         currentPage: page,
-//         totalPages: Math.ceil(totalLogs / limit),
-//         totalLogs,
-//         hasNextPage: skip + logs.length < totalLogs,
-//         hasPrevPage: page > 1
-//       }
-//     });
-//   } catch (error) {
-//     console.error('Error fetching campaign call logs:', error);
-//     return res.status(500).json({ success: false, error: 'Failed to fetch campaign call logs' });
-//   }
-// });
+    return res.json({
+      success: true,
+      data: allLogs,
+      campaign: {
+        _id: campaign._id,
+        name: campaign.name,
+        uniqueIdsCount: uniqueIds.length,
+        missingUniqueIdsCount: missingUniqueIds.length
+      },
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalLogs / limit),
+        totalLogs,
+        hasNextPage: skip + logs.length < totalLogs,
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching campaign call logs:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch campaign call logs' });
+  }
+});
 
 // GET campaign contacts
 router.get('/campaigns/:id/contacts', extractClientId, async (req, res) => {
