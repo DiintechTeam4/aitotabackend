@@ -319,7 +319,6 @@ app.post('/api/v1/cashfree/webhook', async (req, res) => {
   }
 });
 
-// New: Cashfree create-order API (mirrors tested backend behavior)
 app.post('/api/v1/payments/cashfree/create-order', async (req, res) => {
   try {
     const { amount, customerName, customerEmail, customerPhone } = req.body || {};
