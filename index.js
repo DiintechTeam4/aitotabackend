@@ -282,41 +282,81 @@ app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
     //   return res.status(401).json({ success: false, message: 'Invalid signature' });
     // }
 
-    const { order_id, order_status, payment_status } = webhookData;
-    
-    if (order_id) {
-      const Payment = require('./models/Payment');
-      const payment = await Payment.findOne({ orderId: order_id });
-      
-      if (payment) {
-        payment.status = (payment_status === 'SUCCESS' || order_status === 'PAID') ? 'SUCCESS' : 'FAILED';
-        payment.rawCallback = webhookData;
-        await payment.save();
-        
-        // Auto-credit logic similar to your existing callback
-        if (payment.status === 'SUCCESS' && !payment.credited) {
-          try {
-            const Credit = require('./models/Credit');
-            const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
-            const creditsToAdd = mapping[payment.planKey] || 0;
-            
-            if (creditsToAdd > 0) {
-              const creditRecord = await Credit.getOrCreateCreditRecord(payment.clientId);
-              await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${payment.planKey} plan`, {
-                gateway: 'cashfree', orderId: order_id, transactionId: webhookData.cf_payment_id
-              });
-              
-              payment.credited = true;
-              payment.creditsAdded = creditsToAdd;
-              await payment.save();
-            }
-          } catch (e) {
-            console.error('Auto-credit from webhook failed:', e.message);
+    // Normalize payload across possible Cashfree webhook shapes
+    const normalized = {
+      orderId: webhookData.order_id || webhookData.data?.order?.order_id || webhookData.data?.order_id,
+      orderStatus: webhookData.order_status || webhookData.data?.order?.order_status || webhookData.data?.order_status,
+      paymentStatus: webhookData.payment_status || webhookData.data?.payment?.payment_status || webhookData.data?.payment_status,
+      paymentId: webhookData.cf_payment_id || webhookData.data?.payment?.cf_payment_id,
+      amount: webhookData.order_amount || webhookData.data?.order?.order_amount,
+      customerId: webhookData.customer_id || webhookData.data?.customer_details?.customer_id,
+      planTag: webhookData.order_tags?.plan || webhookData.data?.order?.order_tags?.plan,
+      type: webhookData.type
+    };
+
+    if (!normalized.orderId) {
+      console.warn('Webhook missing orderId, skipping');
+      return res.json({ success: true });
+    }
+
+    const isSuccess = (normalized.paymentStatus === 'SUCCESS') || (normalized.orderStatus === 'PAID') || (normalized.type === 'PAYMENT_SUCCESS_WEBHOOK');
+
+    const Payment = require('./models/Payment');
+    let payment = await Payment.findOne({ orderId: normalized.orderId });
+
+    if (!payment) {
+      // Fallback: create a minimal Payment record so we can credit
+      try {
+        payment = await Payment.create({
+          orderId: normalized.orderId,
+          clientId: normalized.customerId,
+          amount: normalized.amount,
+          planKey: (normalized.planTag || '').toLowerCase(),
+          gateway: 'cashfree',
+          status: isSuccess ? 'SUCCESS' : (normalized.orderStatus || normalized.paymentStatus || 'PENDING'),
+          transactionId: normalized.paymentId,
+          rawCallback: webhookData
+        });
+      } catch (e) {
+        console.error('Failed to upsert Payment from webhook:', e.message);
+      }
+    } else {
+      payment.status = isSuccess ? 'SUCCESS' : (normalized.orderStatus || normalized.paymentStatus || payment.status || 'PENDING');
+      payment.transactionId = payment.transactionId || normalized.paymentId;
+      payment.rawCallback = webhookData;
+      await payment.save();
+    }
+
+    // Auto-credit on success
+    if (payment && isSuccess && !payment.credited) {
+      try {
+        const Credit = require('./models/Credit');
+        const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+        // Prefer plan on payment, else from webhook tag
+        const key = (payment.planKey || normalized.planTag || '').toLowerCase();
+        const creditsToAdd = mapping[key] || 0;
+        if (creditsToAdd > 0 && payment.clientId) {
+          const creditRecord = await Credit.getOrCreateCreditRecord(payment.clientId);
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${normalized.orderId} • ${key} plan`, {
+            gateway: 'cashfree', orderId: normalized.orderId, transactionId: payment.transactionId || normalized.paymentId, planKey: key
+          });
+          payment.credited = true;
+          payment.creditsAdded = creditsToAdd;
+          await payment.save();
+        } else if (!payment.clientId && normalized.customerId) {
+          // If payment lacks clientId, but webhook has customerId, still attempt
+          const creditRecord = await Credit.getOrCreateCreditRecord(normalized.customerId);
+          if (creditsToAdd > 0) {
+            await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${normalized.orderId} • ${key} plan`, {
+              gateway: 'cashfree', orderId: normalized.orderId, transactionId: normalized.paymentId, planKey: key
+            });
           }
         }
+      } catch (e) {
+        console.error('Auto-credit from webhook failed:', e.message);
       }
     }
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('❌ Cashfree webhook error:', error);
