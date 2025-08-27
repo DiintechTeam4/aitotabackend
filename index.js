@@ -730,24 +730,7 @@ dotenv.config();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// CORS configuration to allow frontend domain and Authorization header
-const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:5173',
-  'https://www.aitota.com'
-];
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true); // Allow non-browser tools
-    const isAllowed = allowedOrigins.includes(origin);
-    callback(isAllowed ? null : new Error('Not allowed by CORS'), isAllowed);
-  },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false,
-  optionsSuccessStatus: 204
-};
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
+app.use(cors());
 
 // Initialize WebSocket server
 const wsServer = new VoiceChatWebSocketServer(server);
