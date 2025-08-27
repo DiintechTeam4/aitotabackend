@@ -2286,6 +2286,10 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
 
     // Fetch all groups and their contacts
     const groups = await Group.find({ _id: { $in: campaign.groupIds } });
+    // Ensure contacts array exists to avoid runtime errors
+    if (!Array.isArray(campaign.contacts)) {
+      campaign.contacts = [];
+    }
     
     let totalContacts = 0;
     let totalGroups = groups.length;
@@ -2296,20 +2300,26 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
     const validPhoneNumbers = new Set();
     
     for (const group of groups) {
-      if (group.contacts && group.contacts.length > 0) {
+      if (group && Array.isArray(group.contacts) && group.contacts.length > 0) {
         for (const groupContact of group.contacts) {
-          const normalizedGroupPhone = normalizePhoneNumber(groupContact.phone);
+          const normalizedGroupPhone = normalizePhoneNumber(groupContact && groupContact.phone);
+          // Skip invalid/empty phone numbers
+          if (!normalizedGroupPhone) continue;
+
           validPhoneNumbers.add(normalizedGroupPhone);
           
           // Check if phone number already exists in campaign contacts (normalized compare)
           const existingContact = campaign.contacts.find(contact => {
-            const normalizedExisting = normalizePhoneNumber(contact.phone);
-            return normalizedExisting === normalizedGroupPhone;
+            const normalizedExisting = normalizePhoneNumber(contact && contact.phone);
+            return normalizedExisting && normalizedExisting === normalizedGroupPhone;
           });
           if (!existingContact) {
+            const safeName = (groupContact && typeof groupContact.name === 'string' && groupContact.name.trim())
+              ? groupContact.name.trim()
+              : (groupContact && groupContact.phone) || 'Unknown';
             newContacts.push({
               _id: new mongoose.Types.ObjectId(),
-              name: groupContact.name,
+              name: safeName,
               phone: groupContact.phone,
               email: groupContact.email || '',
               addedAt: new Date()
@@ -2322,8 +2332,8 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
 
     // Find contacts to remove (contacts that are no longer in any group)
     for (const campaignContact of campaign.contacts) {
-      const normalizedCampaignPhone = normalizePhoneNumber(campaignContact.phone);
-      if (!validPhoneNumbers.has(normalizedCampaignPhone)) {
+      const normalizedCampaignPhone = normalizePhoneNumber(campaignContact && campaignContact.phone);
+      if (normalizedCampaignPhone && !validPhoneNumbers.has(normalizedCampaignPhone)) {
         contactsToRemove.push(campaignContact);
       }
     }
@@ -2523,11 +2533,13 @@ router.get('/campaigns/:id/missed-calls', extractClientId, async (req, res) => {
       return res.status(200).json({ success: true, data: [], meta: { totalDetails: allUniqueIds.length, totalWithLogs: uniqueIdsWithLogs.size, totalMissing: 0 } });
     }
 
-    // 3) Map missing uniqueIds to contactIds from details
+    // 3) Map missing uniqueIds to contactIds and their timestamps from details
     const uniqueIdToContactId = new Map();
+    const uniqueIdToTime = new Map();
     for (const d of detailEntries) {
       if (d && missingUniqueIds.includes(d.uniqueId)) {
         uniqueIdToContactId.set(d.uniqueId, d.contactId ? String(d.contactId) : null);
+        uniqueIdToTime.set(d.uniqueId, d.time || d.createdAt || null);
       }
     }
 
@@ -2540,11 +2552,12 @@ router.get('/campaigns/:id/missed-calls', extractClientId, async (req, res) => {
       }
     }
 
-    // 5) Compose response list: for each missing uniqueId, include its contact if available
+    // 5) Compose response list: for each missing uniqueId, include its contact and timestamp if available
     const responseItems = missingUniqueIds.map(u => {
       const contactIdStr = uniqueIdToContactId.get(u);
       const contact = contactIdStr ? contactIdToContact.get(contactIdStr) : null;
-      return { uniqueId: u, contactId: contactIdStr || null, contact: contact || null };
+      const time = uniqueIdToTime.get(u) || null;
+      return { uniqueId: u, contactId: contactIdStr || null, contact: contact || null, time };
     });
 
     return res.status(200).json({
