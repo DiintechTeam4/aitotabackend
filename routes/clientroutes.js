@@ -5219,17 +5219,16 @@ router.post('/payments/initiate/sdk', async (req, res) => {
     const client = await Client.findById(clientId);
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
 
-    // Configure Cashfree SDK using production or sandbox keys from config
-    const { Cashfree } = require('cashfree-pg');
-    Cashfree.XClientId = CashfreeConfig.CLIENT_ID;
-    Cashfree.XClientSecret = CashfreeConfig.CLIENT_SECRET;
-    // Some SDK versions don't expose Cashfree.Environment; fallback to string
-    const envIsProd = CashfreeConfig.ENVIRONMENT === 'production';
-    const sdkEnv = (Cashfree.Environment && (envIsProd ? Cashfree.Environment.PRODUCTION : Cashfree.Environment.SANDBOX)) || (envIsProd ? 'PRODUCTION' : 'SANDBOX');
-    Cashfree.XEnvironment = sdkEnv;
-
+    const axios = require('axios');
     const orderId = `AITOTA_${Date.now()}`;
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Content-Type': 'application/json'
+    };
     const orderRequest = {
+      order_id: orderId,
       order_amount: Number(amount),
       order_currency: 'INR',
       customer_details: {
@@ -5239,14 +5238,21 @@ router.post('/payments/initiate/sdk', async (req, res) => {
         customer_phone: (String(client?.mobileNo || '9999999999').replace(/\D/g, '').slice(-10)) || '9999999999'
       },
       order_meta: {
-        notify_url: CashfreeConfig.RETURN_URL,
+        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`,
         return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
       }
     };
-
-    // Create order via SDK
-    const sdkResp = await Cashfree.PGCreateOrder('2023-08-01', { ...orderRequest, order_id: orderId });
-    const data = sdkResp?.data || {};
+    const apiUrl = `${CashfreeConfig.BASE_URL}/pg/orders`;
+    let data = {};
+    try {
+      const resp = await axios.post(apiUrl, orderRequest, { headers });
+      data = resp?.data || {};
+    } catch (e) {
+      const status = e.response?.status;
+      const errData = e.response?.data || e.message;
+      console.error('Cashfree REST create order failed:', status, errData);
+      return res.status(502).json({ success: false, message: 'Cashfree create order failed', status, error: errData });
+    }
 
     // Persist INITIATED payment
     await Payment.create({
@@ -5261,7 +5267,7 @@ router.post('/payments/initiate/sdk', async (req, res) => {
       rawResponse: { sdk: data }
     });
 
-    // Return session to frontend so it can launch checkout via JS SDK
+    // Return session to frontend so it can launch checkout via payments domain
     return res.json({
       success: true,
       environment: CashfreeConfig.ENVIRONMENT,
