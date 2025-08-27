@@ -266,10 +266,15 @@ app.get('/api/v1/client/payments/initiate/cashfree-direct', async (req, res) => 
 });
 
 // Cashfree webhook handler (optional but recommended for better reliability)
-app.post('/api/v1/cashfree/webhook', async (req, res) => {
+app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
   try {
     const webhookData = req.body;
     console.log('🔔 Cashfree webhook received:', webhookData);
+
+    if (!webhookData || typeof webhookData !== 'object') {
+      console.warn('Webhook body missing or not JSON');
+      return res.status(200).json({ success: true });
+    }
 
     // Verify webhook signature (implement based on Cashfree docs)
     // const signature = req.headers['x-webhook-signature'];
@@ -277,45 +282,344 @@ app.post('/api/v1/cashfree/webhook', async (req, res) => {
     //   return res.status(401).json({ success: false, message: 'Invalid signature' });
     // }
 
-    const { order_id, order_status, payment_status } = webhookData;
-    
-    if (order_id) {
-      const Payment = require('./models/Payment');
-      const payment = await Payment.findOne({ orderId: order_id });
-      
-      if (payment) {
-        payment.status = (payment_status === 'SUCCESS' || order_status === 'PAID') ? 'SUCCESS' : 'FAILED';
-        payment.rawCallback = webhookData;
-        await payment.save();
-        
-        // Auto-credit logic similar to your existing callback
-        if (payment.status === 'SUCCESS' && !payment.credited) {
-          try {
-            const Credit = require('./models/Credit');
-            const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
-            const creditsToAdd = mapping[payment.planKey] || 0;
-            
-            if (creditsToAdd > 0) {
-              const creditRecord = await Credit.getOrCreateCreditRecord(payment.clientId);
-              await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${payment.planKey} plan`, {
-                gateway: 'cashfree', orderId: order_id, transactionId: webhookData.cf_payment_id
-              });
-              
-              payment.credited = true;
-              payment.creditsAdded = creditsToAdd;
-              await payment.save();
-            }
-          } catch (e) {
-            console.error('Auto-credit from webhook failed:', e.message);
+    // Normalize payload across possible Cashfree webhook shapes
+    const normalized = {
+      orderId: webhookData.order_id || webhookData.data?.order?.order_id || webhookData.data?.order_id,
+      orderStatus: webhookData.order_status || webhookData.data?.order?.order_status || webhookData.data?.order_status,
+      paymentStatus: webhookData.payment_status || webhookData.data?.payment?.payment_status || webhookData.data?.payment_status,
+      paymentId: webhookData.cf_payment_id || webhookData.data?.payment?.cf_payment_id,
+      amount: webhookData.order_amount || webhookData.data?.order?.order_amount,
+      customerId: webhookData.customer_id || webhookData.data?.customer_details?.customer_id,
+      planTag: webhookData.order_tags?.plan || webhookData.data?.order?.order_tags?.plan,
+      type: webhookData.type
+    };
+
+    if (!normalized.orderId) {
+      console.warn('Webhook missing orderId, skipping');
+      return res.json({ success: true });
+    }
+
+    const isSuccess = (normalized.paymentStatus === 'SUCCESS') || (normalized.orderStatus === 'PAID') || (normalized.type === 'PAYMENT_SUCCESS_WEBHOOK');
+
+    const Payment = require('./models/Payment');
+    let payment = await Payment.findOne({ orderId: normalized.orderId });
+
+    if (!payment) {
+      // Fallback: create a minimal Payment record so we can credit
+      try {
+        payment = await Payment.create({
+          orderId: normalized.orderId,
+          clientId: normalized.customerId,
+          amount: normalized.amount,
+          planKey: (normalized.planTag || '').toLowerCase(),
+          gateway: 'cashfree',
+          status: isSuccess ? 'SUCCESS' : (normalized.orderStatus || normalized.paymentStatus || 'PENDING'),
+          transactionId: normalized.paymentId,
+          rawCallback: webhookData
+        });
+      } catch (e) {
+        console.error('Failed to upsert Payment from webhook:', e.message);
+      }
+    } else {
+      payment.status = isSuccess ? 'SUCCESS' : (normalized.orderStatus || normalized.paymentStatus || payment.status || 'PENDING');
+      payment.transactionId = payment.transactionId || normalized.paymentId;
+      payment.rawCallback = webhookData;
+      await payment.save();
+    }
+
+    // Auto-credit on success
+    if (payment && isSuccess && !payment.credited) {
+      try {
+        const Credit = require('./models/Credit');
+        const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+        // Prefer plan on payment, else from webhook tag
+        const key = (payment.planKey || normalized.planTag || '').toLowerCase();
+        const creditsToAdd = mapping[key] || 0;
+        if (creditsToAdd > 0 && payment.clientId) {
+          const creditRecord = await Credit.getOrCreateCreditRecord(payment.clientId);
+          const txn = payment.transactionId || normalized.paymentId;
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${normalized.orderId} • tx ${txn}`, null, txn);
+          payment.credited = true;
+          payment.creditsAdded = creditsToAdd;
+          await payment.save();
+        } else if (!payment.clientId && normalized.customerId) {
+          // If payment lacks clientId, but webhook has customerId, still attempt
+          const creditRecord = await Credit.getOrCreateCreditRecord(normalized.customerId);
+          if (creditsToAdd > 0) {
+            await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${normalized.orderId} • tx ${normalized.paymentId}`, null, normalized.paymentId);
           }
         }
+      } catch (e) {
+        console.error('Auto-credit from webhook failed:', e.message);
       }
     }
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('❌ Cashfree webhook error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Allow CORS preflight for create-order explicitly
+app.options('/api/v1/payments/cashfree/create-order', cors({
+  origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'https://www.aitota.com'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['POST', 'OPTIONS']
+}));
+
+app.post('/api/v1/payments/cashfree/create-order', cors({
+  origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'https://www.aitota.com'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['POST', 'OPTIONS']
+}), express.json(), async (req, res) => {
+  try {
+    const { amount, planKey } = req.body || {};
+    console.log('🧾 [CREATE-ORDER] headers:', req.headers);
+    console.log('🧾 [CREATE-ORDER] body:', req.body);
+
+    // Require auth header
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Authorization token required' });
+    }
+    // Verify JWT
+    const jwt = require('jsonwebtoken');
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({ success: false, message: 'Invalid authorization token' });
+    }
+
+    // Resolve amount
+    let orderAmount = parseFloat(amount);
+    if ((amount === undefined || amount === null || amount === '') || isNaN(orderAmount) || orderAmount <= 0) {
+      // Try plan mapping fallback
+      const mappingBase = { basic: 1, professional: 5000, enterprise: 10000 };
+      const key = typeof planKey === 'string' ? planKey.toLowerCase() : '';
+      const base = mappingBase[key];
+      if (base) {
+        const gst = Math.round(base * 0.18 * 100) / 100;
+        orderAmount = Math.round((base + gst) * 100) / 100;
+        console.log('🧮 [CREATE-ORDER] computed amount from planKey:', { planKey: key, base, orderAmount });
+      } else {
+        return res.status(400).json({ success: false, message: 'Missing required field: amount', details: { received: req.body } });
+      }
+    }
+
+    // Get client details from DB
+    const Client = require('./models/Client');
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    let customerName = client.name || client.username || client.email || 'Customer';
+    let customerEmail = client.email || `${clientId}@aitota.com`;
+    let customerPhone = client.phone || client.mobile || client.mobileNo || '9999999999';
+    try {
+      const digits = String(customerPhone).replace(/\D/g, '');
+      if (digits.length >= 10) customerPhone = digits.slice(-10);
+    } catch {}
+
+    const orderId = 'order_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const customerId = String(clientId);
+
+    const getBaseUrl = () => {
+      const host = req.get('host') || '';
+      if (host.includes('.onrender.com') || host.includes('.vercel.app') || host.includes('.herokuapp.com') || process.env.NODE_ENV === 'production') {
+        return `https://${host}`;
+      }
+      const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http');
+      return `${proto}://${host}`;
+    };
+
+    const baseUrl = getBaseUrl();
+
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+
+    if (!CLIENT_ID || !CLIENT_SECRET) {
+      return res.status(500).json({ success: false, message: 'Cashfree credentials not configured' });
+    }
+
+    const orderData = {
+      order_id: orderId,
+      order_amount: orderAmount,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: customerId,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone
+      },
+      order_meta: {
+        return_url: `${baseUrl}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${baseUrl}/api/v1/cashfree/webhook`
+      },
+      order_tags: planKey ? { plan: String(planKey).toLowerCase(), client_id: customerId } : { client_id: customerId }
+    };
+
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    };
+
+    const cfResp = await axios.post(`${BASE_URL}/pg/orders`, orderData, { headers });
+    const result = cfResp.data || {};
+
+    if (!result.payment_session_id) {
+      return res.status(400).json({ success: false, message: result.message || 'Failed to create order', details: result });
+    }
+
+    // Save payment record
+    try {
+      const Payment = require('./models/Payment');
+      await Payment.create({
+        clientId,
+        orderId,
+        planKey: String(planKey || '').toLowerCase(),
+        amount: orderAmount,
+        email: customerEmail,
+        phone: customerPhone,
+        status: 'INITIATED',
+        gateway: 'cashfree',
+        sessionId: result.payment_session_id,
+        orderStatus: result.order_status,
+        rawResponse: result
+      });
+    } catch (e) {
+      console.error('Payment save failed (non-fatal):', e.message);
+    }
+
+    return res.json({
+      success: true,
+      order_id: result.order_id,
+      payment_session_id: result.payment_session_id,
+      order_status: result.order_status
+    });
+  } catch (error) {
+    console.error('Create-order error:', error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({ success: false, message: error.response?.data?.message || error.message });
+  }
+});
+
+// New: Cashfree verify-payment API (mirrors tested backend behavior)
+app.post('/api/v1/payments/cashfree/verify-payment', async (req, res) => {
+  try {
+    const { order_id } = req.body || {};
+    if (!order_id) {
+      return res.status(400).json({ success: false, message: 'Order ID is required' });
+    }
+
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Accept': 'application/json'
+    };
+
+    const resp = await axios.get(`${BASE_URL}/pg/orders/${order_id}`, { headers });
+    const data = resp.data || {};
+
+    return res.json({
+      success: true,
+      order_status: data.order_status,
+      payment_status: data.order_status === 'PAID' ? 'SUCCESS' : data.order_status,
+      order_id: data.order_id,
+      order_amount: data.order_amount
+    });
+  } catch (error) {
+    console.error('Verify-payment error:', error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({ success: false, message: error.response?.data?.message || error.message });
+  }
+});
+
+// Verify and credit: verifies payment and adds credits to the client account
+app.options('/api/v1/payments/cashfree/verify-and-credit', cors({
+  origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'https://www.aitota.com'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['POST', 'OPTIONS']
+}));
+app.post('/api/v1/payments/cashfree/verify-and-credit', cors({
+  origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'https://www.aitota.com'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['POST', 'OPTIONS']
+}), express.json(), async (req, res) => {
+  try {
+    const { order_id } = req.body || {};
+    if (!order_id) return res.status(400).json({ success: false, message: 'Order ID is required' });
+
+    // Auth
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ success: false, message: 'Authorization token required' });
+    const jwt = require('jsonwebtoken');
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({ success: false, message: 'Invalid authorization token' });
+    }
+
+    // Verify with Cashfree
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Accept': 'application/json'
+    };
+    const resp = await axios.get(`${BASE_URL}/pg/orders/${order_id}`, { headers });
+    const data = resp.data || {};
+    const isPaid = data.order_status === 'PAID';
+
+    // Update payment doc
+    const Payment = require('./models/Payment');
+    const paymentDoc = await Payment.findOneAndUpdate(
+      { orderId: order_id, clientId },
+      { status: isPaid ? 'SUCCESS' : (data.order_status || 'FAILED'), transactionId: data.cf_payment_id || data.reference_id, rawVerification: data },
+      { new: true }
+    );
+
+    if (!isPaid) {
+      return res.json({ success: true, order_status: data.order_status, credited: false });
+    }
+
+    // Add credits if not already credited
+    if (paymentDoc && !paymentDoc.credited) {
+      try {
+        const Credit = require('./models/Credit');
+        const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+        const key = (paymentDoc.planKey || '').toLowerCase();
+        const creditsToAdd = mapping[key] || 0;
+        if (creditsToAdd > 0) {
+          const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+          const txn = data.cf_payment_id || data.reference_id;
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${order_id} • tx ${txn}`, null, txn);
+          await Payment.findOneAndUpdate({ orderId: order_id }, { credited: true, creditsAdded: creditsToAdd });
+        }
+      } catch (e) {
+        console.error('Credit add failed:', e.message);
+      }
+    }
+
+    // Return latest balance
+    try {
+      const Credit = require('./models/Credit');
+      const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+      return res.json({ success: true, order_status: 'PAID', credited: true, currentBalance: creditRecord.currentBalance });
+    } catch {
+      return res.json({ success: true, order_status: 'PAID', credited: true });
+    }
+  } catch (error) {
+    console.error('Verify-and-credit error:', error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({ success: false, message: error.response?.data?.message || error.message });
   }
 });
 
@@ -405,12 +709,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
         
         if (creditsToAdd > 0 && paymentDoc.clientId) {
           const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
-          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
-            gateway: 'cashfree', 
-            orderId: order_id, 
-            transactionId,
-            planKey: key
-          });
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${order_id} • tx ${transactionId}`, null, transactionId);
           
           // Mark payment as credited
           await Payment.findOneAndUpdate(
@@ -547,9 +846,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
         const creditsToAdd = mapping[key] || 0;
         if (creditsToAdd > 0 && paymentDoc.clientId) {
           const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
-          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
-            gateway: 'cashfree', orderId: order_id, transactionId
-          });
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${order_id} • tx ${transactionId}`, null, transactionId);
           const Payment = require('./models/Payment');
           await Payment.findOneAndUpdate({ orderId: order_id }, { credited: true, creditsAdded: creditsToAdd });
         }
