@@ -5090,15 +5090,17 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.log('Original session ID:', originalSessionId);
       console.log('Cleaned session ID:', sessionId);
       
-      // Try different URL formats for hosted checkout
+      // Prefer payments domain with query param; ensure URL-encoded session id
+      const encodedOriginal = encodeURIComponent(originalSessionId);
+      const encodedCleaned = encodeURIComponent(sessionId);
       let hostedCheckoutUrl;
       if (isProduction) {
-        // Try the original session ID first
-        hostedCheckoutUrl = `https://cashfree.com/pg/orders/${originalSessionId}`;
-        console.log('Trying production URL with original session ID:', hostedCheckoutUrl);
+        // Primary format (recommended): payments domain with session_id query
+        hostedCheckoutUrl = `https://payments.cashfree.com/order?session_id=${encodedOriginal}`;
+        console.log('Trying production payments URL with original session ID:', hostedCheckoutUrl);
       } else {
-        hostedCheckoutUrl = `https://sandbox.cashfree.com/pg/orders/${originalSessionId}`;
-        console.log('Trying sandbox URL with original session ID:', hostedCheckoutUrl);
+        hostedCheckoutUrl = `https://payments-test.cashfree.com/order?session_id=${encodedOriginal}`;
+        console.log('Trying sandbox payments URL with original session ID:', hostedCheckoutUrl);
       }
       
       paymentLinkResponse.link_url = hostedCheckoutUrl;
