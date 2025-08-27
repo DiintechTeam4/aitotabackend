@@ -333,6 +333,8 @@ app.post('/api/v1/payments/cashfree/create-order', cors({
 }), async (req, res) => {
   try {
     const { amount, planKey } = req.body || {};
+    console.log('🧾 [CREATE-ORDER] headers:', req.headers);
+    console.log('🧾 [CREATE-ORDER] body:', req.body);
 
     // Require auth header
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -349,13 +351,20 @@ app.post('/api/v1/payments/cashfree/create-order', cors({
       return res.status(401).json({ success: false, message: 'Invalid authorization token' });
     }
 
-    if (!amount) {
-      return res.status(400).json({ success: false, message: 'Missing required field: amount' });
-    }
-
-    const orderAmount = parseFloat(amount);
-    if (isNaN(orderAmount) || orderAmount <= 0) {
-      return res.status(400).json({ success: false, message: 'Invalid amount. Must be a positive number.' });
+    // Resolve amount
+    let orderAmount = parseFloat(amount);
+    if ((amount === undefined || amount === null || amount === '') || isNaN(orderAmount) || orderAmount <= 0) {
+      // Try plan mapping fallback
+      const mappingBase = { basic: 1, professional: 5000, enterprise: 10000 };
+      const key = typeof planKey === 'string' ? planKey.toLowerCase() : '';
+      const base = mappingBase[key];
+      if (base) {
+        const gst = Math.round(base * 0.18 * 100) / 100;
+        orderAmount = Math.round((base + gst) * 100) / 100;
+        console.log('🧮 [CREATE-ORDER] computed amount from planKey:', { planKey: key, base, orderAmount });
+      } else {
+        return res.status(400).json({ success: false, message: 'Missing required field: amount', details: { received: req.body } });
+      }
     }
 
     // Get client details from DB
