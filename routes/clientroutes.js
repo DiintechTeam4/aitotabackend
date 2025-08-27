@@ -2265,7 +2265,21 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
     }
 
     if (!campaign.groupIds || campaign.groupIds.length === 0) {
-      return res.status(400).json({ success: false, error: 'No groups in campaign to sync from' });
+      // No groups remain: clear campaign contacts to prevent stale entries
+      const removedCount = Array.isArray(campaign.contacts) ? campaign.contacts.length : 0;
+      campaign.contacts = [];
+      await campaign.save();
+      return res.json({
+        success: true,
+        data: {
+          totalContacts: 0,
+          totalGroups: 0,
+          newContactsAdded: 0,
+          contactsRemoved: removedCount,
+          totalContactsInCampaign: 0
+        },
+        message: `Cleared ${removedCount} contacts because campaign has no groups`
+      });
     }
 
     // Local helper: normalize phone numbers for consistent comparison
@@ -2284,8 +2298,11 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
       return normalized;
     };
 
-    // Fetch all groups and their contacts
-    const groups = await Group.find({ _id: { $in: campaign.groupIds } });
+    // Fetch all groups and their contacts in the same order as campaign.groupIds
+    const groupsFromDb = await Group.find({ _id: { $in: campaign.groupIds } });
+    const groups = campaign.groupIds
+      .map(id => groupsFromDb.find(g => String(g._id) === String(id)))
+      .filter(Boolean);
     // Ensure contacts array exists to avoid runtime errors
     if (!Array.isArray(campaign.contacts)) {
       campaign.contacts = [];
@@ -2338,11 +2355,15 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
       }
     }
 
-    // Remove contacts that are no longer in groups
+    // Remove contacts that are no longer in groups (compare by normalized phone)
     if (contactsToRemove.length > 0) {
-      campaign.contacts = campaign.contacts.filter(contact => 
-        !contactsToRemove.some(removedContact => removedContact.phone === contact.phone)
+      const phonesToRemove = new Set(
+        contactsToRemove.map(c => normalizePhoneNumber(c.phone)).filter(Boolean)
       );
+      campaign.contacts = (campaign.contacts || []).filter(contact => {
+        const normalized = normalizePhoneNumber(contact && contact.phone);
+        return !normalized || !phonesToRemove.has(normalized);
+      });
     }
 
     // Add new contacts to campaign
@@ -2350,10 +2371,8 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
       campaign.contacts.push(...newContacts);
     }
 
-    // Save campaign if there were any changes
-    if (newContacts.length > 0 || contactsToRemove.length > 0) {
-      await campaign.save();
-    }
+    // Save campaign even if there are no changes to ensure consistency with zero-group clearing etc.
+    await campaign.save();
 
     res.json({
       success: true,
