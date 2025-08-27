@@ -5085,10 +5085,21 @@ router.get('/payments/initiate/direct', async (req, res) => {
       console.log('Fallback: Using hosted checkout with session ID');
       const isProduction = CashfreeConfig.BASE_URL.includes('api.cashfree.com');
       
-      // Use hosted checkout URL since direct payment links are not working
-      const hostedCheckoutUrl = isProduction 
-        ? `https://cashfree.com/pg/orders/${sessionId}`
-        : `https://sandbox.cashfree.com/pg/orders/${sessionId}`;
+      // Use the original session ID (don't clean it) for hosted checkout
+      const originalSessionId = orderResponse.payment_session_id;
+      console.log('Original session ID:', originalSessionId);
+      console.log('Cleaned session ID:', sessionId);
+      
+      // Try different URL formats for hosted checkout
+      let hostedCheckoutUrl;
+      if (isProduction) {
+        // Try the original session ID first
+        hostedCheckoutUrl = `https://cashfree.com/pg/orders/${originalSessionId}`;
+        console.log('Trying production URL with original session ID:', hostedCheckoutUrl);
+      } else {
+        hostedCheckoutUrl = `https://sandbox.cashfree.com/pg/orders/${originalSessionId}`;
+        console.log('Trying sandbox URL with original session ID:', hostedCheckoutUrl);
+      }
       
       paymentLinkResponse.link_url = hostedCheckoutUrl;
       console.log('Final URL:', hostedCheckoutUrl);
@@ -5139,10 +5150,10 @@ router.get('/payments/initiate/direct', async (req, res) => {
   }
 });
 
-// Fallback endpoint to try different Cashfree URL formats
-router.get('/payments/cashfree/fallback', (req, res) => {
+// Test endpoint to try different Cashfree URL formats
+router.get('/payments/cashfree/test-urls', (req, res) => {
   try {
-    const { format, sessionId } = req.query;
+    const { sessionId, orderId } = req.query;
     
     if (!sessionId) {
       return res.status(400).json({ 
@@ -5151,43 +5162,39 @@ router.get('/payments/cashfree/fallback', (req, res) => {
       });
     }
     
+    const isProduction = CashfreeConfig.BASE_URL.includes('api.cashfree.com');
+    
     // Clean session ID if it ends with 'payment'
     let cleanedSessionId = sessionId;
     if (sessionId.endsWith('payment')) {
       cleanedSessionId = sessionId.replace(/payment$/, '');
-      console.log('Cleaned session ID for fallback:', cleanedSessionId);
     }
     
-    // Generate URL based on requested format
-    let checkoutUrl;
-    switch (format) {
-      case 'path':
-        checkoutUrl = `https://payments.cashfree.com/order/${cleanedSessionId}`;
-        break;
-      case 'query_session_id':
-        checkoutUrl = `https://payments.cashfree.com/order?session_id=${cleanedSessionId}`;
-        break;
-      case 'query_session':
-        checkoutUrl = `https://payments.cashfree.com/order?session=${cleanedSessionId}`;
-        break;
-      case 'hash':
-        checkoutUrl = `https://payments.cashfree.com/order/#${cleanedSessionId}`;
-        break;
-      case 'checkout_path':
-        checkoutUrl = `https://payments.cashfree.com/checkout/${cleanedSessionId}`;
-        break;
-      default:
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Invalid format. Use: path, query_session_id, query_session, hash, or checkout_path' 
-        });
-    }
+    // Generate different URL formats to test
+    const urlFormats = {
+      'original_session': `https://${isProduction ? 'cashfree.com' : 'sandbox.cashfree.com'}/pg/orders/${sessionId}`,
+      'cleaned_session': `https://${isProduction ? 'cashfree.com' : 'sandbox.cashfree.com'}/pg/orders/${cleanedSessionId}`,
+      'payments_links': orderId ? `https://${isProduction ? 'payments.cashfree.com' : 'payments-test.cashfree.com'}/links/${orderId}` : 'N/A (no orderId)',
+      'payments_order': `https://${isProduction ? 'payments.cashfree.com' : 'payments-test.cashfree.com'}/order/${cleanedSessionId}`,
+      'payments_query': `https://${isProduction ? 'payments.cashfree.com' : 'payments-test.cashfree.com'}/order?session_id=${cleanedSessionId}`,
+      'checkout_path': `https://${isProduction ? 'cashfree.com' : 'sandbox.cashfree.com'}/checkout/${cleanedSessionId}`
+    };
     
-    console.log(`Fallback redirect to ${format} format:`, checkoutUrl);
-    return res.redirect(302, checkoutUrl);
+    console.log('Testing Cashfree URL formats:', urlFormats);
+    
+    return res.json({ 
+      success: true, 
+      message: 'URL formats generated for testing',
+      environment: isProduction ? 'production' : 'sandbox',
+      sessionId: {
+        original: sessionId,
+        cleaned: cleanedSessionId
+      },
+      urlFormats
+    });
     
   } catch (error) {
-    console.error('Fallback endpoint error:', error);
+    console.error('Test URLs endpoint error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
