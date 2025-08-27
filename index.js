@@ -337,9 +337,8 @@ app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
         const creditsToAdd = mapping[key] || 0;
         if (creditsToAdd > 0 && payment.clientId) {
           const creditRecord = await Credit.getOrCreateCreditRecord(payment.clientId);
-          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${normalized.orderId} • ${key} plan`, {
-            gateway: 'cashfree', orderId: normalized.orderId, transactionId: payment.transactionId || normalized.paymentId, planKey: key
-          });
+          const txn = payment.transactionId || normalized.paymentId;
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${normalized.orderId} • tx ${txn}`, null, txn);
           payment.credited = true;
           payment.creditsAdded = creditsToAdd;
           await payment.save();
@@ -347,9 +346,7 @@ app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
           // If payment lacks clientId, but webhook has customerId, still attempt
           const creditRecord = await Credit.getOrCreateCreditRecord(normalized.customerId);
           if (creditsToAdd > 0) {
-            await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${normalized.orderId} • ${key} plan`, {
-              gateway: 'cashfree', orderId: normalized.orderId, transactionId: normalized.paymentId, planKey: key
-            });
+            await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${normalized.orderId} • tx ${normalized.paymentId}`, null, normalized.paymentId);
           }
         }
       } catch (e) {
@@ -603,9 +600,8 @@ app.post('/api/v1/payments/cashfree/verify-and-credit', cors({
         const creditsToAdd = mapping[key] || 0;
         if (creditsToAdd > 0) {
           const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
-          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
-            gateway: 'cashfree', orderId: order_id, transactionId: data.cf_payment_id || data.reference_id, planKey: key
-          });
+          const txn = data.cf_payment_id || data.reference_id;
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${order_id} • tx ${txn}`, null, txn);
           await Payment.findOneAndUpdate({ orderId: order_id }, { credited: true, creditsAdded: creditsToAdd });
         }
       } catch (e) {
@@ -713,12 +709,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
         
         if (creditsToAdd > 0 && paymentDoc.clientId) {
           const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
-          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
-            gateway: 'cashfree', 
-            orderId: order_id, 
-            transactionId,
-            planKey: key
-          });
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${order_id} • tx ${transactionId}`, null, transactionId);
           
           // Mark payment as credited
           await Payment.findOneAndUpdate(
@@ -855,9 +846,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
         const creditsToAdd = mapping[key] || 0;
         if (creditsToAdd > 0 && paymentDoc.clientId) {
           const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
-          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
-            gateway: 'cashfree', orderId: order_id, transactionId
-          });
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree ${key} • order ${order_id} • tx ${transactionId}`, null, transactionId);
           const Payment = require('./models/Payment');
           await Payment.findOneAndUpdate({ orderId: order_id }, { credited: true, creditsAdded: creditsToAdd });
         }
