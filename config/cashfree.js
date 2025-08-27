@@ -2,7 +2,7 @@
 const dotenv = require('dotenv');
 dotenv.config();
 
-const isProduction = process.env.NODE_ENV === 'prod';
+const isProduction = process.env.NODE_ENV === 'prod' || process.env.NODE_ENV === 'production' || process.env.CASHFREE_ENV === 'production';
 
 const config = {
   CLIENT_ID: isProduction 
@@ -20,12 +20,18 @@ const config = {
 };
 
 console.log(`🏦 Cashfree initialized in ${config.ENVIRONMENT} mode`);
+console.log(`🏦 Environment variables:`, {
+  NODE_ENV: process.env.NODE_ENV,
+  CASHFREE_ENV: process.env.CASHFREE_ENV,
+  isProduction: isProduction
+});
 console.log(`🏦 Cashfree config:`, {
   ENV: config.ENV,
   BASE_URL: config.BASE_URL,
   RETURN_URL: config.RETURN_URL,
   hasClientId: !!config.CLIENT_ID,
-  hasClientSecret: !!config.CLIENT_SECRET
+  hasClientSecret: !!config.CLIENT_SECRET,
+  clientIdPrefix: config.CLIENT_ID ? config.CLIENT_ID.substring(0, 4) : 'N/A'
 });
 
 module.exports = config;
