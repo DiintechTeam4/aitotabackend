@@ -2,10 +2,7 @@
 const dotenv = require('dotenv');
 dotenv.config();
 
-// Force production mode for debugging - remove this line after fixing
-const forceProduction = process.env.FORCE_PRODUCTION === 'true';
-
-const isProduction = forceProduction || process.env.NODE_ENV === 'prod' || process.env.NODE_ENV === 'production' || process.env.CASHFREE_ENV === 'production';
+const isProduction = process.env.NODE_ENV === 'prod' || process.env.NODE_ENV === 'production' || process.env.CASHFREE_ENV === 'production';
 
 const config = {
   CLIENT_ID: isProduction 
