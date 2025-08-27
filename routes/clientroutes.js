@@ -5223,7 +5223,10 @@ router.post('/payments/initiate/sdk', async (req, res) => {
     const { Cashfree } = require('cashfree-pg');
     Cashfree.XClientId = CashfreeConfig.CLIENT_ID;
     Cashfree.XClientSecret = CashfreeConfig.CLIENT_SECRET;
-    Cashfree.XEnvironment = CashfreeConfig.ENVIRONMENT === 'production' ? Cashfree.Environment.PRODUCTION : Cashfree.Environment.SANDBOX;
+    // Some SDK versions don't expose Cashfree.Environment; fallback to string
+    const envIsProd = CashfreeConfig.ENVIRONMENT === 'production';
+    const sdkEnv = (Cashfree.Environment && (envIsProd ? Cashfree.Environment.PRODUCTION : Cashfree.Environment.SANDBOX)) || (envIsProd ? 'PRODUCTION' : 'SANDBOX');
+    Cashfree.XEnvironment = sdkEnv;
 
     const orderId = `AITOTA_${Date.now()}`;
     const orderRequest = {
