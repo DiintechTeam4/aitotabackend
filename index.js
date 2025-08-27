@@ -319,6 +319,115 @@ app.post('/api/v1/cashfree/webhook', async (req, res) => {
   }
 });
 
+// New: Cashfree create-order API (mirrors tested backend behavior)
+app.post('/api/v1/payments/cashfree/create-order', async (req, res) => {
+  try {
+    const { amount, customerName, customerEmail, customerPhone } = req.body || {};
+
+    if (!amount || !customerName || !customerEmail || !customerPhone) {
+      return res.status(400).json({ success: false, message: 'Missing required fields: amount, customerName, customerEmail, customerPhone' });
+    }
+
+    const orderAmount = parseFloat(amount);
+    if (isNaN(orderAmount) || orderAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid amount. Must be a positive number.' });
+    }
+
+    const orderId = 'order_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const customerId = 'customer_' + Date.now();
+
+    const getBaseUrl = () => {
+      const host = req.get('host') || '';
+      if (host.includes('.onrender.com') || host.includes('.vercel.app') || host.includes('.herokuapp.com') || process.env.NODE_ENV === 'production') {
+        return `https://${host}`;
+      }
+      const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http');
+      return `${proto}://${host}`;
+    };
+
+    const baseUrl = getBaseUrl();
+
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+
+    if (!CLIENT_ID || !CLIENT_SECRET) {
+      return res.status(500).json({ success: false, message: 'Cashfree credentials not configured' });
+    }
+
+    const orderData = {
+      order_id: orderId,
+      order_amount: orderAmount,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: customerId,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone
+      },
+      order_meta: {
+        return_url: `${baseUrl}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${baseUrl}/api/v1/cashfree/webhook`
+      }
+    };
+
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    };
+
+    const cfResp = await axios.post(`${BASE_URL}/pg/orders`, orderData, { headers });
+    const result = cfResp.data || {};
+
+    if (!result.payment_session_id) {
+      return res.status(400).json({ success: false, message: result.message || 'Failed to create order', details: result });
+    }
+
+    return res.json({
+      success: true,
+      order_id: result.order_id,
+      payment_session_id: result.payment_session_id,
+      order_status: result.order_status
+    });
+  } catch (error) {
+    console.error('Create-order error:', error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({ success: false, message: error.response?.data?.message || error.message });
+  }
+});
+
+// New: Cashfree verify-payment API (mirrors tested backend behavior)
+app.post('/api/v1/payments/cashfree/verify-payment', async (req, res) => {
+  try {
+    const { order_id } = req.body || {};
+    if (!order_id) {
+      return res.status(400).json({ success: false, message: 'Order ID is required' });
+    }
+
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Accept': 'application/json'
+    };
+
+    const resp = await axios.get(`${BASE_URL}/pg/orders/${order_id}`, { headers });
+    const data = resp.data || {};
+
+    return res.json({
+      success: true,
+      order_status: data.order_status,
+      payment_status: data.order_status === 'PAID' ? 'SUCCESS' : data.order_status,
+      order_id: data.order_id,
+      order_amount: data.order_amount
+    });
+  } catch (error) {
+    console.error('Verify-payment error:', error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({ success: false, message: error.response?.data?.message || error.message });
+  }
+});
+
 // Enhanced Cashfree callback handler with better error handling
 app.get('/api/v1/cashfree/callback', async (req, res) => {
   try {
