@@ -5201,6 +5201,79 @@ router.get('/payments/cashfree/test-urls', (req, res) => {
   }
 });
 
+// Initiate payment using Cashfree SDK flow (matches provided example)
+router.post('/payments/initiate/sdk', async (req, res) => {
+  try {
+    const jwt = require('jsonwebtoken');
+    const { t, planKey, amount } = req.body || {};
+    if (!t) return res.status(401).json({ success: false, message: 'Missing token' });
+    if (!amount) return res.status(400).json({ success: false, message: 'Missing amount' });
+
+    let decoded;
+    try { decoded = jwt.verify(t, process.env.JWT_SECRET); } catch { return res.status(401).json({ success: false, message: 'Invalid token' }); }
+    if (decoded?.userType !== 'client' || !decoded?.id) return res.status(401).json({ success: false, message: 'Invalid token' });
+
+    const clientId = decoded.id;
+    const Client = require('../models/Client');
+    const Payment = require('../models/Payment');
+    const client = await Client.findById(clientId);
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    // Configure Cashfree SDK using production or sandbox keys from config
+    const { Cashfree } = require('cashfree-pg');
+    Cashfree.XClientId = CashfreeConfig.CLIENT_ID;
+    Cashfree.XClientSecret = CashfreeConfig.CLIENT_SECRET;
+    Cashfree.XEnvironment = CashfreeConfig.ENVIRONMENT === 'production' ? Cashfree.Environment.PRODUCTION : Cashfree.Environment.SANDBOX;
+
+    const orderId = `AITOTA_${Date.now()}`;
+    const orderRequest = {
+      order_amount: Number(amount),
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: String(clientId),
+        customer_name: client?.name || 'Client',
+        customer_email: client?.email || 'client@example.com',
+        customer_phone: (String(client?.mobileNo || '9999999999').replace(/\D/g, '').slice(-10)) || '9999999999'
+      },
+      order_meta: {
+        notify_url: CashfreeConfig.RETURN_URL,
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      }
+    };
+
+    // Create order via SDK
+    const sdkResp = await Cashfree.PGCreateOrder('2023-08-01', { ...orderRequest, order_id: orderId });
+    const data = sdkResp?.data || {};
+
+    // Persist INITIATED payment
+    await Payment.create({
+      clientId,
+      orderId,
+      planKey: (planKey || '').toString().toLowerCase(),
+      amount: Number(amount),
+      email: client?.email,
+      phone: orderRequest.customer_details.customer_phone,
+      gateway: 'cashfree',
+      status: 'INITIATED',
+      rawResponse: { sdk: data }
+    });
+
+    // Return session to frontend so it can launch checkout via JS SDK
+    return res.json({
+      success: true,
+      environment: CashfreeConfig.ENVIRONMENT,
+      order_id: data.order_id,
+      cf_order_id: data.cf_order_id,
+      payment_session_id: data.payment_session_id
+    });
+  } catch (error) {
+    const status = error?.response?.status;
+    const errData = error?.response?.data || error?.message;
+    console.error('Cashfree SDK initiate error:', status, errData);
+    return res.status(500).json({ success: false, message: 'Failed to initiate payment', status, error: errData });
+  }
+});
+
 // Comprehensive Cashfree diagnostic endpoint
 router.get('/debug/cashfree-diagnostics', async (req, res) => {
   try {
