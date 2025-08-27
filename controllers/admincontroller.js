@@ -193,6 +193,17 @@ const getClients = async (req, res) => {
         panNo,
         aadharNo
       });
+
+      // Initialize default credits (100) for new client
+      try {
+        const Credit = require("../models/Credit");
+        const creditRecord = await Credit.getOrCreateCreditRecord(client._id);
+        if ((creditRecord?.currentBalance || 0) === 0) {
+          await creditRecord.addCredits(100, 'bonus', 'Welcome bonus credits');
+        }
+      } catch (e) {
+        console.error('Failed to initialize default credits for client:', e.message);
+      }
   
       // Remove password from response
       const clientResponse = client.toObject();

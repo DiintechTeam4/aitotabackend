@@ -10,9 +10,440 @@ const adminRoutes = require('./routes/adminroutes');
 const clientRoutes = require('./routes/clientroutes')
 const profileRoutes = require('./routes/profileroutes')
 const Business = require('./models/MyBussiness');
+const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 
 const app = express();
 const server = http.createServer(app);
+// Cashfree callback (return_url handler)
+
+// Add these routes to your main index.js or create a separate cashfree routes file
+
+// Import required modules (add these to your existing imports)
+
+// Cashfree payment initiation endpoint - add this to your clientRoutes or main app
+app.post('/api/v1/client/payments/initiate/cashfree', async (req, res) => {
+  try {
+    const { amount, planKey } = req.body;
+    
+    // Extract token from Authorization header
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    // Verify JWT token
+    const jwt = require('jsonwebtoken');
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid authorization token'
+      });
+    }
+
+    if (!amount || !planKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount and planKey are required'
+      });
+    }
+
+    // Validate plan
+    const validPlans = ['basic', 'professional', 'enterprise'];
+    if (!validPlans.includes(planKey.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid plan selected'
+      });
+    }
+
+    // Generate unique order ID
+    const orderId = `CF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Get client info
+    const Client = require('./models/Client'); // Adjust path as needed
+    const client = await Client.findById(clientId);
+    
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Cashfree order creation payload
+    const orderPayload = {
+      order_id: orderId,
+      order_amount: parseFloat(amount),
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: clientId.toString(),
+        customer_name: client.name || client.username || client.email || 'Customer',
+        customer_email: client.email || `${clientId}@aitota.com`,
+        customer_phone: client.phone || client.mobile || '9999999999'
+      },
+      order_meta: {
+        return_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/webhook`,
+        payment_methods: 'cc,dc,nb,upi,paylater,emi,cardlessemi,wallet'
+      },
+      order_tags: {
+        plan: planKey,
+        client_id: clientId.toString()
+      }
+    };
+
+    // Create order with Cashfree
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2022-09-01',
+      'Content-Type': 'application/json'
+    };
+
+    console.log('🏦 Creating Cashfree order:', orderId);
+    
+    const cashfreeResponse = await axios.post(
+      `${BASE_URL}/pg/orders`,
+      orderPayload,
+      { headers }
+    );
+
+    const { payment_session_id, order_status } = cashfreeResponse.data;
+
+    if (!payment_session_id) {
+      throw new Error('Failed to create payment session with Cashfree');
+    }
+
+    // Save payment record to database
+    const Payment = require('./models/Payment');
+    const paymentRecord = new Payment({
+      orderId,
+      clientId,
+      amount: parseFloat(amount),
+      planKey: planKey.toLowerCase(),
+      gateway: 'cashfree',
+      status: 'INITIATED',
+      sessionId: payment_session_id,
+      orderStatus: order_status,
+      createdAt: new Date(),
+      rawResponse: cashfreeResponse.data
+    });
+
+    await paymentRecord.save();
+
+    // Return session details for frontend
+    res.json({
+      success: true,
+      data: {
+        orderId,
+        sessionId: payment_session_id,
+        amount: parseFloat(amount),
+        planKey,
+        environment: BASE_URL.includes('sandbox') ? 'sandbox' : 'production'
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Cashfree payment initiation failed:', error.response?.data || error.message);
+    
+    res.status(500).json({
+      success: false,
+      message: 'Payment initiation failed',
+      error: error.response?.data?.message || error.message
+    });
+  }
+});
+
+// Cashfree direct payment initiation (similar to your Paytm route)
+app.get('/api/v1/client/payments/initiate/cashfree-direct', async (req, res) => {
+  try {
+    const { t: token, amount, planKey } = req.query;
+    
+    if (!token || !amount || !planKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token, amount and planKey are required'
+      });
+    }
+
+    // Decode and verify token
+    const jwt = require('jsonwebtoken');
+    let clientId;
+    
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+
+    // Get client info
+    const Client = require('./models/Client');
+    const client = await Client.findById(clientId);
+    
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Generate unique order ID
+    const orderId = `CF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    const orderPayload = {
+      order_id: orderId,
+      order_amount: parseFloat(amount),
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: clientId.toString(),
+        customer_name: client.name || client.username || client.email || 'Customer',
+        customer_email: client.email || `${clientId}@aitota.com`,
+        customer_phone: client.phone || client.mobile || '9999999999'
+      },
+      order_meta: {
+        return_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/webhook`,
+        payment_methods: 'cc,dc,nb,upi,paylater,emi,cardlessemi,wallet'
+      },
+      order_tags: {
+        plan: planKey,
+        client_id: clientId.toString()
+      }
+    };
+
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2022-09-01',
+      'Content-Type': 'application/json'
+    };
+
+    const cashfreeResponse = await axios.post(
+      `${BASE_URL}/pg/orders`,
+      orderPayload,
+      { headers }
+    );
+
+    const { payment_session_id } = cashfreeResponse.data;
+
+    // Save payment record
+    const Payment = require('./models/Payment');
+    const paymentRecord = new Payment({
+      orderId,
+      clientId,
+      amount: parseFloat(amount),
+      planKey: planKey.toLowerCase(),
+      gateway: 'cashfree',
+      status: 'INITIATED',
+      sessionId: payment_session_id,
+      createdAt: new Date(),
+      rawResponse: cashfreeResponse.data
+    });
+
+    await paymentRecord.save();
+
+    // Redirect to Cashfree payment page
+    const paymentUrl = `https://payments${BASE_URL.includes('sandbox') ? '-test' : ''}.cashfree.com/pay/${orderId}/${payment_session_id}`;
+    res.redirect(paymentUrl);
+
+  } catch (error) {
+    console.error('❌ Cashfree direct payment failed:', error.response?.data || error.message);
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED&error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+// Cashfree webhook handler (optional but recommended for better reliability)
+app.post('/api/v1/cashfree/webhook', async (req, res) => {
+  try {
+    const webhookData = req.body;
+    console.log('🔔 Cashfree webhook received:', webhookData);
+
+    // Verify webhook signature (implement based on Cashfree docs)
+    // const signature = req.headers['x-webhook-signature'];
+    // if (!verifyWebhookSignature(webhookData, signature)) {
+    //   return res.status(401).json({ success: false, message: 'Invalid signature' });
+    // }
+
+    const { order_id, order_status, payment_status } = webhookData;
+    
+    if (order_id) {
+      const Payment = require('./models/Payment');
+      const payment = await Payment.findOne({ orderId: order_id });
+      
+      if (payment) {
+        payment.status = (payment_status === 'SUCCESS' || order_status === 'PAID') ? 'SUCCESS' : 'FAILED';
+        payment.rawCallback = webhookData;
+        await payment.save();
+        
+        // Auto-credit logic similar to your existing callback
+        if (payment.status === 'SUCCESS' && !payment.credited) {
+          try {
+            const Credit = require('./models/Credit');
+            const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+            const creditsToAdd = mapping[payment.planKey] || 0;
+            
+            if (creditsToAdd > 0) {
+              const creditRecord = await Credit.getOrCreateCreditRecord(payment.clientId);
+              await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${payment.planKey} plan`, {
+                gateway: 'cashfree', orderId: order_id, transactionId: webhookData.cf_payment_id
+              });
+              
+              payment.credited = true;
+              payment.creditsAdded = creditsToAdd;
+              await payment.save();
+            }
+          } catch (e) {
+            console.error('Auto-credit from webhook failed:', e.message);
+          }
+        }
+      }
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Cashfree webhook error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Payment status check endpoint
+app.get('/api/v1/client/payments/status/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    // Verify token and get clientId
+    const jwt = require('jsonwebtoken');
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid authorization token'
+      });
+    }
+
+    const Payment = require('./models/Payment');
+    const payment = await Payment.findOne({ orderId, clientId });
+    
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        orderId: payment.orderId,
+        status: payment.status,
+        amount: payment.amount,
+        planKey: payment.planKey,
+        gateway: payment.gateway,
+        credited: payment.credited,
+        creditsAdded: payment.creditsAdded,
+        createdAt: payment.createdAt,
+        transactionId: payment.transactionId
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Payment status check failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check payment status',
+      error: error.message
+    });
+  }
+});
+app.get('/api/v1/cashfree/callback', async (req, res) => {
+  try {
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    const { order_id, order_token } = req.query || {};
+    if (!order_id) return res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED`);
+
+    // Verify payment status with Cashfree
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+    const axios = require('axios');
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2022-09-01'
+    };
+    let status = 'FAILED';
+    let transactionId = undefined;
+    try {
+      const resp = await axios.get(`${BASE_URL}/pg/orders/${order_id}`, { headers });
+      const data = resp.data || {};
+      status = (data.order_status === 'PAID') ? 'SUCCESS' : data.order_status || 'FAILED';
+      transactionId = data.cf_payment_id || data.reference_id;
+    } catch (e) {
+      console.error('Cashfree status fetch failed:', e.message);
+    }
+
+    // Update payment record
+    let paymentDoc = null;
+    try {
+      const Payment = require('./models/Payment');
+      paymentDoc = await Payment.findOneAndUpdate(
+        { orderId: order_id },
+        { status, transactionId, rawCallback: req.query },
+        { new: true }
+      );
+    } catch (e) {
+      console.error('Payment update failed:', e.message);
+    }
+
+    // Auto-credit if success
+    if (paymentDoc && status === 'SUCCESS' && !paymentDoc.credited) {
+      try {
+        const Credit = require('./models/Credit');
+        const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+        const key = (paymentDoc.planKey || '').toLowerCase();
+        const creditsToAdd = mapping[key] || 0;
+        if (creditsToAdd > 0 && paymentDoc.clientId) {
+          const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
+            gateway: 'cashfree', orderId: order_id, transactionId
+          });
+          const Payment = require('./models/Payment');
+          await Payment.findOneAndUpdate({ orderId: order_id }, { credited: true, creditsAdded: creditsToAdd });
+        }
+      } catch (e) {
+        console.error('Auto-credit on Cashfree failed:', e.message);
+      }
+    }
+
+    return res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?orderId=${encodeURIComponent(order_id)}&status=${encodeURIComponent(status)}`);
+  } catch (e) {
+    console.error('Cashfree callback error:', e.message);
+    res.status(200).send('OK');
+  }
+});
 
 dotenv.config();
 
@@ -36,6 +467,71 @@ app.get('/ws/status', (req, res) => {
         success: true,
         data: status
     });
+});
+
+// Paytm callback handler - redirects to frontend with orderId/status
+app.post('/api/v1/paytm/callback', async (req, res) => {
+  try {
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    const body = req.body || {};
+    const orderId = body.ORDERID || body.orderId || '';
+    const status = body.STATUS || body.status || 'SUCCESS';
+    let paymentDoc = null;
+    try {
+      const Payment = require('./models/Payment');
+      paymentDoc = await Payment.findOneAndUpdate(
+        { orderId },
+        {
+          status: (status === 'TXN_SUCCESS' || status === 'SUCCESS') ? 'SUCCESS' : (status || 'FAILED'),
+          transactionId: body.TXNID || body.transactionId,
+          responseCode: body.RESPCODE || body.responseCode,
+          responseMsg: body.RESPMSG || body.responseMsg,
+          rawCallback: body,
+        },
+        { new: true }
+      );
+    } catch (e) {
+      console.error('Failed to upsert Payment from callback:', e.message);
+    }
+
+    // Auto-credit on SUCCESS
+    if (paymentDoc && (paymentDoc.status === 'TXN_SUCCESS' || paymentDoc.status === 'SUCCESS' || status === 'TXN_SUCCESS' || status === 'SUCCESS')) {
+      try {
+        if (!paymentDoc.credited) {
+          const Credit = require('./models/Credit');
+          const mapping = {
+            basic: 1000,
+            professional: 5500,
+            enterprise: 11000,
+          };
+          const key = (paymentDoc.planKey || '').toLowerCase();
+          const creditsToAdd = mapping[key] || 0;
+          if (creditsToAdd > 0 && paymentDoc.clientId) {
+            const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
+            // Idempotent by using orderId as transactionId in history if your addCredits supports metadata
+            await creditRecord.addCredits(creditsToAdd, 'purchase', `Paytm order ${orderId} • ${key} plan`, {
+              gateway: 'paytm',
+              orderId,
+              transactionId: body.TXNID || paymentDoc.transactionId,
+            });
+            const Payment = require('./models/Payment');
+            await Payment.findOneAndUpdate(
+              { orderId },
+              { credited: true, creditsAdded: creditsToAdd }
+            );
+          }
+        }
+      } catch (e) {
+        console.error('Auto-credit after callback failed:', e.message);
+      }
+    }
+    const redirect = `${FRONTEND_URL}${SUCCESS_PATH}?orderId=${encodeURIComponent(orderId)}&status=${encodeURIComponent(status)}`;
+    return res.redirect(302, redirect);
+  } catch (e) {
+    console.error('Paytm callback error:', e.message);
+    res.status(200).send('OK');
+  }
 });
 
 // Call Logs APIs
@@ -392,6 +888,17 @@ app.post("/api/v1/debug/fix-specific-call", async (req, res) => {
       'metadata.callEndTime': new Date(),
       leadStatus: 'not_connected'
     });
+    // Deduct credits for completed call if possible
+    try {
+      const { deductCreditsForCall } = require('./services/creditUsageService');
+      const uniqueId = callLog?.metadata?.customParams?.uniqueid;
+      const clientId = callLog?.clientId;
+      if (clientId && uniqueId) {
+        await deductCreditsForCall({ clientId, uniqueId });
+      }
+    } catch (e) {
+      console.error('Credit deduction failed:', e.message);
+    }
     
     // Find and update campaign details
     const campaigns = await Campaign.find({

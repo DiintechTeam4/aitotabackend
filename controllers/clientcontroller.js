@@ -334,6 +334,16 @@ const googleLogin = async (req, res) => {
         isprofileCompleted: false,
         isApproved: false
       });
+      // Initialize default credits (100) for new client (Google sign-up)
+      try {
+        const Credit = require("../models/Credit");
+        const creditRecord = await Credit.getOrCreateCreditRecord(newClient._id);
+        if ((creditRecord?.currentBalance || 0) === 0) {
+          await creditRecord.addCredits(100, 'bonus', 'Welcome bonus credits');
+        }
+      } catch (e) {
+        console.error('Failed to initialize default credits for client (Google):', e.message);
+      }
       const token = generateToken(newClient._id)
       return res.status(200).json({
         success: true,
@@ -426,6 +436,17 @@ const registerClient = async (req, res) => {
         isApproved: true
       });
 
+      // Initialize default credits (100) for new client
+      try {
+        const Credit = require("../models/Credit");
+        const creditRecord = await Credit.getOrCreateCreditRecord(client._id);
+        if ((creditRecord?.currentBalance || 0) === 0) {
+          await creditRecord.addCredits(100, 'bonus', 'Welcome bonus credits');
+        }
+      } catch (e) {
+        console.error('Failed to initialize default credits for client:', e.message);
+      }
+
       // Generate token
       const token = generateToken(client._id);
 
@@ -469,6 +490,17 @@ const registerClient = async (req, res) => {
         isprofileCompleted: true,
         isApproved: false
       });
+
+      // Initialize default credits (100) for new client
+      try {
+        const Credit = require("../models/Credit");
+        const creditRecord = await Credit.getOrCreateCreditRecord(client._id);
+        if ((creditRecord?.currentBalance || 0) === 0) {
+          await creditRecord.addCredits(100, 'bonus', 'Welcome bonus credits');
+        }
+      } catch (e) {
+        console.error('Failed to initialize default credits for client:', e.message);
+      }
 
       // Generate token
       const token = generateToken(client._id);

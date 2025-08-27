@@ -20,6 +20,10 @@ const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
 const User = require('../models/User'); // Added User model import
 const { generateBusinessHash } = require('../utils/hashUtils');
+const crypto = require('crypto');
+const PaytmConfig = require('../config/paytm');
+const PaytmChecksum = require('paytmchecksum');
+const CashfreeConfig = require('../config/cashfree');
 const {
   getClientApiKey,
   startCampaignCalling,
@@ -3897,6 +3901,1493 @@ router.get('/debug/active-campaigns', extractClientId, async (req, res) => {
   } catch (error) {
     console.error('Error checking active campaigns:', error);
     res.status(500).json({ success: false, error: 'Failed to check active campaigns' });
+  }
+});
+
+// DEBUG: Test Cashfree configuration
+router.get('/debug/cashfree-config', async (req, res) => {
+  try {
+    const config = {
+      env: CashfreeConfig.ENV,
+      baseUrl: CashfreeConfig.BASE_URL,
+      hasClientId: !!CashfreeConfig.CLIENT_ID,
+      hasClientSecret: !!CashfreeConfig.CLIENT_SECRET,
+      returnUrl: CashfreeConfig.RETURN_URL,
+      clientIdLength: CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.length : 0,
+      clientSecretLength: CashfreeConfig.CLIENT_SECRET ? CashfreeConfig.CLIENT_SECRET.length : 0
+    };
+    
+    // Test Cashfree API connectivity
+    let apiTest = { success: false, error: null };
+    if (CashfreeConfig.CLIENT_ID && CashfreeConfig.CLIENT_SECRET) {
+      try {
+        const axios = require('axios');
+        const headers = {
+          'x-client-id': CashfreeConfig.CLIENT_ID,
+          'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+          'x-api-version': '2022-09-01'
+        };
+        
+        // Test with a simple API call (get order details for a test order)
+        const testOrderId = 'TEST_ORDER_' + Date.now();
+        const response = await axios.get(`${CashfreeConfig.BASE_URL}/pg/orders/${testOrderId}`, { headers });
+        apiTest = { success: true, status: response.status };
+      } catch (apiError) {
+        apiTest = { 
+          success: false, 
+          error: apiError.message,
+          status: apiError.response?.status,
+          data: apiError.response?.data
+        };
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Cashfree configuration status',
+      data: { ...config, apiTest }
+    });
+  } catch (error) {
+    console.error('Error checking Cashfree config:', error);
+    res.status(500).json({ success: false, error: 'Failed to check Cashfree config' });
+  }
+});
+
+// DEBUG: Test session ID cleaning
+router.get('/debug/session-id-test', async (req, res) => {
+  try {
+    const testSessionIds = [
+      'A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpayment',
+      'session_A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpayment',
+      'A2Qd_bjinlFffRyQv_VrCpBBq9BsHphuHkiJk32Y1-f8j5aS76SVxj1f5drbKHa4Y4ZqS_yfThywMs9iVS29u-S-b6mQ-JIzKeUtu1Gi0wdOR8WinFE8AaOWedYpaymentpayment',
+      'session_Hwy4YTM7uaVyBVyocz3_qjmXYqd3K--eUXcP6PkojjRtU95L6eQD6hYp95qGyifvAb7U7jZy0kSrp2ZWukiH36kwZNKI5NKXLfQhtdEds2J5zgva2vqfJy1aKLopayment',
+      'session_BNLJhn4eS7Y1FSsVlRxUOaINuUy7xJJEw_nyXuIgHMHa_4A7v7c-9maJ5XQ7gh-5sX6rgO5i5zLwWY9L1D4NFZF1mddRrcTd4Cn492yrIFxqzNqpqmZ2Xptndmopayment',
+      'normal_session_id_12345',
+      'session_with_underscores_and_dashes-123'
+    ];
+    
+    const results = testSessionIds.map(originalId => {
+      let sessionId = String(originalId);
+      
+      // Clean the session ID - remove any invalid characters and ensure it's properly formatted
+      sessionId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+      
+      // Remove the problematic 'payment' suffix that Cashfree sometimes adds
+      sessionId = sessionId.replace(/payment$/i, '');
+      sessionId = sessionId.replace(/paymentpayment$/i, '');
+      
+      // Remove any other problematic suffixes that might cause issues
+      sessionId = sessionId.replace(/session$/i, '');
+      sessionId = sessionId.replace(/order$/i, '');
+      
+      // Clean up any double underscores or dashes that might have been created
+      sessionId = sessionId.replace(/_{2,}/g, '_');
+      sessionId = sessionId.replace(/-{2,}/g, '-');
+      
+      // Remove leading/trailing underscores and dashes
+      sessionId = sessionId.replace(/^[_-]+/, '').replace(/[_-]+$/, '');
+      
+      return {
+        original: originalId,
+        cleaned: sessionId,
+        isValid: sessionId.length >= 10 && /^[a-zA-Z0-9_-]+$/.test(sessionId),
+        length: sessionId.length
+      };
+    });
+    
+    res.json({
+      success: true,
+      message: 'Session ID cleaning test results',
+      data: results
+    });
+  } catch (error) {
+    console.error('Error testing session ID cleaning:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test session ID cleaning',
+      error: error.message
+    });
+  }
+});
+
+// DEBUG: Test payment link API endpoints
+router.get('/debug/test-payment-link-endpoints', async (req, res) => {
+  try {
+    const orderId = 'AITOTA_1756232842240'; // The order that failed
+    
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Cashfree configuration missing'
+      });
+    }
+
+    const axios = require('axios');
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Content-Type': 'application/json'
+    };
+    
+    const results = [];
+    
+    // Test 1: Get order details
+    try {
+      console.log('Test 1: Getting order details');
+      const orderResp = await axios.get(`${CashfreeConfig.BASE_URL}/pg/orders/${orderId}`, { headers });
+      results.push({
+        test: 'Get Order Details',
+        success: true,
+        data: orderResp.data
+      });
+    } catch (error) {
+      results.push({
+        test: 'Get Order Details',
+        success: false,
+        error: error.message,
+        response: error.response?.data
+      });
+    }
+    
+    // Test 2: Create payment link using /payments endpoint
+    try {
+      console.log('Test 2: Creating payment link using /payments endpoint');
+      const paymentResp = await axios.post(
+        `${CashfreeConfig.BASE_URL}/pg/orders/${orderId}/payments`,
+        {
+          payment_method: {
+            upi: { enabled: true },
+            card: { enabled: true },
+            netbanking: { enabled: true },
+            app: { enabled: true }
+          },
+          order_meta: {
+            return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+          }
+        },
+        { headers }
+      );
+      results.push({
+        test: 'Create Payment Link (/payments)',
+        success: true,
+        data: paymentResp.data
+      });
+    } catch (error) {
+      results.push({
+        test: 'Create Payment Link (/payments)',
+        success: false,
+        error: error.message,
+        response: error.response?.data
+      });
+    }
+    
+    // Test 3: Create payment link using /payment-links endpoint
+    try {
+      console.log('Test 3: Creating payment link using /payment-links endpoint');
+      const linkResp = await axios.post(
+        `${CashfreeConfig.BASE_URL}/pg/payment-links`,
+        {
+          order_id: orderId,
+          payment_method: {
+            upi: { enabled: true },
+            card: { enabled: true },
+            netbanking: { enabled: true },
+            app: { enabled: true }
+          },
+          order_meta: {
+            return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+          }
+        },
+        { headers }
+      );
+      results.push({
+        test: 'Create Payment Link (/payment-links)',
+        success: true,
+        data: linkResp.data
+      });
+    } catch (error) {
+      results.push({
+        test: 'Create Payment Link (/payment-links)',
+        success: false,
+        error: error.message,
+        response: error.response?.data
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Payment link endpoint tests completed',
+      data: results
+    });
+  } catch (error) {
+    console.error('Error testing payment link endpoints:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test payment link endpoints',
+      error: error.message
+    });
+  }
+});
+
+// DEBUG: Test payment link creation for current order
+router.get('/debug/test-current-payment-link', async (req, res) => {
+  try {
+    const orderId = req.query.orderId || 'AITOTA_1756233688485'; // Use the current order ID
+    
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Cashfree configuration missing'
+      });
+    }
+
+    const axios = require('axios');
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Content-Type': 'application/json'
+    };
+    
+    console.log('Testing payment link creation for order:', orderId);
+    
+    const paymentLinkPayload = {
+      order_id: orderId,
+      payment_method: {
+        upi: { enabled: true },
+        card: { enabled: true },
+        netbanking: { enabled: true },
+        app: { enabled: true },
+        paylater: { enabled: true }
+      },
+      order_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`,
+        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      }
+    };
+    
+    console.log('Payment link payload:', JSON.stringify(paymentLinkPayload, null, 2));
+    
+    const response = await axios.post(
+      `${CashfreeConfig.BASE_URL}/pg/payment-links`,
+      paymentLinkPayload,
+      { 
+        headers,
+        timeout: 30000
+      }
+    );
+    
+    const data = response.data || {};
+    console.log('Payment link response:', JSON.stringify(data, null, 2));
+    
+    res.json({
+      success: true,
+      message: 'Payment link test completed',
+      data: {
+        orderId: orderId,
+        response: data,
+        hasPaymentLink: !!data.payment_link,
+        paymentLink: data.payment_link
+      }
+    });
+  } catch (error) {
+    console.error('Payment link test failed:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test payment link creation',
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
+// DEBUG: Test specific failed order
+router.get('/debug/test-failed-order', async (req, res) => {
+  try {
+    const orderId = 'AITOTA_1756232359917'; // The order that failed
+    
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Cashfree configuration missing'
+      });
+    }
+
+    const axios = require('axios');
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2023-08-01', // Use latest API version
+      'Content-Type': 'application/json'
+    };
+    
+    // Try to create payment link for the failed order
+    console.log('Testing payment link creation for failed order:', orderId);
+    
+    const paymentLinkPayload = {
+      payment_method: {
+        upi: { enabled: true },
+        card: { enabled: true },
+        netbanking: { enabled: true },
+        app: { enabled: true },
+        paylater: { enabled: true }
+      },
+      order_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`,
+        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      }
+    };
+    
+    console.log('Payment link payload:', JSON.stringify(paymentLinkPayload, null, 2));
+    
+    const response = await axios.post(
+      `${CashfreeConfig.BASE_URL}/pg/orders/${orderId}/payments`,
+      paymentLinkPayload,
+      { headers }
+    );
+    
+    const data = response.data || {};
+    console.log('Payment link response:', JSON.stringify(data, null, 2));
+    
+    res.json({
+      success: true,
+      message: 'Test completed for failed order',
+      data: {
+        orderId: orderId,
+        response: data,
+        hasPaymentLink: !!data.payment_link,
+        paymentLink: data.payment_link
+      }
+    });
+  } catch (error) {
+    console.error('Error testing failed order:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test failed order',
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
+// DEBUG: Test payment link creation with latest API
+router.get('/debug/cashfree-payment-link-test', async (req, res) => {
+  try {
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Cashfree configuration missing'
+      });
+    }
+
+    const axios = require('axios');
+    const orderId = `TEST_LINK_${Date.now()}`;
+    
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2023-08-01', // Use latest API version
+      'Content-Type': 'application/json'
+    };
+    
+    // Step 1: Create order
+    const orderPayload = {
+      order_id: orderId,
+      order_amount: 1.00,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: 'test_customer',
+        customer_email: 'test@example.com',
+        customer_phone: '9999999999',
+        customer_name: 'Test Customer'
+      },
+      order_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`,
+        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      }
+    };
+
+    console.log('Creating test order with payload:', JSON.stringify(orderPayload, null, 2));
+    
+    const orderResponse = await axios.post(`${CashfreeConfig.BASE_URL}/pg/orders`, orderPayload, { headers });
+    const orderData = orderResponse.data || {};
+    
+    console.log('Order created successfully:', JSON.stringify(orderData, null, 2));
+    
+          // Step 2: Create payment link
+      if (orderData.order_id) {
+        const paymentLinkPayload = {
+          payment_method: {
+            upi: { enabled: true },
+            card: { enabled: true },
+            netbanking: { enabled: true },
+            app: { enabled: true },
+            paylater: { enabled: true }
+          },
+          order_meta: {
+            return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`,
+            notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+          }
+        };
+      
+      console.log('Creating payment link with payload:', JSON.stringify(paymentLinkPayload, null, 2));
+      
+      const linkResponse = await axios.post(
+        `${CashfreeConfig.BASE_URL}/pg/orders/${orderId}/payments`,
+        paymentLinkPayload,
+        { headers }
+      );
+      
+      const linkData = linkResponse.data || {};
+      console.log('Payment link created successfully:', JSON.stringify(linkData, null, 2));
+      
+      res.json({
+        success: true,
+        message: 'Payment link test completed successfully',
+        data: {
+          orderId: orderId,
+          orderResponse: orderData,
+          paymentLinkResponse: linkData,
+          hasPaymentLink: !!linkData.payment_link,
+          paymentLink: linkData.payment_link
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to create order for payment link test',
+        data: orderData
+      });
+    }
+  } catch (error) {
+    console.error('Error in payment link test:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to test payment link creation',
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
+// DEBUG: Test Cashfree order creation
+router.get('/debug/cashfree-test-order', async (req, res) => {
+  try {
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Cashfree configuration missing'
+      });
+    }
+
+    const axios = require('axios');
+    const orderId = `TEST_${Date.now()}`;
+    
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2022-09-01',
+      'Content-Type': 'application/json'
+    };
+    
+    const payload = {
+      order_id: orderId,
+      order_amount: 1.00,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: 'test_customer',
+        customer_email: 'test@example.com',
+        customer_phone: '9999999999',
+        customer_name: 'Test Customer'
+      },
+      order_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${orderId}`
+      }
+    };
+
+    console.log('Creating test Cashfree order with payload:', JSON.stringify(payload, null, 2));
+    
+    const response = await axios.post(`${CashfreeConfig.BASE_URL}/pg/orders`, payload, { headers });
+    const data = response.data || {};
+    
+    console.log('Test order created successfully:', JSON.stringify(data, null, 2));
+    
+    res.json({
+      success: true,
+      message: 'Test order created successfully',
+      data: {
+        orderId: orderId,
+        cashfreeResponse: data,
+        hasPaymentLink: !!data.payment_link,
+        hasPaymentSessionId: !!data.payment_session_id
+      }
+    });
+  } catch (error) {
+    console.error('Error creating test Cashfree order:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create test order',
+      error: error.message,
+      response: error.response?.data
+    });
+  }
+});
+
+// Plan and Credit Routes for Clients
+router.get('/plans',  async (req, res) => {
+  try {
+    const Plan = require('../models/Plan');
+    const plans = await Plan.getActivePlans();
+    
+    res.json({
+      success: true,
+      data: plans
+    });
+  } catch (error) {
+    console.error('Error fetching plans:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch plans'
+    });
+  }
+});
+
+router.get('/plans/popular',  async (req, res) => {
+  try {
+    const Plan = require('../models/Plan');
+    const plans = await Plan.getPopularPlans();
+    
+    res.json({
+      success: true,
+      data: plans
+    });
+  } catch (error) {
+    console.error('Error fetching popular plans:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch popular plans'
+    });
+  }
+});
+
+router.get('/credits/balance', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const Credit = require('../models/Credit');
+    const clientId = req.clientId;
+    
+    const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+    
+    res.json({
+      success: true,
+      data: creditRecord
+    });
+  } catch (error) {
+    console.error('Error fetching credit balance:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch credit balance'
+    });
+  }
+});
+
+router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const Credit = require('../models/Credit');
+    const clientId = req.clientId;
+    const { page = 1, limit = 20, type } = req.query;
+    
+    const creditRecord = await Credit.findOne({ clientId })
+      .populate('history.planId', 'name')
+      .lean();
+    
+    if (!creditRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Credit record not found'
+      });
+    }
+    
+    // Filter and paginate history
+    let history = creditRecord.history;
+    if (type) {
+      history = history.filter(h => h.type === type);
+    }
+    
+    const total = history.length;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const paginatedHistory = history
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(skip, skip + parseInt(limit));
+    
+    res.json({
+      success: true,
+      data: {
+        history: paginatedHistory,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching credit history:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch credit history'
+    });
+  }
+});
+
+router.post('/plans/purchase', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { planId, billingCycle, couponCode, autoRenew } = req.body;
+    const clientId = req.clientId;
+    
+    if (!planId || !billingCycle) {
+      return res.status(400).json({
+        success: false,
+        message: 'Plan ID and billing cycle are required'
+      });
+    }
+    
+    const Plan = require('../models/Plan');
+    const Credit = require('../models/Credit');
+    const Coupon = require('../models/Coupon');
+    
+    // Get plan
+    const plan = await Plan.findById(planId);
+    if (!plan || !plan.isActive) {
+      return res.status(404).json({
+        success: false,
+        message: 'Plan not found or inactive'
+      });
+    }
+    
+    // Get or create credit record
+    let creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+    
+    // Calculate price
+    let finalPrice = plan.price;
+    let discountApplied = 0;
+    let couponUsed = null;
+    
+    // Apply billing cycle discount
+    const cycleDiscount = plan.discounts[`${billingCycle}Discount`] || 0;
+    if (cycleDiscount > 0) {
+      discountApplied = (finalPrice * cycleDiscount) / 100;
+      finalPrice -= discountApplied;
+    }
+    
+    // Apply coupon if provided
+    if (couponCode) {
+      const coupon = await Coupon.findValidCoupon(couponCode);
+      if (coupon && coupon.appliesToPlan(planId, plan.category)) {
+        const couponDiscount = coupon.calculateDiscount(finalPrice);
+        finalPrice -= couponDiscount;
+        discountApplied += couponDiscount;
+        couponUsed = coupon.code;
+      }
+    }
+    
+    // Calculate credits to add
+    const creditsToAdd = plan.creditsIncluded + plan.bonusCredits;
+    
+    // Add credits to client account
+    await creditRecord.addCredits(
+      creditsToAdd,
+      'purchase',
+      `Plan purchase: ${plan.name} (${billingCycle})`,
+      planId,
+      `TXN_${Date.now()}`
+    );
+    
+    // Update current plan information
+    const startDate = new Date();
+    let endDate = new Date();
+    
+    switch (billingCycle) {
+      case 'monthly':
+        endDate.setMonth(endDate.getMonth() + 1);
+        break;
+      case 'quarterly':
+        endDate.setMonth(endDate.getMonth() + 3);
+        break;
+      case 'yearly':
+        endDate.setFullYear(endDate.getFullYear() + 1);
+        break;
+    }
+    
+    creditRecord.currentPlan = {
+      planId: planId,
+      startDate: startDate,
+      endDate: endDate,
+      billingCycle: billingCycle,
+      autoRenew: autoRenew || false
+    };
+    
+    await creditRecord.save();
+    
+    // Apply coupon usage if used
+    if (couponUsed) {
+      const coupon = await Coupon.findValidCoupon(couponCode);
+      if (coupon) {
+        await coupon.applyCoupon(clientId, planId, plan.price);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Plan purchased successfully',
+      data: {
+        plan: plan.name,
+        creditsAdded: creditsToAdd,
+        price: plan.price,
+        discountApplied: discountApplied,
+        finalPrice: finalPrice,
+        billingCycle: billingCycle,
+        startDate: startDate,
+        endDate: endDate,
+        couponUsed: couponUsed,
+        newBalance: creditRecord.currentBalance
+      }
+    });
+  } catch (error) {
+    console.error('Error purchasing plan:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to purchase plan'
+    });
+  }
+});
+
+router.post('/coupons/validate',  async (req, res) => {
+  try {
+    const { couponCode, planId } = req.body;
+    const clientId = req.clientId;
+    
+    if (!couponCode || !planId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Coupon code and plan ID are required'
+      });
+    }
+    
+    const Coupon = require('../models/Coupon');
+    const Plan = require('../models/Plan');
+    
+    const coupon = await Coupon.findValidCoupon(couponCode);
+    if (!coupon) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invalid or expired coupon'
+      });
+    }
+    
+    const plan = await Plan.findById(planId);
+    if (!plan) {
+      return res.status(404).json({
+        success: false,
+        message: 'Plan not found'
+      });
+    }
+    
+    // Check if coupon applies to plan
+    if (!coupon.appliesToPlan(planId, plan.category)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Coupon not applicable to this plan'
+      });
+    }
+    
+    // Check if user can use coupon
+    const canUse = await coupon.canBeUsedBy(clientId);
+    if (!canUse.valid) {
+      return res.status(400).json({
+        success: false,
+        message: canUse.reason
+      });
+    }
+    
+    const discount = coupon.calculateDiscount(plan.price);
+    
+    res.json({
+      success: true,
+      message: 'Coupon is valid',
+      data: {
+        coupon: {
+          code: coupon.code,
+          name: coupon.name,
+          description: coupon.description,
+          discountType: coupon.discountType,
+          discountValue: coupon.discountValue
+        },
+        discount: discount,
+        finalPrice: plan.price - discount
+      }
+    });
+  } catch (error) {
+    console.error('Error validating coupon:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to validate coupon'
+    });
+  }
+});
+
+router.put('/credits/settings', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { lowBalanceAlert, autoPurchase } = req.body;
+    const clientId = req.clientId;
+    
+    const Credit = require('../models/Credit');
+    const creditRecord = await Credit.findOne({ clientId });
+    
+    if (!creditRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Credit record not found'
+      });
+    }
+    
+    if (lowBalanceAlert) {
+      creditRecord.settings.lowBalanceAlert = {
+        ...creditRecord.settings.lowBalanceAlert,
+        ...lowBalanceAlert
+      };
+    }
+    
+    if (autoPurchase) {
+      creditRecord.settings.autoPurchase = {
+        ...creditRecord.settings.autoPurchase,
+        ...autoPurchase
+      };
+    }
+    
+    await creditRecord.save();
+    
+    res.json({
+      success: true,
+      message: 'Credit settings updated successfully',
+      data: creditRecord.settings
+    });
+  } catch (error) {
+    console.error('Error updating credit settings:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update credit settings'
+    });
+  }
+});
+
+// Confirm Paytm payment and credit static plan
+router.post('/credits/paytm/confirm', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { orderId, planKey } = req.body;
+    const clientId = req.clientId;
+
+    if (!orderId || !planKey) {
+      return res.status(400).json({ success: false, message: 'orderId and planKey are required' });
+    }
+
+    const Credit = require('../models/Credit');
+    const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+
+    // Idempotency: don't apply if this orderId already in history
+    const alreadyApplied = (creditRecord.history || []).some(h => h.transactionId === String(orderId));
+    if (alreadyApplied) {
+      return res.json({ success: true, message: 'Payment already applied', data: { balance: creditRecord.currentBalance } });
+    }
+
+    const mapping = {
+      basic: { credits: 1000, bonus: 0, price: 1000 },
+      professional: { credits: 5000, bonus: 500, price: 5000 },
+      enterprise: { credits: 10000, bonus: 1000, price: 10000 },
+    };
+
+    const key = String(planKey).toLowerCase();
+    const plan = mapping[key];
+    if (!plan) {
+      return res.status(400).json({ success: false, message: 'Invalid planKey' });
+    }
+
+    const totalCredits = plan.credits + (plan.bonus || 0);
+
+    await creditRecord.addCredits(totalCredits, 'purchase', `Paytm order ${orderId} • ${key} plan`, null, String(orderId));
+
+    return res.json({ success: true, message: 'Credits added', data: { balance: creditRecord.currentBalance, added: totalCredits } });
+  } catch (error) {
+    console.error('Error confirming Paytm payment:', error);
+    res.status(500).json({ success: false, message: 'Failed to confirm payment' });
+  }
+});
+
+// Initiate Paytm payment from backend and handle redirect server-side
+router.post('/payments/initiate', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { amount, customerEmail, customerPhone, customerName, planKey } = req.body || {};
+    if (!amount) {
+      return res.status(400).json({ success: false, message: 'amount is required' });
+    }
+
+    // Fallback billing data from client profile if not provided
+    let email = customerEmail;
+    let phone = customerPhone;
+    let name = customerName;
+    try {
+      const Client = require('../models/Client');
+      const client = await Client.findById(req.clientId);
+      if (client) {
+        if (!email) email = client.email;
+        if (!phone) phone = client.mobileNo;
+        if (!name) name = client.name;
+      }
+    } catch {}
+
+    // Final fallbacks
+    if (!email) email = 'client@example.com';
+    if (!phone) phone = '9999999999';
+    if (!name) name = 'Client';
+
+    // Call external Paytm gateway API
+    const axios = require('axios');
+    const gatewayBase = 'https://paytm-gateway-n0py.onrender.com';
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const payload = {
+      amount,
+      customerEmail: email,
+      customerPhone: phone,
+      customerName: name,
+      projectId: 'aitota-pricing',
+      redirectUrl: `${FRONTEND_URL}/auth/dashboard`
+    };
+    const gwResp = await axios.post(`${gatewayBase}/api/paytm/initiate`, payload, { timeout: 15000 });
+    const data = gwResp.data || {};
+
+    if (!data.success) {
+      return res.status(500).json({ success: false, message: data.message || 'Payment initiation failed' });
+    }
+
+    // Prefer gateway redirectUrl if present
+    if (data.redirectUrl) {
+      return res.redirect(302, data.redirectUrl);
+    }
+
+    // Otherwise render an HTML form auto-submitting to Paytm
+    const paytmUrl = data.paytmUrl;
+    const params = data.paytmParams || {};
+    if (!paytmUrl) {
+      return res.status(500).json({ success: false, message: 'Missing paytmUrl from gateway' });
+    }
+    const inputs = Object.entries(params)
+      .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v)}"/>`)
+      .join('');
+    const html = `<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Redirecting…</title></head><body>
+      <form id=\"paytmForm\" method=\"POST\" action=\"${paytmUrl}\">${inputs}</form>
+      <script>document.getElementById('paytmForm').submit();</script>
+    </body></html>`;
+    res.status(200).send(html);
+  } catch (error) {
+    console.error('Error initiating payment:', error.message);
+    res.status(500).json({ success: false, message: 'Failed to initiate payment' });
+  }
+});
+
+// GET variant for browser redirects without Authorization header. Token passed as query param 't'.
+// 
+// Cashfree PG v2 Hosted Checkout Flow:
+// 1. Create order using POST /pg/orders
+// 2. Extract payment_session_id from response
+// 3. Clean session ID if it ends with 'payment' (Cashfree API bug)
+// 4. Redirect to hosted checkout using cleaned session ID
+// 5. Environment determines checkout URL (corrected format):
+//    - PROD: https://payments.cashfree.com/order/{sessionId} (path format)
+//    - SANDBOX: https://sandbox.cashfree.com/pg/orders/{sessionId} (path format)
+//    - Note: Using path format, not hash (#) format
+//
+router.get('/payments/initiate/direct', async (req, res) => {
+  try {
+    const jwt = require('jsonwebtoken');
+    const { t, amount, planKey } = req.query || {};
+    try { console.log('[INITIATE/DIRECT] query:', req.query); } catch {}
+    if (!t) return res.status(401).send('Missing token');
+    if (!amount) return res.status(400).send('Missing amount');
+    const planKeyNorm = (typeof planKey === 'string' ? planKey : String(planKey || '')).toLowerCase();
+    if (!planKeyNorm) return res.status(400).send('Missing planKey');
+
+    let clientId;
+    try {
+      const decoded = jwt.verify(t, process.env.JWT_SECRET);
+      if (decoded?.userType !== 'client') return res.status(401).send('Invalid token');
+      clientId = decoded.id;
+    } catch (e) {
+      return res.status(401).send('Invalid token');
+    }
+
+    // Billing info from client profile
+    const Client = require('../models/Client');
+    const client = await Client.findById(clientId);
+    let email = client?.email || 'client@example.com';
+    let phone = client?.mobileNo || '9999999999';
+    // Normalize phone to 10 digits as Cashfree expects
+    try {
+      const digits = String(phone || '').replace(/\D/g, '');
+      if (digits.length >= 10) {
+        phone = digits.slice(-10);
+      }
+    } catch {}
+    let name = client?.name || 'Client';
+
+        // Create Cashfree order and redirect to hosted checkout
+    console.log('Creating Cashfree order for payment');
+    
+    // Create Cashfree order and redirect to hosted checkout
+    const cashfreeOrderId = `AITOTA_${Date.now()}`;
+    const axios = require('axios');
+    
+    // Validate Cashfree configuration
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      console.error('Cashfree configuration missing:', {
+        hasClientId: !!CashfreeConfig.CLIENT_ID,
+        hasClientSecret: !!CashfreeConfig.CLIENT_SECRET,
+        env: CashfreeConfig.ENV
+      });
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Payment gateway configuration error' 
+      });
+    }
+    
+    console.log('Cashfree configuration:', {
+      env: CashfreeConfig.ENV,
+      baseUrl: CashfreeConfig.BASE_URL,
+      hasClientId: !!CashfreeConfig.CLIENT_ID,
+      hasClientSecret: !!CashfreeConfig.CLIENT_SECRET,
+      clientIdLength: CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.length : 0,
+      clientIdPrefix: CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.substring(0, 4) : 'N/A'
+    });
+    
+    // Check if we're using the right environment
+    if (CashfreeConfig.ENV === 'prod' && CashfreeConfig.CLIENT_ID && CashfreeConfig.CLIENT_ID.startsWith('TEST')) {
+      console.error('WARNING: Using TEST credentials in PROD environment!');
+    }
+    if (CashfreeConfig.ENV === 'sandbox' && CashfreeConfig.CLIENT_ID && !CashfreeConfig.CLIENT_ID.startsWith('TEST')) {
+      console.error('WARNING: Using PROD credentials in SANDBOX environment!');
+    }
+    
+    // Persist INITIATED payment
+    try {
+      const Payment = require('../models/Payment');
+      await Payment.create({ clientId, orderId: cashfreeOrderId, planKey: planKeyNorm, amount: Number(amount), email, phone, status: 'INITIATED', gateway: 'cashfree' });
+    } catch (e) { console.error('Payment INITIATED save failed:', e.message); }
+
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2022-09-01', // Use stable API version
+      'Content-Type': 'application/json'
+    };
+    const payload = {
+      order_id: cashfreeOrderId,
+      order_amount: Number(amount),
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: String(clientId),
+        customer_email: email,
+        customer_phone: phone,
+        customer_name: name
+      },
+      order_meta: {
+        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cashfreeOrderId}`,
+        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cashfreeOrderId}`
+      },
+      order_note: `Payment for ${planKeyNorm} plan`,
+      order_tags: {
+        plan: planKeyNorm,
+        client_id: String(clientId)
+      }
+    };
+    let cf;
+    try {
+      console.log('Creating Cashfree order with payload:', JSON.stringify(payload, null, 2));
+      console.log('Using Cashfree API URL:', `${CashfreeConfig.BASE_URL}/pg/orders`);
+      console.log('Using API version:', headers['x-api-version']);
+      
+      const cfResp = await axios.post(`${CashfreeConfig.BASE_URL}/pg/orders`, payload, { headers });
+      cf = cfResp.data || {};
+      
+      // Log raw response for debugging
+      console.log('Raw Cashfree API response:', JSON.stringify(cfResp.data, null, 2));
+      console.log('Cashfree order created successfully:', JSON.stringify(cf, null, 2));
+      
+      // Log key response fields
+      console.log('Order ID:', cf.order_id);
+      console.log('CF Order ID:', cf.cf_order_id);
+      console.log('Payment Session ID:', cf.payment_session_id);
+      console.log('Order Status:', cf.order_status);
+      console.log('Has Payment Link:', !!cf.payment_link);
+      
+      // Check if session ID ends with 'payment' (which is invalid)
+      if (cf.payment_session_id && cf.payment_session_id.endsWith('payment')) {
+        console.error('WARNING: Session ID ends with "payment" - this is invalid!');
+        console.error('Original session ID:', cf.payment_session_id);
+      }
+      
+    } catch (e) {
+      const status = e.response?.status;
+      const data = e.response?.data;
+      console.error('Cashfree create order failed:', status, data || e.message);
+      console.error('Request payload was:', JSON.stringify(payload, null, 2));
+      return res.status(502).json({ success: false, message: 'Cashfree create order failed', status, data });
+    }
+    // Force using payment_link instead of hosted checkout to avoid session issues
+    if (cf.payment_link) {
+      console.log('Using Cashfree payment link:', cf.payment_link);
+      return res.redirect(302, cf.payment_link);
+    }
+    
+
+    
+    // Use the exact payment_session_id from order creation (Cashfree PG v2 Hosted Checkout)
+    if (cf.payment_session_id) {
+      console.log('Using Cashfree PG v2 Hosted Checkout with exact session ID');
+      
+      // Get the session ID and clean it if it ends with 'payment' (invalid suffix)
+      let sessionId = String(cf.payment_session_id);
+      console.log('Original session ID from Cashfree:', sessionId);
+      
+      // Fix: Remove 'payment' suffix if present (Cashfree API bug)
+      if (sessionId.endsWith('payment')) {
+        const cleanedSessionId = sessionId.replace(/payment$/, '');
+        console.log('WARNING: Session ID ended with "payment" - cleaning it');
+        console.log('Cleaned session ID:', cleanedSessionId);
+        sessionId = cleanedSessionId;
+      }
+      
+      // Additional safety: Ensure session ID starts with 'session_'
+      if (!sessionId.startsWith('session_')) {
+        console.error('Invalid session ID format - must start with "session_"');
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Invalid payment session ID format from Cashfree',
+          data: { sessionId, orderId: cf.order_id }
+        });
+      }
+      
+      console.log('Final session ID to use:', sessionId);
+      
+      // Additional debugging: Log session ID characteristics
+      console.log('Session ID analysis:', {
+        length: sessionId.length,
+        startsWithSession: sessionId.startsWith('session_'),
+        containsSpecialChars: /[^a-zA-Z0-9_-]/.test(sessionId),
+        hasValidFormat: /^session_[a-zA-Z0-9_-]+$/.test(sessionId),
+        originalLength: cf.payment_session_id.length,
+        cleanedLength: sessionId.length
+      });
+      
+      // Validate session ID format
+      if (!sessionId || sessionId.length < 10) {
+        console.error('Invalid session ID format:', sessionId);
+        return res.status(500).json({ 
+          success: false, 
+          message: 'Invalid payment session ID from Cashfree',
+          data: { sessionId, orderId: cf.order_id }
+        });
+      }
+      
+      // Try different URL formats based on Cashfree documentation
+      // Start with the most likely correct format
+      let checkoutUrl;
+      let urlFormat = 'path';
+      
+      if (CashfreeConfig.ENV === 'prod' || CashfreeConfig.ENV === 'production') {
+        // Try path format first (most common for hosted checkout)
+        checkoutUrl = `https://payments.cashfree.com/order/${sessionId}`;
+        urlFormat = 'path';
+        console.log('Using PRODUCTION checkout URL (path format):', checkoutUrl);
+      } else {
+        checkoutUrl = `https://sandbox.cashfree.com/pg/orders/${sessionId}`;
+        urlFormat = 'path';
+        console.log('Using SANDBOX checkout URL (path format):', checkoutUrl);
+      }
+      
+      // Alternative URL formats to try if the main one fails
+      const alternativeUrls = [
+        {
+          format: 'path',
+          url: `https://payments.cashfree.com/order/${sessionId}`,
+          description: 'Path format (most common)'
+        },
+        {
+          format: 'query_session_id',
+          url: `https://payments.cashfree.com/order?session_id=${sessionId}`,
+          description: 'Query parameter with session_id'
+        },
+        {
+          format: 'query_session',
+          url: `https://payments.cashfree.com/order?session=${sessionId}`,
+          description: 'Query parameter with session'
+        },
+        {
+          format: 'hash',
+          url: `https://payments.cashfree.com/order/#${sessionId}`,
+          description: 'Hash format (old, may not work)'
+        },
+        {
+          format: 'checkout_path',
+          url: `https://payments.cashfree.com/checkout/${sessionId}`,
+          description: 'Checkout path format'
+        }
+      ];
+      
+      console.log('Alternative URL formats to try:', alternativeUrls.map(a => `${a.format}: ${a.url}`));
+      console.log('Redirecting to Cashfree hosted checkout with path format');
+      
+      // Store alternative URLs in session for potential fallback
+      req.session = req.session || {};
+      req.session.cashfreeAlternativeUrls = alternativeUrls;
+      req.session.cashfreeSessionId = sessionId;
+      req.session.cashfreeCurrentFormat = urlFormat;
+      
+      // Additional debugging: Log the exact redirect
+      console.log('=== FINAL REDIRECT DEBUG ===');
+      console.log('Session ID (original):', cf.payment_session_id);
+      console.log('Session ID (cleaned):', sessionId);
+      console.log('URL Format:', urlFormat);
+      console.log('Final Checkout URL:', checkoutUrl);
+      console.log('Environment:', CashfreeConfig.ENV);
+      console.log('Base URL:', CashfreeConfig.BASE_URL);
+      console.log('Client ID Prefix:', CashfreeConfig.CLIENT_ID ? CashfreeConfig.CLIENT_ID.substring(0, 4) : 'N/A');
+      console.log('==========================');
+      
+      return res.redirect(302, checkoutUrl);
+    }
+    
+
+    
+
+    
+    // If we reach here, something is wrong with the Cashfree response
+    console.error('Cashfree response missing both payment_link and payment_session_id:', cf);
+    console.error('Full Cashfree response:', JSON.stringify(cf, null, 2));
+    
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Cashfree order created but no payment session available. Please try again.',
+      data: {
+        orderId: cf.order_id,
+        cfOrderId: cf.cf_order_id,
+        orderStatus: cf.order_status,
+        hasPaymentLink: !!cf.payment_link,
+        hasPaymentSessionId: !!cf.payment_session_id,
+        fullResponse: cf
+      }
+    });
+  } catch (error) {
+    console.error('Error in direct initiate:', error.message || error);
+    const msg = error?.message || 'Failed to initiate payment';
+    res.status(500).json({ success: false, message: msg });
+  }
+});
+
+// Fallback endpoint to try different Cashfree URL formats
+router.get('/payments/cashfree/fallback', (req, res) => {
+  try {
+    const { format, sessionId } = req.query;
+    
+    if (!sessionId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'sessionId parameter is required' 
+      });
+    }
+    
+    // Clean session ID if it ends with 'payment'
+    let cleanedSessionId = sessionId;
+    if (sessionId.endsWith('payment')) {
+      cleanedSessionId = sessionId.replace(/payment$/, '');
+      console.log('Cleaned session ID for fallback:', cleanedSessionId);
+    }
+    
+    // Generate URL based on requested format
+    let checkoutUrl;
+    switch (format) {
+      case 'path':
+        checkoutUrl = `https://payments.cashfree.com/order/${cleanedSessionId}`;
+        break;
+      case 'query_session_id':
+        checkoutUrl = `https://payments.cashfree.com/order?session_id=${cleanedSessionId}`;
+        break;
+      case 'query_session':
+        checkoutUrl = `https://payments.cashfree.com/order?session=${cleanedSessionId}`;
+        break;
+      case 'hash':
+        checkoutUrl = `https://payments.cashfree.com/order/#${cleanedSessionId}`;
+        break;
+      case 'checkout_path':
+        checkoutUrl = `https://payments.cashfree.com/checkout/${cleanedSessionId}`;
+        break;
+      default:
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid format. Use: path, query_session_id, query_session, hash, or checkout_path' 
+        });
+    }
+    
+    console.log(`Fallback redirect to ${format} format:`, checkoutUrl);
+    return res.redirect(302, checkoutUrl);
+    
+  } catch (error) {
+    console.error('Fallback endpoint error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Comprehensive Cashfree diagnostic endpoint
+router.get('/debug/cashfree-diagnostics', async (req, res) => {
+  try {
+    const diagnostics = {
+      timestamp: new Date().toISOString(),
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        CASHFREE_ENV: process.env.CASHFREE_ENV,
+        CASHFREE_CLIENT_ID: process.env.CASHFREE_CLIENT_ID ? `${process.env.CASHFREE_CLIENT_ID.substring(0, 4)}...` : 'NOT_SET',
+        CASHFREE_SECRET_KEY: process.env.CASHFREE_SECRET_KEY ? `${process.env.CASHFREE_SECRET_KEY.substring(0, 8)}...` : 'NOT_SET',
+        CASHFREE_SECRET_KEY_TEST: process.env.CASHFREE_SECRET_KEY_TEST ? `${process.env.CASHFREE_SECRET_KEY.substring(0, 8)}...` : 'NOT_SET'
+      },
+      config: {
+        ENV: CashfreeConfig.ENV,
+        BASE_URL: CashfreeConfig.BASE_URL,
+        CLIENT_ID: CashfreeConfig.CLIENT_ID ? `${CashfreeConfig.CLIENT_ID.substring(0, 4)}...` : 'NOT_SET',
+        CLIENT_SECRET: CashfreeConfig.CLIENT_SECRET ? `${CashfreeConfig.CLIENT_SECRET.substring(0, 8)}...` : 'NOT_SET',
+        RETURN_URL: CashfreeConfig.RETURN_URL
+      },
+      urlFormats: {
+        production: {
+          path: 'https://payments.cashfree.com/order/{sessionId}',
+          query_session_id: 'https://payments.cashfree.com/order?session_id={sessionId}',
+          query_session: 'https://payments.cashfree.com/order?session={sessionId}',
+          hash: 'https://payments.cashfree.com/order/#{sessionId}',
+          checkout_path: 'https://payments.cashfree.com/checkout/{sessionId}'
+        },
+        sandbox: {
+          path: 'https://sandbox.cashfree.com/pg/orders/{sessionId}',
+          query_session_id: 'https://sandbox.cashfree.com/pg/orders?session_id={sessionId}',
+          query_session: 'https://sandbox.cashfree.com/pg/orders?session={sessionId}',
+          hash: 'https://sandbox.cashfree.com/pg/orders/#{sessionId}',
+          checkout_path: 'https://sandbox.cashfree.com/checkout/{sessionId}'
+        }
+      },
+      testSessionIds: [
+        {
+          original: 'session_hN9kFZIn9f71raO3G41brM9lrbHUTiyKMJ1R_CB8t_Fe86dg-A2uzFUH43NcuW-G-p97plFrIW44RU8aqrDs12N37BYpxQVs5dj4l8fJLge0-h1ngYqHrcVvMfQpayment',
+          cleaned: 'session_hN9kFZIn9f71raO3G41brM9lrbHUTiyKMJ1R_CB8t_Fe86dg-A2uzFUH43NcuW-G-p97plFrIW44RU8aqrDs12N37BYpxQVs5dj4l8fJLge0-h1ngYqHrcVvMfQ',
+          hasPaymentSuffix: true,
+          length: 131
+        }
+      ],
+      recommendations: [
+        'All URL formats are failing - this suggests a fundamental issue with the session ID or configuration',
+        'Check if Cashfree credentials are correct for the environment being used',
+        'Verify the session ID format in Cashfree documentation',
+        'Consider testing with a fresh order creation',
+        'Check Cashfree support for session ID format requirements'
+      ]
+    };
+    
+    res.json({
+      success: true,
+      message: 'Cashfree comprehensive diagnostics',
+      data: diagnostics
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Debug endpoint to test session ID cleaning
+router.get('/debug/session-id-clean', (req, res) => {
+  try {
+    const testSessionIds = [
+      'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvUGZK2DnJ_QvBCiug3WPM93cpayment',
+      'session_98FwWBjqO8Wzu2NWNqdY93Y0Aehqyjegr_sBbMXTDcNfzpsr12KzXyS18ypvvBsYWeUK1ox83YfMebEKCtkrbErsxULYYnX25UQvBCiug3WPM93c',
+      'session_normal_id',
+      'invalid_id_payment',
+      'session_GEqmGFcAuKJIXDdQjRj1XinL_zIw_JSvEMNQKkU_zBb22ROs6f65FRIW5ES18s01cb09LMU8qxjdplIOaRgiZ7t1qipSxemUUv0W7mxy8OjquhooHUnqtNaSC5spayment',
+      'session_hN9kFZIn9f71raO3G41brM9lrbHUTiyKMJ1R_CB8t_Fe86dg-A2uzFUH43NcuW-G-p97plFrIW44RU8aqrDs12N37BYpxQVs5dj4l8fJLge0-h1ngYqHrcVvMfQpayment'
+    ];
+    
+    const results = testSessionIds.map(originalId => {
+      let cleanedId = originalId;
+      if (originalId.endsWith('payment')) {
+        cleanedId = originalId.replace(/payment$/, '');
+      }
+      
+      const isValid = cleanedId.startsWith('session_') && cleanedId.length >= 10;
+      const hasValidFormat = /^session_[a-zA-Z0-9_-]+$/.test(cleanedId);
+      
+      // Generate different URL formats for testing
+      const urlFormats = {
+        pathFormat: `https://payments.cashfree.com/order/${cleanedId}`,
+        querySessionIdFormat: `https://payments.cashfree.com/order?session_id=${cleanedId}`,
+        querySessionFormat: `https://payments.cashfree.com/order?session=${cleanedId}`,
+        hashFormat: `https://payments.cashfree.com/order/#${cleanedId}`,
+        checkoutPathFormat: `https://payments.cashfree.com/checkout/${cleanedId}`
+      };
+      
+      return {
+        original: originalId,
+        cleaned: cleanedId,
+        isValid,
+        hasValidFormat,
+        endsWithPayment: originalId.endsWith('payment'),
+        length: cleanedId.length,
+        urlFormats
+      };
+    });
+    
+    res.json({
+      success: true,
+      message: 'Session ID cleaning test results with URL formats',
+      data: results
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/v1/client/credits/paytm/confirm
+// Accepts { orderId, planKey } from frontend after redirect
+router.post('/credits/paytm/confirm', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { orderId, planKey } = req.body || {};
+    if (!orderId) {
+      return res.status(400).json({ success: false, message: 'orderId missing' });
+    }
+    const plan = (planKey || '').toLowerCase();
+    let creditsToAdd = 0;
+    if (plan === 'basic') creditsToAdd = 1000;
+    else if (plan === 'professional') creditsToAdd = 5500; // includes 500 bonus
+    else if (plan === 'enterprise') creditsToAdd = 11000; // includes 1000 bonus
+
+    if (!creditsToAdd) {
+      return res.status(400).json({ success: false, message: 'Unknown planKey' });
+    }
+
+    const Credit = require('../models/Credit');
+    const credit = await Credit.getOrCreateCreditRecord(req.clientId);
+    await credit.addCredits(creditsToAdd, 'purchase', `Paytm order ${orderId}`, {
+      gateway: 'paytm',
+      orderId,
+      planKey: plan,
+    });
+    return res.json({ success: true, message: 'Credits applied', data: { balance: credit.currentBalance } });
+  } catch (e) {
+    console.error('Paytm confirm error:', e.message);
+    return res.status(500).json({ success: false, message: 'Failed to apply credits' });
   }
 });
 
