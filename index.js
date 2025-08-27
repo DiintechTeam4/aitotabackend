@@ -266,10 +266,15 @@ app.get('/api/v1/client/payments/initiate/cashfree-direct', async (req, res) => 
 });
 
 // Cashfree webhook handler (optional but recommended for better reliability)
-app.post('/api/v1/cashfree/webhook', async (req, res) => {
+app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
   try {
     const webhookData = req.body;
     console.log('🔔 Cashfree webhook received:', webhookData);
+
+    if (!webhookData || typeof webhookData !== 'object') {
+      console.warn('Webhook body missing or not JSON');
+      return res.status(200).json({ success: true });
+    }
 
     // Verify webhook signature (implement based on Cashfree docs)
     // const signature = req.headers['x-webhook-signature'];
