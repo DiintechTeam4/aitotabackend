@@ -5081,26 +5081,17 @@ router.get('/payments/initiate/direct', async (req, res) => {
     } catch (e) {
       console.error('Payment link creation failed:', e.response?.data || e.message);
       
-      // Try alternative: Construct direct payment link using order ID
-      console.log('Trying alternative: Direct payment link construction');
-      const isProduction = CashfreeConfig.BASE_URL.includes('api.cashfree.com');
-      
-      // Try the direct payment link format first
-      const directPaymentUrl = isProduction 
-        ? `https://payments.cashfree.com/links/${orderResponse.order_id}`
-        : `https://payments-test.cashfree.com/links/${orderResponse.order_id}`;
-      
-      console.log('Trying direct payment URL:', directPaymentUrl);
-      
       // Fallback: Use the session ID to create a hosted checkout URL
       console.log('Fallback: Using hosted checkout with session ID');
+      const isProduction = CashfreeConfig.BASE_URL.includes('api.cashfree.com');
+      
+      // Use hosted checkout URL since direct payment links are not working
       const hostedCheckoutUrl = isProduction 
         ? `https://cashfree.com/pg/orders/${sessionId}`
         : `https://sandbox.cashfree.com/pg/orders/${sessionId}`;
       
-      // Use direct payment URL if available, otherwise fallback to hosted checkout
-      paymentLinkResponse.link_url = directPaymentUrl;
-      console.log('Final URL:', directPaymentUrl);
+      paymentLinkResponse.link_url = hostedCheckoutUrl;
+      console.log('Final URL:', hostedCheckoutUrl);
     }
 
     // Check if we got a payment link
