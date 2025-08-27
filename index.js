@@ -321,10 +321,25 @@ app.post('/api/v1/cashfree/webhook', async (req, res) => {
 
 app.post('/api/v1/payments/cashfree/create-order', async (req, res) => {
   try {
-    const { amount, customerName, customerEmail, customerPhone } = req.body || {};
+    const { amount, planKey } = req.body || {};
 
-    if (!amount || !customerName || !customerEmail || !customerPhone) {
-      return res.status(400).json({ success: false, message: 'Missing required fields: amount, customerName, customerEmail, customerPhone' });
+    // Require auth header
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Authorization token required' });
+    }
+    // Verify JWT
+    const jwt = require('jsonwebtoken');
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({ success: false, message: 'Invalid authorization token' });
+    }
+
+    if (!amount) {
+      return res.status(400).json({ success: false, message: 'Missing required field: amount' });
     }
 
     const orderAmount = parseFloat(amount);
@@ -332,8 +347,23 @@ app.post('/api/v1/payments/cashfree/create-order', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid amount. Must be a positive number.' });
     }
 
+    // Get client details from DB
+    const Client = require('./models/Client');
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    let customerName = client.name || client.username || client.email || 'Customer';
+    let customerEmail = client.email || `${clientId}@aitota.com`;
+    let customerPhone = client.phone || client.mobile || client.mobileNo || '9999999999';
+    try {
+      const digits = String(customerPhone).replace(/\D/g, '');
+      if (digits.length >= 10) customerPhone = digits.slice(-10);
+    } catch {}
+
     const orderId = 'order_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const customerId = 'customer_' + Date.now();
+    const customerId = String(clientId);
 
     const getBaseUrl = () => {
       const host = req.get('host') || '';
@@ -365,7 +395,8 @@ app.post('/api/v1/payments/cashfree/create-order', async (req, res) => {
       order_meta: {
         return_url: `${baseUrl}/api/v1/cashfree/callback?order_id=${orderId}`,
         notify_url: `${baseUrl}/api/v1/cashfree/webhook`
-      }
+      },
+      order_tags: planKey ? { plan: String(planKey).toLowerCase(), client_id: customerId } : { client_id: customerId }
     };
 
     const headers = {
@@ -381,6 +412,26 @@ app.post('/api/v1/payments/cashfree/create-order', async (req, res) => {
 
     if (!result.payment_session_id) {
       return res.status(400).json({ success: false, message: result.message || 'Failed to create order', details: result });
+    }
+
+    // Save payment record
+    try {
+      const Payment = require('./models/Payment');
+      await Payment.create({
+        clientId,
+        orderId,
+        planKey: String(planKey || '').toLowerCase(),
+        amount: orderAmount,
+        email: customerEmail,
+        phone: customerPhone,
+        status: 'INITIATED',
+        gateway: 'cashfree',
+        sessionId: result.payment_session_id,
+        orderStatus: result.order_status,
+        rawResponse: result
+      });
+    } catch (e) {
+      console.error('Payment save failed (non-fatal):', e.message);
     }
 
     return res.json({
