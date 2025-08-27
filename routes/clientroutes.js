@@ -5030,61 +5030,32 @@ router.get('/payments/initiate/direct', async (req, res) => {
       return res.status(502).json({ success: false, message: 'Cashfree create order failed', status, data });
     }
 
-    // Step 2: Create payment link
-    const paymentLinkPayload = {
-      payment_method: {
-        upi: { enabled: true },
-        card: { enabled: true },
-        netbanking: { enabled: true },
-        app: { enabled: true },
-        paylater: { enabled: true },
-        wallet: { enabled: true },
-        emi: { enabled: true }
-      },
-      order_meta: {
-        return_url: `${CashfreeConfig.RETURN_URL}?order_id=${cashfreeOrderId}`,
-        notify_url: `${CashfreeConfig.RETURN_URL}?order_id=${cashfreeOrderId}`
-      }
-    };
-
-    let paymentLinkResponse;
-    try {
-      console.log('Step 2: Creating payment link with payload:', JSON.stringify(paymentLinkPayload, null, 2));
-      console.log('Using Cashfree API URL:', `${CashfreeConfig.BASE_URL}/pg/payment-links`);
-      
-      const linkResp = await axios.post(`${CashfreeConfig.BASE_URL}/pg/payment-links`, paymentLinkPayload, { headers });
-      paymentLinkResponse = linkResp.data || {};
-      
-      console.log('Payment link created successfully:', JSON.stringify(paymentLinkResponse, null, 2));
-      console.log('Has Payment Link:', !!paymentLinkResponse.payment_link);
-      console.log('Payment Link:', paymentLinkResponse.payment_link);
-      
-    } catch (e) {
-      const status = e.response?.status;
-      const data = e.response?.data;
-      console.error('Cashfree create payment link failed:', status, data || e.message);
-      console.error('Request payload was:', JSON.stringify(paymentLinkPayload, null, 2));
-      
-      // Fallback: Try alternative endpoint
-      try {
-        console.log('Fallback: Trying alternative payment link endpoint');
-        const fallbackResp = await axios.post(
-          `${CashfreeConfig.BASE_URL}/pg/orders/${cashfreeOrderId}/payments`,
-          paymentLinkPayload,
-          { headers }
-        );
-        paymentLinkResponse = fallbackResp.data || {};
-        console.log('Fallback payment link created:', JSON.stringify(paymentLinkResponse, null, 2));
-      } catch (fallbackError) {
-        console.error('Fallback payment link creation also failed:', fallbackError.response?.data || fallbackError.message);
-        return res.status(502).json({ 
-          success: false, 
-          message: 'Cashfree create payment link failed', 
-          status: e.response?.status || fallbackError.response?.status, 
-          data: e.response?.data || fallbackError.response?.data 
-        });
-      }
+    // Step 2: Skip payment link creation and construct direct payment URL
+    // Based on the error response, the payment link APIs are not working as expected
+    // Instead, we'll construct the direct payment URL using the order ID
+    console.log('Step 2: Constructing direct payment URL from order');
+    
+    let paymentLinkResponse = {};
+    
+    // Clean the session ID if it has the 'payment' suffix
+    let sessionId = String(orderResponse.payment_session_id);
+    if (sessionId.endsWith('payment')) {
+      sessionId = sessionId.replace(/payment$/, '');
+      console.log('Cleaned session ID:', sessionId);
     }
+    
+    // Construct the direct payment URL
+    // For sandbox: https://payments-test.cashfree.com/links/{orderId}
+    // For production: https://payments.cashfree.com/links/{orderId}
+    const directPaymentUrl = `https://payments${CashfreeConfig.BASE_URL.includes('sandbox') ? '-test' : ''}.cashfree.com/links/${orderResponse.order_id}`;
+    
+    console.log('🔗 Constructed direct payment URL:', directPaymentUrl);
+    console.log('📋 Order ID:', orderResponse.order_id);
+    console.log('🔑 Session ID:', sessionId);
+    console.log('🌍 Environment:', CashfreeConfig.ENV);
+    
+    // Set the payment link in our response object
+    paymentLinkResponse.payment_link = directPaymentUrl;
 
     // Check if we got a payment link
     if (paymentLinkResponse.payment_link) {
@@ -5097,6 +5068,7 @@ router.get('/payments/initiate/direct', async (req, res) => {
           { orderId: cashfreeOrderId },
           { 
             paymentLink: paymentLinkResponse.payment_link,
+            sessionId: sessionId,
             rawResponse: { order: orderResponse, paymentLink: paymentLinkResponse }
           }
         );
@@ -5105,20 +5077,20 @@ router.get('/payments/initiate/direct', async (req, res) => {
       return res.redirect(302, paymentLinkResponse.payment_link);
     }
 
-    // If no payment link, something is wrong
-    console.error('Cashfree payment link response missing payment_link:', paymentLinkResponse);
-    console.error('Full payment link response:', JSON.stringify(paymentLinkResponse, null, 2));
+
+
+    // If we reach here, something is wrong with the order creation
+    console.error('Failed to construct payment link from order:', orderResponse);
     
     return res.status(500).json({ 
       success: false, 
-      message: 'Cashfree payment link created but no payment link available. Please try again.',
+      message: 'Failed to create payment link. Please try again.',
       data: {
         orderId: orderResponse.order_id,
         cfOrderId: orderResponse.cf_order_id,
         orderStatus: orderResponse.order_status,
-        hasPaymentLink: !!paymentLinkResponse.payment_link,
-        fullOrderResponse: orderResponse,
-        fullPaymentLinkResponse: paymentLinkResponse
+        hasPaymentSessionId: !!orderResponse.payment_session_id,
+        fullOrderResponse: orderResponse
       }
     });
   } catch (error) {
