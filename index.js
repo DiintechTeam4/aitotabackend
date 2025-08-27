@@ -498,6 +498,90 @@ app.post('/api/v1/payments/cashfree/verify-payment', async (req, res) => {
   }
 });
 
+// Verify and credit: verifies payment and adds credits to the client account
+app.options('/api/v1/payments/cashfree/verify-and-credit', cors({
+  origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'https://www.aitota.com'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['POST', 'OPTIONS']
+}));
+app.post('/api/v1/payments/cashfree/verify-and-credit', cors({
+  origin: [process.env.FRONTEND_URL || 'http://localhost:5173', 'https://www.aitota.com'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['POST', 'OPTIONS']
+}), express.json(), async (req, res) => {
+  try {
+    const { order_id } = req.body || {};
+    if (!order_id) return res.status(400).json({ success: false, message: 'Order ID is required' });
+
+    // Auth
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ success: false, message: 'Authorization token required' });
+    const jwt = require('jsonwebtoken');
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({ success: false, message: 'Invalid authorization token' });
+    }
+
+    // Verify with Cashfree
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Accept': 'application/json'
+    };
+    const resp = await axios.get(`${BASE_URL}/pg/orders/${order_id}`, { headers });
+    const data = resp.data || {};
+    const isPaid = data.order_status === 'PAID';
+
+    // Update payment doc
+    const Payment = require('./models/Payment');
+    const paymentDoc = await Payment.findOneAndUpdate(
+      { orderId: order_id, clientId },
+      { status: isPaid ? 'SUCCESS' : (data.order_status || 'FAILED'), transactionId: data.cf_payment_id || data.reference_id, rawVerification: data },
+      { new: true }
+    );
+
+    if (!isPaid) {
+      return res.json({ success: true, order_status: data.order_status, credited: false });
+    }
+
+    // Add credits if not already credited
+    if (paymentDoc && !paymentDoc.credited) {
+      try {
+        const Credit = require('./models/Credit');
+        const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+        const key = (paymentDoc.planKey || '').toLowerCase();
+        const creditsToAdd = mapping[key] || 0;
+        if (creditsToAdd > 0) {
+          const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
+            gateway: 'cashfree', orderId: order_id, transactionId: data.cf_payment_id || data.reference_id, planKey: key
+          });
+          await Payment.findOneAndUpdate({ orderId: order_id }, { credited: true, creditsAdded: creditsToAdd });
+        }
+      } catch (e) {
+        console.error('Credit add failed:', e.message);
+      }
+    }
+
+    // Return latest balance
+    try {
+      const Credit = require('./models/Credit');
+      const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
+      return res.json({ success: true, order_status: 'PAID', credited: true, currentBalance: creditRecord.currentBalance });
+    } catch {
+      return res.json({ success: true, order_status: 'PAID', credited: true });
+    }
+  } catch (error) {
+    console.error('Verify-and-credit error:', error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({ success: false, message: error.response?.data?.message || error.message });
+  }
+});
+
 // Enhanced Cashfree callback handler with better error handling
 app.get('/api/v1/cashfree/callback', async (req, res) => {
   try {
