@@ -39,6 +39,10 @@ const paymentSchema = new mongoose.Schema({
     type: String, // Cashfree payment session ID
     index: true
   },
+  paymentLink: {
+    type: String, // Direct payment link URL
+    index: true
+  },
   transactionId: {
     type: String, // Gateway transaction ID
     index: true

@@ -319,6 +319,126 @@ app.post('/api/v1/cashfree/webhook', async (req, res) => {
   }
 });
 
+// Enhanced Cashfree callback handler with better error handling
+app.get('/api/v1/cashfree/callback', async (req, res) => {
+  try {
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    const { order_id, order_token, payment_status, cf_payment_id } = req.query || {};
+    
+    if (!order_id) {
+      console.error('❌ Callback missing order_id');
+      return res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED&error=Missing order ID`);
+    }
+
+    console.log('🔔 Cashfree callback received:', { order_id, payment_status, cf_payment_id });
+
+    // Verify payment status with Cashfree API
+    let status = 'FAILED';
+    let transactionId = cf_payment_id;
+    
+    try {
+      const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+      const axios = require('axios');
+      const headers = {
+        'x-client-id': CLIENT_ID,
+        'x-client-secret': CLIENT_SECRET,
+        'x-api-version': '2022-09-01'
+      };
+      
+      const resp = await axios.get(`${BASE_URL}/pg/orders/${order_id}`, { headers });
+      const data = resp.data || {};
+      
+      // Determine status based on Cashfree response
+      if (data.order_status === 'PAID' || data.payment_status === 'SUCCESS') {
+        status = 'SUCCESS';
+      } else if (data.order_status === 'ACTIVE' || data.payment_status === 'PENDING') {
+        status = 'PENDING';
+      } else {
+        status = data.order_status || data.payment_status || 'FAILED';
+      }
+      
+      transactionId = data.cf_payment_id || data.reference_id || cf_payment_id;
+      
+      console.log('✅ Payment status verified:', { status, transactionId, orderStatus: data.order_status });
+      
+    } catch (e) {
+      console.error('❌ Cashfree status fetch failed:', e.message);
+      // Fallback to query params if API call fails
+      if (payment_status === 'SUCCESS') {
+        status = 'SUCCESS';
+      }
+    }
+
+    // Update payment record
+    let paymentDoc = null;
+    try {
+      const Payment = require('./models/Payment');
+      paymentDoc = await Payment.findOneAndUpdate(
+        { orderId: order_id },
+        { 
+          status, 
+          transactionId, 
+          rawCallback: req.query,
+          updatedAt: new Date()
+        },
+        { new: true }
+      );
+      
+      if (paymentDoc) {
+        console.log('✅ Payment record updated:', { orderId: order_id, status, transactionId });
+      } else {
+        console.error('❌ Payment record not found for order:', order_id);
+      }
+      
+    } catch (e) {
+      console.error('❌ Payment update failed:', e.message);
+    }
+
+    // Auto-credit if success
+    if (paymentDoc && status === 'SUCCESS' && !paymentDoc.credited) {
+      try {
+        const Credit = require('./models/Credit');
+        const mapping = { basic: 1000, professional: 5500, enterprise: 11000 };
+        const key = (paymentDoc.planKey || '').toLowerCase();
+        const creditsToAdd = mapping[key] || 0;
+        
+        if (creditsToAdd > 0 && paymentDoc.clientId) {
+          const creditRecord = await Credit.getOrCreateCreditRecord(paymentDoc.clientId);
+          await creditRecord.addCredits(creditsToAdd, 'purchase', `Cashfree order ${order_id} • ${key} plan`, {
+            gateway: 'cashfree', 
+            orderId: order_id, 
+            transactionId,
+            planKey: key
+          });
+          
+          // Mark payment as credited
+          await Payment.findOneAndUpdate(
+            { orderId: order_id }, 
+            { credited: true, creditsAdded: creditsToAdd }
+          );
+          
+          console.log('✅ Credits added successfully:', { clientId: paymentDoc.clientId, creditsAdded: creditsToAdd });
+        }
+      } catch (e) {
+        console.error('❌ Auto-credit failed:', e.message);
+      }
+    }
+
+    // Redirect to frontend with status
+    const redirectUrl = `${FRONTEND_URL}${SUCCESS_PATH}?orderId=${encodeURIComponent(order_id)}&status=${encodeURIComponent(status)}&transactionId=${encodeURIComponent(transactionId || '')}`;
+    console.log('🔄 Redirecting to frontend:', redirectUrl);
+    
+    return res.redirect(redirectUrl);
+    
+  } catch (e) {
+    console.error('❌ Cashfree callback error:', e.message);
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED&error=${encodeURIComponent(e.message)}`);
+  }
+});
+
 // Payment status check endpoint
 app.get('/api/v1/client/payments/status/:orderId', async (req, res) => {
   try {
