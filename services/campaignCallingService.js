@@ -46,7 +46,6 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
           callDetail.lastStatusUpdate = new Date();
           callDetail.callDuration = timeSinceInitiation;
           await campaign.save();
-          console.log(`✅ Call ${uniqueId} marked as completed (no call log for ${timeSinceInitiation}s)`);
           return 'completed';
         }
       } else {
@@ -80,27 +79,22 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
             'metadata.callEndTime': new Date(),
             leadStatus: 'not_connected'
           });
-          console.log(`✅ Updated CallLog ${callLog._id} to mark call as inactive`);
         } catch (error) {
           console.error(`❌ Error updating CallLog:`, error);
         }
       } else {
         // Call is active and within reasonable time, keep as ongoing
         newStatus = 'ongoing';
-        console.log(`🔄 Call ${uniqueId}: isActive=true, keeping as ongoing (${timeSinceCallStart}s)`);
       }
     } else if (isActive === false) {
       // Call is not active - mark as completed
       newStatus = 'completed';
-      console.log(`🔄 Call ${uniqueId}: isActive=false, updating to completed`);
     } else {
       // isActive is undefined/null - check if 45 seconds passed
       if (timeSinceCallStart >= 45) {
         newStatus = 'completed';
-        console.log(`🔄 Call ${uniqueId}: isActive undefined, ${timeSinceCallStart}s passed, marking as completed`);
       } else {
         // Still within 40 seconds, keep current status
-        console.log(`⏳ Call ${uniqueId} has no isActive status, ${timeSinceCallStart}s passed, keeping current status`);
         return null;
       }
     }
@@ -116,7 +110,6 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
       }
       
       await campaign.save();
-      console.log(`✅ AUTOMATIC: Updated call status for ${uniqueId}: ${callDetail.status} -> ${newStatus}`);
       
       return {
         uniqueId,
@@ -153,14 +146,12 @@ function startAutomaticStatusUpdates() {
   // Check and update call statuses every 3 seconds
   statusUpdateInterval = setInterval(async () => {
     try {
-      console.log('🔄 AUTOMATIC: Running background status update check...');
       await updateAllCampaignCallStatuses();
     } catch (error) {
       console.error('❌ Error in automatic status update:', error);
     }
   }, 3000); // 3 seconds
   
-  console.log('✅ AUTOMATIC: Background status update service started (3s interval)');
 }
 
 /**
@@ -170,7 +161,6 @@ function stopAutomaticStatusUpdates() {
   if (statusUpdateInterval) {
     clearInterval(statusUpdateInterval);
     statusUpdateInterval = null;
-    console.log('🛑 AUTOMATIC: Background status update service stopped');
   }
 }
 
@@ -188,20 +178,11 @@ async function updateAllCampaignCallStatuses() {
     }).lean();
     
     if (campaigns.length === 0) {
-      console.log('🔄 AUTOMATIC: No campaigns with ringing or ongoing calls found');
       return;
     }
     
-    console.log(`🔄 AUTOMATIC: Checking ${campaigns.length} campaigns for status updates...`);
     
-    // Debug: Log all campaigns and their details
-    for (const campaign of campaigns) {
-      const activeCalls = campaign.details.filter(d => d.status === 'ringing' || d.status === 'ongoing');
-      console.log(`📋 Campaign ${campaign._id}: ${activeCalls.length} active calls`);
-      activeCalls.forEach(call => {
-        console.log(`   - ${call.uniqueId}: ${call.status} (${Math.floor((new Date() - call.time) / 1000)}s ago)`);
-      });
-    }
+    // Silent: avoid noisy logging of all campaigns
     
     let totalUpdates = 0;
     
@@ -214,7 +195,6 @@ async function updateAllCampaignCallStatuses() {
           const updateResult = await updateCallStatusFromLogs(campaign._id, callDetail.uniqueId);
           if (updateResult) {
             totalUpdates++;
-            console.log(`✅ AUTOMATIC: Updated campaign ${campaign._id} call ${callDetail.uniqueId} to ${updateResult.newStatus}`);
           }
         } catch (error) {
           console.error(`❌ Error updating call ${callDetail.uniqueId} in campaign ${campaign._id}:`, error);
@@ -222,11 +202,7 @@ async function updateAllCampaignCallStatuses() {
       }
     }
     
-    if (totalUpdates > 0) {
-      console.log(`✅ AUTOMATIC: Completed ${totalUpdates} status updates across all campaigns`);
-    } else {
-      console.log('🔄 AUTOMATIC: No status updates needed');
-    }
+    // Suppress routine logs
     
   } catch (error) {
     console.error('❌ Error in updateAllCampaignCallStatuses:', error);
@@ -400,7 +376,7 @@ async function startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls
   campaignCallingProgress.set(campaignId, progress);
   activeCampaigns.set(campaignId, true);
 
-  console.log(`Starting campaign calling for campaign ${campaignId} with ${campaign.contacts.length} contacts`);
+  
 
   // Process calls in background
   processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress);
@@ -416,7 +392,7 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
     for (let i = 0; i < campaign.contacts.length; i++) {
       // Check if campaign should stop
       if (!activeCampaigns.get(campaignId)) {
-        console.log(`Campaign ${campaignId} stopped by user`);
+        
         break;
       }
 
@@ -425,7 +401,7 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
       campaignCallingProgress.set(campaignId, progress);
 
       const contact = campaign.contacts[i];
-      console.log(`Calling ${contact.name} at ${contact.phone} (${i + 1}/${campaign.contacts.length})`);
+      
 
       // Make the call
       const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, clientId);
@@ -453,7 +429,7 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
           if (!existingDetail) {
             campaign.details.push(callDetail);
             await campaign.save();
-            console.log(`✅ AUTOMATIC: Added new call ${callResult.uniqueId} with 'ringing' status to campaign ${campaign._id}`);
+            
           }
         }
 
@@ -472,14 +448,14 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
                 break;
               }
             } catch (e) {
-              console.log(`⚠️ Status check failed for ${callResult.uniqueId}:`, e.message);
+              
             }
 
             // Timeout-based proceed if exceeded 45s with no definitive status handled by updater,
             // or if overall max wait exceeded
             const elapsed = Date.now() - callStartTime;
             if (elapsed >= maxWaitMs) {
-              console.log(`⏭️ Max wait exceeded for ${callResult.uniqueId}. Proceeding to next contact.`);
+              
               proceeded = true;
               break;
             }
@@ -502,7 +478,7 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
         
         campaign.details.push(callDetail);
         await campaign.save();
-        console.log(`✅ AUTOMATIC: Added failed call ${callDetail.uniqueId} with 'completed' status to campaign ${campaign._id}`);
+        
       }
 
       campaignCallingProgress.set(campaignId, progress);
@@ -514,7 +490,7 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
     }
 
     // Campaign completed
-    console.log(`Campaign ${campaignId} calling completed`);
+    
     progress.isRunning = false;
     progress.endTime = new Date();
     campaignCallingProgress.set(campaignId, progress);
@@ -556,7 +532,7 @@ function stopCampaignCalling(campaignId) {
     campaignCallingProgress.set(campaignId, progress);
   }
   
-  console.log(`Campaign ${campaignId} calling stopped`);
+  
 }
 
 /**
@@ -583,7 +559,6 @@ function cleanupCompletedCampaigns() {
   for (const [campaignId, progress] of campaignCallingProgress.entries()) {
     if (!progress.isRunning && progress.endTime && progress.endTime < oneHourAgo) {
       campaignCallingProgress.delete(campaignId);
-      console.log(`Cleaned up completed campaign ${campaignId}`);
     }
   }
 }
@@ -609,7 +584,6 @@ async function debugCallStatus(uniqueId) {
     ).lean();
 
     if (!callLog) {
-      console.log(`🔍 DEBUG: No call log found for uniqueId: ${uniqueId}`);
       return null;
     }
 
@@ -631,13 +605,7 @@ async function debugCallStatus(uniqueId) {
       }
     }
     
-    console.log(`🔍 DEBUG: Call Status for ${uniqueId}:`);
-    console.log(`   - isActive: ${isActive}`);
-    console.log(`   - leadStatus: ${leadStatus}`);
-    console.log(`   - Created: ${createdAt}`);
-    console.log(`   - Duration: ${callDuration} seconds`);
-    console.log(`   - Expected Status: ${expectedStatus}`);
-    console.log(`   - Should mark as completed: ${callDuration >= 40 ? 'YES (40+ seconds)' : 'NO (< 40 seconds)'}`);
+    
     
     return {
       uniqueId,
@@ -662,7 +630,6 @@ async function fixStuckCalls() {
     const CallLog = require('../models/CallLog');
     const Campaign = require('../models/Campaign');
     
-    console.log('🔧 MANUAL: Checking for stuck calls...');
     
     // Find all CallLogs that have been "active" for more than 5 minutes
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
@@ -671,13 +638,11 @@ async function fixStuckCalls() {
       createdAt: { $lt: fiveMinutesAgo }
     }).lean();
     
-    console.log(`🔧 MANUAL: Found ${stuckCallLogs.length} stuck CallLogs`);
     
     for (const callLog of stuckCallLogs) {
       const uniqueId = callLog.metadata?.customParams?.uniqueid;
       if (!uniqueId) continue;
       
-      console.log(`🔧 MANUAL: Fixing stuck call ${uniqueId} (created ${Math.floor((new Date() - callLog.createdAt) / 1000)}s ago)`);
       
       // Update CallLog to mark as inactive
       await CallLog.findByIdAndUpdate(callLog._id, {
@@ -701,10 +666,7 @@ async function fixStuckCalls() {
           console.log(`✅ MANUAL: Updated campaign ${campaign._id} call ${uniqueId} to completed`);
         }
       }
-    }
-    
-    console.log(`✅ MANUAL: Fixed ${stuckCallLogs.length} stuck calls`);
-    
+    }    
   } catch (error) {
     console.error('❌ Error fixing stuck calls:', error);
   }
@@ -717,7 +679,7 @@ async function cleanupStaleActiveCalls() {
   try {
     const CallLog = require('../models/CallLog');
     
-    console.log('🧹 AUTOMATIC: Cleaning up stale active calls...');
+    
     
     // Find all CallLogs that have been "active" for more than 10 minutes
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
@@ -727,11 +689,10 @@ async function cleanupStaleActiveCalls() {
     });
     
     if (staleCallLogs.length === 0) {
-      console.log('🧹 AUTOMATIC: No stale active calls found');
       return;
     }
     
-    console.log(`🧹 AUTOMATIC: Found ${staleCallLogs.length} stale active calls, marking as inactive...`);
+    
     
     // Update all stale calls to inactive
     const updateResult = await CallLog.updateMany(
@@ -748,7 +709,7 @@ async function cleanupStaleActiveCalls() {
       }
     );
     
-    console.log(`✅ AUTOMATIC: Cleaned up ${updateResult.modifiedCount} stale active calls`);
+    
     
   } catch (error) {
     console.error('❌ Error cleaning up stale active calls:', error);
@@ -787,7 +748,6 @@ async function migrateMissedToCompleted() {
     });
     
     if (campaignsWithMissed.length === 0) {
-      console.log('✅ MIGRATION: No campaigns with "missed" status found');
       return;
     }
     
@@ -831,7 +791,6 @@ migrateMissedToCompleted().then(() => {
       if (error) {
         console.log('⚠️ Campaign validation fix failed:', error.message);
       } else {
-        console.log('✅ Campaign validation fix completed');
       }
       resolve();
     });

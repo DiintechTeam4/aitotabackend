@@ -104,6 +104,7 @@ const loginClient = async (req, res) => {
 
     // Check if password matches
     const isPasswordValid = await bcrypt.compare(password, client.password);
+    console.log(isPasswordValid);
     if (!isPasswordValid) {
       console.log('Invalid password for client email:', email);
       return res.status(401).json({ 
