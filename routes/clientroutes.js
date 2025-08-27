@@ -5391,6 +5391,197 @@ router.post('/credits/paytm/confirm', verifyClientOrAdminAndExtractClientId, asy
   }
 });
 
+// Direct payment initiation route (called by frontend)
+router.get('/payments/initiate/direct', async (req, res) => {
+  try {
+    const { t: token, amount, planKey } = req.query;
+    
+    if (!token || !amount || !planKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'Token, amount and planKey are required'
+      });
+    }
+
+    // Decode and verify token
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      if (decoded?.userType !== 'client') {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid token: userType must be client'
+        });
+      }
+      clientId = decoded.id;
+    } catch (e) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired token'
+      });
+    }
+
+    // Get client info
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Generate unique order ID
+    const orderId = `CF_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Prepare customer details
+    const customerDetails = {
+      customer_id: clientId.toString(),
+      customer_name: client.name || client.username || 'Customer',
+      customer_email: client.email || `${clientId}@aitota.com`,
+      customer_phone: client.mobileNo || '9999999999'
+    };
+
+    // Normalize phone number
+    try {
+      const digits = String(customerDetails.customer_phone).replace(/\D/g, '');
+      if (digits.length >= 10) {
+        customerDetails.customer_phone = digits.slice(-10);
+      }
+    } catch (e) {
+      console.error('Phone normalization failed:', e.message);
+    }
+
+    // Create Cashfree order payload
+    const orderPayload = {
+      order_id: orderId,
+      order_amount: parseFloat(amount),
+      order_currency: 'INR',
+      customer_details: customerDetails,
+      order_meta: {
+        return_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${process.env.BACKEND_URL || 'https://app.aitota.com'}/api/v1/cashfree/webhook`,
+        payment_methods: 'cc,dc,nb,upi,paylater,emi,cardlessemi,wallet'
+      },
+      order_note: `Payment for ${planKey} plan`,
+      order_tags: {
+        plan: planKey.toLowerCase(),
+        client_id: clientId.toString()
+      }
+    };
+
+    // Validate Cashfree configuration
+    if (!CashfreeConfig.CLIENT_ID || !CashfreeConfig.CLIENT_SECRET) {
+      console.error('Cashfree configuration missing:', {
+        hasClientId: !!CashfreeConfig.CLIENT_ID,
+        hasClientSecret: !!CashfreeConfig.CLIENT_SECRET,
+        env: CashfreeConfig.ENV
+      });
+      return res.status(500).json({
+        success: false,
+        message: 'Payment gateway configuration error'
+      });
+    }
+
+    // Create payment record
+    const Payment = require('../models/Payment');
+    const paymentRecord = new Payment({
+      orderId,
+      clientId,
+      amount: parseFloat(amount),
+      planKey: planKey.toLowerCase(),
+      gateway: 'cashfree',
+      status: 'INITIATED',
+      createdAt: new Date()
+    });
+
+    await paymentRecord.save();
+
+    // Create order with Cashfree
+    const headers = {
+      'x-client-id': CashfreeConfig.CLIENT_ID,
+      'x-client-secret': CashfreeConfig.CLIENT_SECRET,
+      'x-api-version': '2022-09-01',
+      'Content-Type': 'application/json'
+    };
+
+    console.log('🏦 Creating Cashfree order:', orderId);
+    console.log('Order payload:', JSON.stringify(orderPayload, null, 2));
+
+    const axios = require('axios');
+    const cashfreeResponse = await axios.post(
+      `${CashfreeConfig.BASE_URL}/pg/orders`,
+      orderPayload,
+      { headers }
+    );
+
+    const { payment_session_id, order_status } = cashfreeResponse.data;
+
+    if (!payment_session_id) {
+      throw new Error('Failed to create payment session with Cashfree');
+    }
+
+    // Update payment record with session details
+    paymentRecord.sessionId = payment_session_id;
+    paymentRecord.orderStatus = order_status;
+    paymentRecord.rawResponse = cashfreeResponse.data;
+    await paymentRecord.save();
+
+    // Redirect to Cashfree payment page
+    const paymentUrl = `https://payments${CashfreeConfig.BASE_URL.includes('sandbox') ? '-test' : ''}.cashfree.com/pay/${orderId}/${payment_session_id}`;
+    
+    console.log('✅ Payment initiated successfully, redirecting to:', paymentUrl);
+    res.redirect(paymentUrl);
+
+  } catch (error) {
+    console.error('❌ Direct payment initiation failed:', error.response?.data || error.message);
+    
+    // Redirect to frontend with error
+    const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const SUCCESS_PATH = process.env.PAYMENT_SUCCESS_PATH || '/auth/dashboard';
+    res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED&error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+// Payment status check endpoint
+router.get('/payments/status/:orderId', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    const Payment = require('../models/Payment');
+    const payment = await Payment.findOne({ orderId, clientId: req.clientId });
+    
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        orderId: payment.orderId,
+        status: payment.status,
+        amount: payment.amount,
+        planKey: payment.planKey,
+        gateway: payment.gateway,
+        credited: payment.credited,
+        creditsAdded: payment.creditsAdded,
+        createdAt: payment.createdAt,
+        transactionId: payment.transactionId,
+        sessionId: payment.sessionId
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Payment status check failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check payment status',
+      error: error.message
+    });
+  }
+});
 
 module.exports = router;
 
