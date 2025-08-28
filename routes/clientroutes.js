@@ -2605,6 +2605,24 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
+    // Check if client has sufficient credits before starting
+    try {
+      const Credit = require('../models/Credit');
+      const creditRecord = await Credit.getOrCreateCreditRecord(req.clientId);
+      const currentBalance = Number(creditRecord?.currentBalance || 0);
+      console.log(currentBalance);
+      if (currentBalance <= 0) {
+        return res.status(402).json({
+          success: false,
+          error: 'INSUFFICIENT_CREDITS',
+          message: 'Not sufficient credits. Please recharge first to start calling.'
+        });
+      }
+    } catch (e) {
+      console.error('Credit check failed:', e);
+      return res.status(500).json({ success: false, error: 'Credit check failed' });
+    }
+
     if (!campaign.contacts || campaign.contacts.length === 0) {
       return res.status(400).json({ success: false, error: 'No contacts in campaign to call' });
     }
@@ -3522,6 +3540,25 @@ router.get('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res
   } catch (error) {
     console.error('Error fetching agent by ID:', error);
     res.status(500).json({ error: 'Failed to fetch agent' });
+  }
+});
+
+// Get only agent name by ID (lightweight)
+router.get('/agents/:id/name', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const query = req.clientId ? { _id: id, clientId: req.clientId } : { _id: id };
+    const agent = await Agent.findOne(query).select('agentName name fullName email');
+
+    if (!agent) {
+      return res.status(404).json({ success: false, error: 'Agent not found' });
+    }
+
+    const name = agent.agentName || agent.name || agent.fullName || agent.email || '';
+    return res.json({ success: true, data: { id, name } });
+  } catch (error) {
+    console.error('Error fetching agent name by ID:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch agent name' });
   }
 });
 
