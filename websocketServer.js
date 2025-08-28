@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const http = require('http');
 const Agent = require('./models/Agent');
 const User = require('./models/User');
+const Chat = require('./models/Chat');
 const VoiceService = require('./services/voiceService');
 const axios = require('axios');
 
@@ -30,6 +31,7 @@ class VoiceChatWebSocketServer {
         user: null,
         sessionId: null,
         clientId: null,
+        chatId: null,
         // Deepgram streaming state
         deepgramWs: null,
         deepgramReady: false,
@@ -71,6 +73,14 @@ class VoiceChatWebSocketServer {
       ws.on('close', () => {
         console.log(`[WEBSOCKET] Connection ${connectionId} closed`);
         const conn = this.connections.get(connectionId);
+        // Mark chat ended if exists
+        if (conn?.chatId) {
+          Chat.findByIdAndUpdate(
+            conn.chatId,
+            { $set: { endedAt: new Date(), lastActivityAt: new Date() }, $push: { messages: { role: 'system', type: 'event', text: 'Connection closed' } } },
+            { new: false }
+          ).catch(e => console.error('[CHAT] Failed to mark chat ended on close:', e.message))
+        }
         if (conn?.deepgramWs && conn.deepgramWs.readyState === WebSocket.OPEN) {
           try { conn.deepgramWs.close(); } catch {}
         }
@@ -80,6 +90,13 @@ class VoiceChatWebSocketServer {
       ws.on('error', (error) => {
         console.error(`[WEBSOCKET] Connection ${connectionId} error:`, error);
         const conn = this.connections.get(connectionId);
+        if (conn?.chatId) {
+          Chat.findByIdAndUpdate(
+            conn.chatId,
+            { $push: { messages: { role: 'system', type: 'event', text: `Connection error: ${error?.message || 'unknown'}` } }, $set: { lastActivityAt: new Date() } },
+            { new: false }
+          ).catch(e => console.error('[CHAT] Failed to append error to chat:', e.message))
+        }
         if (conn?.deepgramWs && conn.deepgramWs.readyState === WebSocket.OPEN) {
           try { conn.deepgramWs.close(); } catch {}
         }
@@ -103,6 +120,9 @@ class VoiceChatWebSocketServer {
         break;
       case 'media':
         await this.handleMedia(connectionId, data);
+        break;
+      case 'user_message':
+        await this.handleUserMessage(connectionId, data);
         break;
       case 'stop':
         await this.handleStop(connectionId, data);
@@ -162,6 +182,20 @@ class VoiceChatWebSocketServer {
         updateRegistration: async () => {},
         incrementRegistrationAttempts: async () => {}
       };
+
+      // Create Chat document for this session
+      try {
+        const chat = await Chat.create({
+          clientId: connection.clientId,
+          agentId: agent._id,
+          sessionId: connection.sessionId,
+          connectionId: connection.id,
+          messages: [{ role: 'system', type: 'event', text: 'Session started' }]
+        });
+        connection.chatId = chat._id;
+      } catch (e) {
+        console.error('[CHAT] Failed to create chat session:', e.message);
+      }
       
       // Send start confirmation
       connection.ws.send(JSON.stringify({
@@ -179,7 +213,7 @@ class VoiceChatWebSocketServer {
       // Send initial greeting (TTS)
       await this.sendInitialGreeting(connectionId);
       
-      console.log(`[WEBSOCKET] Session started for agent: ${agent.agentName}, user: ${user._id}, sessionId: ${sessionId}`);
+      console.log(`[WEBSOCKET] Session started for agent: ${agent.agentName}, sessionId: ${sessionId}`);
       
     } catch (error) {
       console.error(`[WEBSOCKET] Error in handleStart:`, error);
@@ -298,19 +332,49 @@ class VoiceChatWebSocketServer {
         timestamp: new Date().toISOString()
       }));
 
+      // Persist transcript snippets
+      if (connection.chatId) {
+        try {
+          await Chat.findByIdAndUpdate(
+            connection.chatId,
+            {
+              $push: { messages: { role: 'transcript', type: 'transcript', text: transcript } },
+              $set: { lastActivityAt: new Date() }
+            },
+            { new: false }
+          )
+        } catch (e) {
+          console.error('[CHAT] Failed to append transcript:', e.message)
+        }
+      }
+
       // Accumulate and process final utterances
       if (isFinal) {
         const text = transcript.trim();
         if (text && text !== connection.lastFinalText) {
           connection.lastFinalText = text;
-          // Conversation persistence disabled
-
           // Inform UI as conversation message
           connection.ws.send(JSON.stringify({
             event: 'conversation',
             userMessage: text,
             timestamp: new Date().toISOString()
           }));
+
+          // Persist user message
+          if (connection.chatId) {
+            try {
+              await Chat.findByIdAndUpdate(
+                connection.chatId,
+                {
+                  $push: { messages: { role: 'user', type: 'text', text } },
+                  $set: { lastActivityAt: new Date() }
+                },
+                { new: false }
+              )
+            } catch (e) {
+              console.error('[CHAT] Failed to append user message:', e.message)
+            }
+          }
 
           // Process with LLM and TTS
           await this.processUserUtterance(connectionId, text);
@@ -343,7 +407,21 @@ class VoiceChatWebSocketServer {
           timestamp: new Date().toISOString()
         }));
 
-        // Persist disabled (no DB writes)
+        // Persist assistant message
+        if (connection.chatId) {
+          try {
+            await Chat.findByIdAndUpdate(
+              connection.chatId,
+              {
+                $push: { messages: { role: 'assistant', type: 'text', text: aiResponse.text } },
+                $set: { lastActivityAt: new Date() }
+              },
+              { new: false }
+            )
+          } catch (e) {
+            console.error('[CHAT] Failed to append assistant message:', e.message)
+          }
+        }
 
         // TTS and stream back
         const audioResponse = await this.textToSpeech(aiResponse.text, connection.agent.voiceSelection, connectionId);
@@ -409,6 +487,42 @@ class VoiceChatWebSocketServer {
     }
   }
 
+  async handleUserMessage(connectionId, data) {
+    const connection = this.connections.get(connectionId);
+    if (!connection) return;
+
+    try {
+      const text = (data?.text || '').toString().trim();
+      if (!text) return;
+
+      // Mirror to UI as conversation update
+      connection.ws.send(JSON.stringify({
+        event: 'conversation',
+        userMessage: text,
+        timestamp: new Date().toISOString()
+      }));
+
+      // Persist user text message
+      if (connection.chatId) {
+        try {
+          await Chat.findByIdAndUpdate(
+            connection.chatId,
+            { $push: { messages: { role: 'user', type: 'text', text } }, $set: { lastActivityAt: new Date() } },
+            { new: false }
+          );
+        } catch (e) {
+          console.error('[CHAT] Failed to append user text message:', e.message);
+        }
+      }
+
+      // Process with LLM + TTS
+      await this.processUserUtterance(connectionId, text);
+    } catch (error) {
+      console.error('[WEBSOCKET] handleUserMessage error:', error.message);
+      this.sendLog(connectionId, 'error', 'handleUserMessage error', { error: error.message });
+    }
+  }
+
   async handleStop(connectionId, data) {
     const connection = this.connections.get(connectionId);
     if (!connection) return;
@@ -421,6 +535,19 @@ class VoiceChatWebSocketServer {
     }
 
     // Clean up connection
+    // Mark chat ended
+    if (connection.chatId) {
+      try {
+        await Chat.findByIdAndUpdate(
+          connection.chatId,
+          { $set: { endedAt: new Date(), lastActivityAt: new Date() }, $push: { messages: { role: 'system', type: 'event', text: 'Session stopped' } } },
+          { new: false }
+        )
+      } catch (e) {
+        console.error('[CHAT] Failed to mark chat ended on stop:', e.message)
+      }
+    }
+
     this.connections.delete(connectionId);
     
     connection.ws.send(JSON.stringify({
@@ -566,18 +693,6 @@ class VoiceChatWebSocketServer {
       if (response.data?.choices?.[0]) {
         const aiResponse = response.data.choices[0].message.content;
         this.sendLog(connectionId, 'success', 'OpenAI responded', { textPreview: aiResponse.slice(0, 120) });
-        
-        // Registration extraction if needed
-        if (shouldPrompt && !connection.user.isRegistered) {
-          const extractedDetails = this.extractUserDetails(userMessage);
-          if (extractedDetails.name && extractedDetails.mobileNumber) {
-            await connection.user.updateRegistration(extractedDetails.name, extractedDetails.mobileNumber);
-            this.sendLog(connectionId, 'success', 'User registered from voice', extractedDetails);
-          } else if (extractedDetails.name || extractedDetails.mobileNumber) {
-            await connection.user.incrementRegistrationAttempts();
-            this.sendLog(connectionId, 'info', 'Partial registration details captured', extractedDetails);
-          }
-        }
         
         return { text: aiResponse };
       }
