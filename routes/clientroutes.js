@@ -25,13 +25,15 @@ const PaytmConfig = require('../config/paytm');
 const PaytmChecksum = require('paytmchecksum');
 const CashfreeConfig = require('../config/cashfree');
 const {
-  getClientApiKey,
   startCampaignCalling,
   stopCampaignCalling,
   getCampaignCallingProgress,
   triggerManualStatusUpdate,
   debugCallStatus,
-  migrateMissedToCompleted
+  migrateMissedToCompleted,
+  makeSingleCall,
+  updateCallStatusFromLogs,
+  getClientApiKey
 } = require('../services/campaignCallingService');
 
 
@@ -2662,6 +2664,111 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
   } catch (error) {
     console.error('Error starting campaign calling:', error);
     res.status(500).json({ success: false, error: 'Failed to start campaign calling' });
+  }
+});
+
+// Make single call
+router.post('/calls/single', extractClientId, async (req, res) => {
+  try {
+    const { contact, agentId, apiKey, campaignId } = req.body || {};
+    if (!contact || !contact.phone) {
+      return res.status(400).json({ success: false, error: 'Missing contact.phone' });
+    }
+    if (!agentId) {
+      return res.status(400).json({ success: false, error: 'Missing agentId' });
+    }
+
+    // Credit check (same as start-calling)
+    try {
+      const Credit = require('../models/Credit');
+      const creditRecord = await Credit.getOrCreateCreditRecord(req.clientId);
+      const currentBalance = Number(creditRecord?.currentBalance || 0);
+      if (currentBalance <= 0) {
+        return res.status(402).json({
+          success: false,
+          error: 'INSUFFICIENT_CREDITS',
+          message: 'Not sufficient credits. Please recharge first to start calling.'
+        });
+      }
+    } catch (e) {
+      console.error('Credit check failed:', e);
+      return res.status(500).json({ success: false, error: 'Credit check failed' });
+    }
+
+    // Resolve API key: prefer agent's X_API_KEY like start-calling; fallback to client key
+    let resolvedApiKey = apiKey;
+    if (!resolvedApiKey) {
+      const agent = await Agent.findById(agentId).lean();
+      if (!agent) {
+        return res.status(404).json({ success: false, error: 'Agent not found' });
+      }
+      resolvedApiKey = agent.X_API_KEY || '';
+      if (!resolvedApiKey) {
+        // fallback to client-level key if agent key missing
+        resolvedApiKey = await getClientApiKey(req.clientId);
+      }
+      if (!resolvedApiKey) {
+        return res.status(400).json({ success: false, error: 'No API key found for agent or client' });
+      }
+    }
+
+    const result = await makeSingleCall(
+      {
+        name: contact.name || 'Unknown',
+        phone: contact.phone,
+      },
+      agentId,
+      resolvedApiKey,
+      campaignId || null,
+      req.clientId
+    );
+
+    // If tied to a campaign and call successfully initiated, mirror bulk workflow
+    if (result.success && campaignId && result.uniqueId) {
+      try {
+        const Campaign = require('../models/Campaign');
+        const campaign = await Campaign.findById(campaignId);
+        if (campaign) {
+          const initiatedAt = new Date();
+          // Prefer contactId from request; otherwise best-effort resolve by phone
+          let resolvedContactId = contact.contactId || null;
+          if (!resolvedContactId) {
+            try {
+              const matched = (campaign.contacts || []).find((c) => {
+                const p1 = (c.phone || c.number || '').replace(/\D/g, '');
+                const p2 = (contact.phone || '').replace(/\D/g, '');
+                return p1.endsWith(p2) || p2.endsWith(p1);
+              });
+              if (matched && matched._id) resolvedContactId = matched._id;
+            } catch (_) {}
+          }
+
+          const callDetail = {
+            uniqueId: result.uniqueId,
+            contactId: resolvedContactId,
+            time: initiatedAt,
+            status: 'ringing',
+            lastStatusUpdate: initiatedAt,
+            callDuration: 0,
+          };
+          const exists = campaign.details.find((d) => d.uniqueId === result.uniqueId);
+          if (!exists) {
+            campaign.details.push(callDetail);
+            await campaign.save();
+          }
+          setTimeout(() => {
+            updateCallStatusFromLogs(campaign._id, result.uniqueId).catch(() => {});
+          }, 40000);
+        }
+      } catch (e) {
+        console.error('Failed to append single-call detail to campaign:', e);
+      }
+    }
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    console.error('Single call error:', error);
+    return res.status(500).json({ success: false, error: 'Failed to initiate single call' });
   }
 });
 
