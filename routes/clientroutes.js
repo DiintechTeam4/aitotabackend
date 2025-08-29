@@ -2637,6 +2637,113 @@ router.get('/campaigns/:id/missed-calls', extractClientId, async (req, res) => {
   }
 });
 
+// Call all missed contacts for a campaign (server-side dialing)
+router.post('/campaigns/:id/call-missed', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { agentId, delayBetweenCalls = 2000 } = req.body || {};
+
+    if (!agentId) {
+      return res.status(400).json({ success: false, error: 'AGENT_REQUIRED', message: 'agentId is required' });
+    }
+
+    const Campaign = require('../models/Campaign');
+    const CallLog = require('../models/CallLog');
+    const Agent = require('../models/Agent');
+    const { makeSingleCall, updateCallStatusFromLogs } = require('../services/campaignCallingService');
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // Build missed uniqueIds (no CallLog yet)
+    const detailEntries = Array.isArray(campaign.details) ? campaign.details : [];
+    const allUniqueIds = detailEntries.map(d => d && d.uniqueId).filter(u => typeof u === 'string' && u.trim().length > 0);
+
+    let missingUniqueIds = [];
+    if (allUniqueIds.length > 0) {
+      const logs = await CallLog.find({
+        clientId: req.clientId,
+        'metadata.customParams.uniqueid': { $in: allUniqueIds }
+      }, { 'metadata.customParams.uniqueid': 1 }).lean();
+
+      const uniqueIdsWithLogs = new Set((logs || []).map(l => l?.metadata?.customParams?.uniqueid).filter(Boolean));
+      missingUniqueIds = allUniqueIds.filter(u => !uniqueIdsWithLogs.has(u));
+    }
+
+    // Map to contacts for retry (dedupe by phone)
+    const contacts = Array.isArray(campaign.contacts) ? campaign.contacts : [];
+    const seenPhones = new Set();
+    const retryContacts = contacts.filter(c => {
+      if (!c || !c.phone) return false;
+      const key = String(c.phone).replace(/[^\d]/g, '');
+      if (seenPhones.has(key)) return false;
+      seenPhones.add(key);
+      return true;
+    });
+
+    if (retryContacts.length === 0) {
+      return res.json({ success: true, started: false, count: 0 });
+    }
+
+    // Resolve API key from Agent (same approach as start-calling)
+    const agent = await Agent.findById(agentId).lean();
+    if (!agent) {
+      return res.status(404).json({ success: false, error: 'Agent not found' });
+    }
+    const apiKey = agent.X_API_KEY || '';
+    if (!apiKey) {
+      return res.status(400).json({ success: false, error: 'NO_API_KEY', message: 'No API key found on agent' });
+    }
+
+    // Mark campaign running while we schedule calls
+    campaign.isRunning = true;
+    await campaign.save();
+
+    // Fire-and-forget async loop
+    (async () => {
+      try {
+        for (let i = 0; i < retryContacts.length; i++) {
+          const contact = retryContacts[i];
+          const result = await makeSingleCall(contact, agentId, apiKey, campaign._id, req.clientId);
+          if (result && result.uniqueId) {
+            const initiatedAt = new Date();
+            const callDetail = {
+              uniqueId: result.uniqueId,
+              contactId: contact._id || null,
+              time: initiatedAt,
+              status: 'ringing',
+              lastStatusUpdate: initiatedAt,
+              callDuration: 0,
+            };
+            const exists = campaign.details.find(d => d.uniqueId === result.uniqueId);
+            if (!exists) {
+              campaign.details.push(callDetail);
+              await campaign.save();
+            }
+            setTimeout(() => {
+              updateCallStatusFromLogs(campaign._id, result.uniqueId).catch(() => {});
+            }, 40000);
+          }
+          if (i < retryContacts.length - 1) {
+            await new Promise(r => setTimeout(r, Number(delayBetweenCalls) || 2000));
+          }
+        }
+        campaign.isRunning = false;
+        await campaign.save();
+      } catch (e) {
+        try { campaign.isRunning = false; await campaign.save(); } catch {}
+      }
+    })();
+
+    return res.json({ success: true, started: true, count: retryContacts.length });
+  } catch (e) {
+    console.error('Error calling missed contacts:', e);
+    return res.status(500).json({ success: false, error: 'Failed to call missed contacts' });
+  }
+});
+
 // Start campaign calling process
 router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) => {
   try {
