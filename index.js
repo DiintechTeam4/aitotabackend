@@ -10,6 +10,8 @@ const adminRoutes = require('./routes/adminroutes');
 const clientRoutes = require('./routes/clientroutes')
 const profileRoutes = require('./routes/profileroutes')
 const chatRoutes = require('./routes/chatroutes')
+const templateRoutes = require('./routes/templateroutes')
+const agentAccessRoutes = require('./routes/agentAccessRoutes')
 const Business = require('./models/MyBussiness');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 
@@ -1183,6 +1185,8 @@ app.use('/api/v1/admin',adminRoutes);
 app.use('/api/v1/client',clientRoutes);
 app.use('/api/v1/auth/client/profile', profileRoutes);
 app.use('/api/v1/chat', chatRoutes);
+app.use('/api/v1/templates', templateRoutes);
+app.use('/api/v1/agent-access', agentAccessRoutes);
 
 // Public API endpoint for business details (no authentication required)
 app.get('/api/v1/public/business/:identifier', async (req, res) => {
