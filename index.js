@@ -9,6 +9,7 @@ const superadminRoutes = require('./routes/superadminroutes')
 const adminRoutes = require('./routes/adminroutes');
 const clientRoutes = require('./routes/clientroutes')
 const profileRoutes = require('./routes/profileroutes')
+const chatRoutes = require('./routes/chatroutes')
 const Business = require('./models/MyBussiness');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 
@@ -1181,6 +1182,7 @@ app.use('/api/v1/superadmin',superadminRoutes);
 app.use('/api/v1/admin',adminRoutes);
 app.use('/api/v1/client',clientRoutes);
 app.use('/api/v1/auth/client/profile', profileRoutes);
+app.use('/api/v1/chat', chatRoutes);
 
 // Public API endpoint for business details (no authentication required)
 app.get('/api/v1/public/business/:identifier', async (req, res) => {
