@@ -205,6 +205,25 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
     });
     
     const { startingMessages, defaultStartingMessageIndex, ...agentData } = req.body;
+
+    // Map optional socials payload to schema fields if present
+    const mapSocials = (src) => {
+      if (!src || typeof src !== 'object') return;
+      const platforms = ['whatsapp', 'telegram', 'email', 'sms'];
+      platforms.forEach((p) => {
+        const enabledKey = `${p}Enabled`;
+        if (typeof src[enabledKey] === 'boolean') {
+          agentData[enabledKey] = src[enabledKey];
+        }
+        if (Array.isArray(src[p])) {
+          // Normalize to [{ link }]
+          agentData[p] = src[p]
+            .filter((it) => it && typeof it.link === 'string' && it.link.trim().length > 0)
+            .map((it) => ({ link: it.link.trim() }));
+        }
+      });
+    };
+    mapSocials(req.body);
     
     // Validate required fields
     if (!agentData.agentName || !agentData.agentName.trim()) {
@@ -350,6 +369,28 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
 router.put('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
     const { startingMessages, defaultStartingMessageIndex, ...agentData } = req.body;
+
+    // Map optional socials payload to schema fields if present
+    const mapSocialsUpdate = (src) => {
+      if (!src || typeof src !== 'object') return;
+      const platforms = ['whatsapp', 'telegram', 'email', 'sms'];
+      platforms.forEach((p) => {
+        const enabledKey = `${p}Enabled`;
+        if (Object.prototype.hasOwnProperty.call(src, enabledKey)) {
+          agentData[enabledKey] = !!src[enabledKey];
+          if (!agentData[enabledKey]) {
+            agentData[p] = undefined;
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(src, p)) {
+          const arr = Array.isArray(src[p]) ? src[p] : [];
+          agentData[p] = arr
+            .filter((it) => it && typeof it.link === 'string' && it.link.trim().length > 0)
+            .map((it) => ({ link: it.link.trim() }));
+        }
+      });
+    };
+    mapSocialsUpdate(req.body);
     if (!Array.isArray(startingMessages) || startingMessages.length === 0) {
       return res.status(400).json({ error: 'At least one starting message is required.' });
     }
@@ -3650,12 +3691,11 @@ router.get('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res
   }
 });
 
-// Get only agent name by ID (lightweight)
-router.get('/agents/:id/name', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+// Get only agent name by ID (public, independent of clientId)
+router.get('/agents/:id/name', async (req, res) => {
   try {
     const { id } = req.params;
-    const query = req.clientId ? { _id: id, clientId: req.clientId } : { _id: id };
-    const agent = await Agent.findOne(query).select('agentName name fullName email');
+    const agent = await Agent.findById(id).select('agentName name fullName email');
 
     if (!agent) {
       return res.status(404).json({ success: false, error: 'Agent not found' });
