@@ -4889,7 +4889,7 @@ router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req
   try {
     const Credit = require('../models/Credit');
     const clientId = req.clientId;
-    const { page = 1, limit = 20, type } = req.query;
+    const { type } = req.query;
     
     const creditRecord = await Credit.findOne({ clientId })
       .populate('history.planId', 'name')
@@ -4902,28 +4902,21 @@ router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req
       });
     }
     
-    // Filter and paginate history
+    // Filter history (no pagination)
     let history = creditRecord.history;
     if (type) {
       history = history.filter(h => h.type === type);
     }
     
-    const total = history.length;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const paginatedHistory = history
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .slice(skip, skip + parseInt(limit));
+    // Sort by timestamp (newest first) and return all records
+    const sortedHistory = history
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     
     res.json({
       success: true,
       data: {
-        history: paginatedHistory,
-        pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total,
-          pages: Math.ceil(total / parseInt(limit))
-        }
+        history: sortedHistory,
+        total: sortedHistory.length
       }
     });
   } catch (error) {
