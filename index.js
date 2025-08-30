@@ -1354,7 +1354,7 @@ app.post("/api/v1/debug/fix-specific-call", async (req, res) => {
 });
 
 // Single API for complete payment flow - frontend only sends amount and bearer token
-router.post("/api/v1/payments/process", express.json(), async (req, res) => {
+app.post("/api/v1/payments/process", express.json(), async (req, res) => {
   try {
     const { amount, planKey } = req.body || {};
 
