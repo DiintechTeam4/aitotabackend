@@ -1440,6 +1440,8 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
         message: "Payment gateway not configured",
       });
     }
+    console.log(CLIENT_ID)
+    console.log(CLIENT_SECRET)
 
     // ✅ Create Cashfree order payload
     const orderData = {
@@ -1492,7 +1494,8 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
       orderStatus: result.order_status,
       rawResponse: result,
     });
-    const cleanSessionId = result.payment_session_id.replace(/payment$/, "");
+    console.log(result.payment_session_id)
+    const cleanSessionId = result.payment_session_id.replace(/paymentpayment$/, "");
 
     // ✅ Return session ID & order details
     return res.json({
