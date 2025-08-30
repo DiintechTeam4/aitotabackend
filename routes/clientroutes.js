@@ -2486,6 +2486,7 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
       const name = log && (log.contactName || (log.metadata && log.metadata.customParams && log.metadata.customParams.name));
       const number = log && (log.mobile || (log.metadata && log.metadata.callerId));
       const leadStatus = (log && log.leadStatus) || 'not_connected';
+      const duration = (log && typeof log.duration === 'number') ? log.duration : 0;
       return {
         documentId: detail.uniqueId,
         number: number || null,
@@ -2493,7 +2494,8 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
         leadStatus,
         contactId: detail.contactId,
         time: detail.time,
-        status: detail.status
+        status: detail.status,
+        duration
       };
     });
 
