@@ -1484,7 +1484,7 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
     await Payment.create({
       clientId,
       orderId,
-      planKey:req.body.plankey,
+      planKey: req.body.planKey || req.body.plankey || 'basic',
       amount: orderAmount,
       email: customerEmail,
       phone: customerPhone,
@@ -1501,13 +1501,11 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
       success: true,
       message: 'Order created successfully',
       orderId,
-      paymentSessionId: result.payment_session_id,
+      orderToken: result.payment_session_id,
       orderAmount,
-      customer: {
-        name: customerName,
-        email: customerEmail,
-        phone: customerPhone
-      }
+      customerName,
+      customerEmail,
+      customerPhone
     });
 
   } catch (error) {

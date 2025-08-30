@@ -51,10 +51,10 @@ router.get('/requests', async (req, res) => {
 
 // Approve a request and update the Agent with the platform link
 // POST /api/v1/agent-access/approve
-// body: { requestId, templateName? } // templateName optional, mainly for WhatsApp to build URL
+// body: { requestId, templateName, templateData? } // templateData contains full template details to save
 router.post('/approve', async (req, res) => {
   try {
-    const { requestId, templateName } = req.body || {}
+    const { requestId, templateName, templateData } = req.body || {}
     if (!requestId) return res.status(400).json({ success: false, message: 'requestId is required' })
 
     const reqDoc = await AgentAccessRequest.findById(requestId)
@@ -64,17 +64,55 @@ router.post('/approve', async (req, res) => {
     const agent = await Agent.findById(reqDoc.agentId)
     if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' })
 
-    // Build link for WhatsApp per requirement
+    // Handle WhatsApp platform
     if (reqDoc.platform === 'whatsapp') {
-      const base = 'https://whatsapp-template-module.onrender.com/api/whatsapp/send'
-      // Prefer explicit templateName provided by admin approval; fallback to stored one (if any)
       const chosenTemplateName = (templateName && String(templateName).trim()) || (reqDoc.templateName && String(reqDoc.templateName).trim()) || ''
-      const suffix = chosenTemplateName ? `-${chosenTemplateName}` : ''
-      const link = base + suffix
+      
+      // Save template data to agent's whatsappTemplates array if provided
+      if (templateData && typeof templateData === 'object') {
+        // Ensure whatsappTemplates array exists
+        if (!Array.isArray(agent.whatsappTemplates)) {
+          agent.whatsappTemplates = []
+        }
+        
+        // Check if template already exists
+        const existingTemplate = agent.whatsappTemplates.find(t => t.templateId === templateData._id || t.templateName === templateData.name)
+        
+        if (!existingTemplate) {
+          // Add new template to agent's whatsappTemplates
+          agent.whatsappTemplates.push({
+            templateId: templateData._id || templateData.id,
+            templateName: templateData.name,
+            templateUrl: templateData.url || '',
+            description: templateData.description || '',
+            language: templateData.language || 'en',
+            status: 'APPROVED',
+            category: templateData.category || 'MARKETING',
+            assignedAt: new Date()
+          })
+        } else {
+          // Update existing template status to approved
+          existingTemplate.status = 'APPROVED'
+          existingTemplate.assignedAt = new Date()
+        }
+      }
+      
+      // Enable WhatsApp for the agent
       agent.whatsappEnabled = true
-      agent.whatsapplink = link
-      // Keep array form too if you want both
-      agent.whatsapp = [{ link }]
+      
+      // Set the WhatsApp link using the template URL if available
+      if (templateData && templateData.url) {
+        agent.whatsapplink = templateData.url
+        agent.whatsapp = [{ link: templateData.url }]
+      } else if (chosenTemplateName) {
+        // Fallback to building URL with template name
+        const base = 'https://whatsapp-template-module.onrender.com/api/whatsapp/send'
+        const suffix = chosenTemplateName ? `-${chosenTemplateName}` : ''
+        const link = base + suffix
+        agent.whatsapplink = link
+        agent.whatsapp = [{ link }]
+      }
+      
       // Persist chosen template name on the request for auditability
       if (chosenTemplateName && !reqDoc.templateName) {
         reqDoc.templateName = chosenTemplateName
