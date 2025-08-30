@@ -118,6 +118,9 @@ const agentSchema = new mongoose.Schema({
   emailEnabled: { type: Boolean, default: false },
   smsEnabled: { type: Boolean, default: false },
 
+  // Convenience single WhatsApp link for quick access
+  whatsapplink: { type: String },
+
   whatsapp: [
     {
       link: { type: String, required: true },
@@ -138,6 +141,9 @@ const agentSchema = new mongoose.Schema({
       link: { type: String, required: true },
     },
   ],
+
+  // Assigned templates (admin -> agent)
+  templates: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Template' }],
 
   // Timestamps
   createdAt: { type: Date, default: Date.now },

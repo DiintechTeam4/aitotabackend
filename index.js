@@ -10,6 +10,8 @@ const adminRoutes = require('./routes/adminroutes');
 const clientRoutes = require('./routes/clientroutes')
 const profileRoutes = require('./routes/profileroutes')
 const chatRoutes = require('./routes/chatroutes')
+const templateRoutes = require('./routes/templateroutes')
+const agentAccessRoutes = require('./routes/agentAccessRoutes')
 const Business = require('./models/MyBussiness');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 
@@ -1183,6 +1185,8 @@ app.use('/api/v1/admin',adminRoutes);
 app.use('/api/v1/client',clientRoutes);
 app.use('/api/v1/auth/client/profile', profileRoutes);
 app.use('/api/v1/chat', chatRoutes);
+app.use('/api/v1/templates', templateRoutes);
+app.use('/api/v1/agent-access', agentAccessRoutes);
 
 // Public API endpoint for business details (no authentication required)
 app.get('/api/v1/public/business/:identifier', async (req, res) => {
@@ -1348,6 +1352,216 @@ app.post("/api/v1/debug/fix-specific-call", async (req, res) => {
     res.status(500).json({ error: 'Failed to fix stuck call', message: error.message });
   }
 });
+
+// Single API for complete payment flow - frontend only sends amount and bearer token
+app.post('/api/v1/payments/process', express.json(), async (req, res) => {
+  try {
+    const { amount } = req.body || {};
+    console.log('💳 [PAYMENT-PROCESS] Starting payment flow for amount:', amount);
+
+    // Validate amount
+    const orderAmount = parseFloat(amount);
+    if (!amount || isNaN(orderAmount) || orderAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid amount is required'
+      });
+    }
+
+    // Auth validation
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authorization token required'
+      });
+    }
+
+    // Verify JWT and get client
+    let clientId;
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      clientId = decoded.id || decoded.clientId;
+    } catch (e) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid authorization token'
+      });
+    }
+
+    // Get client details
+    const Client = require('./models/Client');
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: 'Client not found'
+      });
+    }
+
+    // Prepare customer details
+    let customerName = client.name || client.username || client.email || 'Customer';
+    let customerEmail = client.email || `${clientId}@aitota.com`;
+    let customerPhone = client.phone || client.mobile || client.mobileNo || '9999999999';
+    try {
+      const digits = String(customerPhone).replace(/\D/g, '');
+      if (digits.length >= 10) customerPhone = digits.slice(-10);
+    } catch { }
+
+    // Generate order ID
+    const orderId = 'order_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const customerId = String(clientId);
+
+    // Get base URL
+    const getBaseUrl = () => {
+      const host = req.get('host') || '';
+      if (host.includes('.onrender.com') || host.includes('.vercel.app') || host.includes('.herokuapp.com') || process.env.NODE_ENV === 'production') {
+        return `https://${host}`;
+      }
+      const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http');
+      return `${proto}://${host}`;
+    };
+
+    const baseUrl = getBaseUrl();
+
+    // Get Cashfree credentials
+    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
+    if (!CLIENT_ID || !CLIENT_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: 'Payment gateway not configured'
+      });
+    }
+
+    // Create order data
+    const orderData = {
+      order_id: orderId,
+      order_amount: orderAmount,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: customerId,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone
+      },
+      order_meta: {
+        return_url: `${baseUrl}/api/v1/cashfree/callback?order_id=${orderId}`,
+        notify_url: `${baseUrl}/api/v1/cashfree/webhook`
+      },
+      order_tags: { client_id: customerId }
+    };
+
+    // Create order with Cashfree
+    const headers = {
+      'x-client-id': CLIENT_ID,
+      'x-client-secret': CLIENT_SECRET,
+      'x-api-version': '2023-08-01',
+      'Accept': 'application/json',
+      'Content-Type': 'application/json'
+    };
+
+    console.log('💳 [PAYMENT-PROCESS] Creating Cashfree order...');
+    const cfResp = await axios.post(`${BASE_URL}/pg/orders`, orderData, { headers });
+    const result = cfResp.data || {};
+
+    if (!result.payment_session_id) {
+      return res.status(400).json({
+        success: false,
+        message: result.message || 'Failed to create payment order'
+      });
+    }
+
+    // Save payment record
+    const Payment = require('./models/Payment');
+    await Payment.create({
+      clientId,
+      orderId,
+      amount: orderAmount,
+      email: customerEmail,
+      phone: customerPhone,
+      status: 'INITIATED',
+      gateway: 'cashfree',
+      sessionId: result.payment_session_id,
+      orderStatus: result.order_status,
+      rawResponse: result
+    });
+
+    // ✅ Return session ID & order details for mobile app to use in SDK
+    return res.json({
+      success: true,
+      message: 'Order created successfully',
+      orderId,
+      paymentSessionId: result.payment_session_id,
+      orderAmount,
+      customer: {
+        name: customerName,
+        email: customerEmail,
+        phone: customerPhone
+      }
+    });
+
+  } catch (error) {
+    console.error('Payment process error:', error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({
+      success: false,
+      message: error.response?.data?.message || 'Payment processing failed'
+    });
+  }
+});
+
+app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
+  try {
+    const event = req.body || {};
+    console.log("📩 [CASHFREE-WEBHOOK]", JSON.stringify(event, null, 2));
+
+    const { order_id, cf_payment_id, payment_status, order_amount } = event || {};
+
+    if (!order_id || !payment_status) {
+      return res.status(400).json({ success: false, message: "Invalid webhook data" });
+    }
+
+    // Find the payment record
+    const Payment = require('./models/Payment');
+    const payment = await Payment.findOne({ orderId: order_id });
+    if (!payment) {
+      return res.status(404).json({ success: false, message: "Payment record not found" });
+    }
+
+    // Update payment status
+    payment.status = payment_status;
+    payment.transactionId = cf_payment_id;
+    payment.rawVerification = event;
+    await payment.save();
+
+    if (payment_status === "SUCCESS" && !payment.credited) {
+      // Add credits (1 INR = 1 credit)
+      const Credit = require('./models/Credit');
+      const creditRecord = await Credit.getOrCreateCreditRecord(payment.clientId);
+
+      await creditRecord.addCredits(
+        Math.floor(order_amount),
+        "purchase",
+        `Payment • ${order_amount} credits • order ${order_id} • tx ${cf_payment_id}`,
+        null,
+        cf_payment_id
+      );
+
+      payment.credited = true;
+      payment.creditsAdded = Math.floor(order_amount);
+      await payment.save();
+
+      console.log("✅ Credits added for order", order_id);
+    }
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error("❌ Webhook error:", err.message);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
 
 const PORT = process.env.PORT || 4000;
 
