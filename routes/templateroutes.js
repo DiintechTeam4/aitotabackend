@@ -34,7 +34,7 @@ router.get('/', async (req, res) => {
 // Assign templates to an agent
 router.post('/assign', async (req, res) => {
   try {
-    const { agentId, templateIds } = req.body || {}
+    const { agentId, templateIds, templates } = req.body || {}
     if (!agentId || !Array.isArray(templateIds)) {
       return res.status(400).json({ success: false, message: 'agentId and templateIds[] are required' })
     }
@@ -52,9 +52,33 @@ router.post('/assign', async (req, res) => {
     // Merge unique
     const existing = new Set(agent.templates.map(v => String(v)))
     ids.forEach(id => { if (!existing.has(String(id))) agent.templates.push(id) })
+
+    // Handle WhatsApp templates if provided
+    if (Array.isArray(templates) && templates.length > 0) {
+      // Ensure whatsappTemplates field exists
+      if (!Array.isArray(agent.whatsappTemplates)) agent.whatsappTemplates = []
+      
+      // Add WhatsApp templates
+      templates.forEach(template => {
+        const existingTemplate = agent.whatsappTemplates.find(t => t.templateId === template._id)
+        if (!existingTemplate) {
+          agent.whatsappTemplates.push({
+            templateId: template._id,
+            templateName: template.name,
+            templateUrl: template.url,
+            description: template.description,
+            language: template.language,
+            status: template.status,
+            category: template.category,
+            assignedAt: new Date()
+          })
+        }
+      })
+    }
+
     await agent.save()
 
-    return res.json({ success: true, data: { agentId: agent._id, templates: agent.templates } })
+    return res.json({ success: true, data: { agentId: agent._id, templates: agent.templates, whatsappTemplates: agent.whatsappTemplates } })
   } catch (e) {
     res.status(500).json({ success: false, message: e.message })
   }

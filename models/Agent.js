@@ -144,6 +144,20 @@ const agentSchema = new mongoose.Schema({
 
   // Assigned templates (admin -> agent)
   templates: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Template' }],
+  
+  // WhatsApp template data for approved templates
+  whatsappTemplates: [
+    {
+      templateId: { type: String },
+      templateName: { type: String },
+      templateUrl: { type: String },
+      description: { type: String },
+      language: { type: String },
+      status: { type: String },
+      category: { type: String },
+      assignedAt: { type: Date, default: Date.now }
+    }
+  ],
 
   // Timestamps
   createdAt: { type: Date, default: Date.now },

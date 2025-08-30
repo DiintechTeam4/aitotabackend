@@ -18,7 +18,6 @@ const config = {
   RETURN_URL: process.env.BACKEND_URL || 'https://app.aitota.com',
   ENV: isProduction ? 'prod' : 'test'
 };
-
 console.log(`🏦 Cashfree initialized in ${config.ENVIRONMENT} mode`);
 console.log(`🏦 Environment variables:`, {
   NODE_ENV: process.env.NODE_ENV,
