@@ -14,8 +14,10 @@ const templateRoutes = require('./routes/templateroutes')
 const agentAccessRoutes = require('./routes/agentAccessRoutes')
 const Business = require('./models/MyBussiness');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
-
+const jwt = require('jsonwebtoken');
 const app = express();
+const Client = require("./models/Client");
+const Payment = require("./models/Payment");
 const server = http.createServer(app);
 // Cashfree callback (return_url handler)
 
@@ -1377,16 +1379,19 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
     }
 
     // ✅ Verify JWT
+    const jwt = require('jsonwebtoken');
     let clientId;
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       clientId = decoded.id || decoded.clientId;
+      console.log(clientId)
     } catch {
       return res.status(401).json({
         success: false,
         message: "Invalid or expired authorization token",
       });
     }
+
 
     // ✅ Get client details
     const client = await Client.findById(clientId);
@@ -1487,13 +1492,14 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
       orderStatus: result.order_status,
       rawResponse: result,
     });
+    const cleanSessionId = result.payment_session_id.replace(/payment$/, "");
 
     // ✅ Return session ID & order details
     return res.json({
       success: true,
       message: "Order created successfully",
       orderId,
-      orderToken: result.payment_session_id,
+      orderToken: cleanSessionId,
       orderAmount,
       customerName,
       customerEmail,
