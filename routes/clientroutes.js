@@ -2521,6 +2521,263 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
   }
 });
 
+// Get merged call logs (completed + missed calls) with deduplication
+router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = parseInt(req.query.page || '1', 10);
+    const limit = parseInt(req.query.limit || '50', 10);
+
+    console.log('=== DEBUG: Merged Calls API ===');
+    console.log('Campaign ID:', id);
+    console.log('Requested Page:', page);
+    console.log('Requested Limit:', limit);
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      console.log('Campaign not found');
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    console.log('Campaign found:', campaign.name);
+
+    // 1. Get all campaign details (uniqueIds)
+    const details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
+    const totalDetails = details.length;
+
+    console.log('Total details in campaign:', totalDetails);
+
+    if (totalDetails === 0) {
+      console.log('No details found, returning empty response');
+      return res.json({
+        success: true,
+        data: [],
+        campaign: { _id: campaign._id, name: campaign.name, detailsCount: 0 },
+        pagination: { currentPage: page, totalPages: 0, totalItems: 0, hasNextPage: false, hasPrevPage: false }
+      });
+    }
+
+    // 2. Get all uniqueIds
+    const allUniqueIds = details.map(d => d.uniqueId).filter(Boolean);
+    console.log('All uniqueIds:', allUniqueIds.length);
+
+    // 3. Find CallLogs for these uniqueIds
+    const logs = await CallLog.find({
+      clientId: req.clientId,
+      'metadata.customParams.uniqueid': { $in: allUniqueIds }
+    }).sort({ createdAt: -1 }).lean();
+
+    console.log('CallLogs found:', logs.length);
+
+    // 4. Also check for ongoing calls (calls that started but haven't completed)
+    const ongoingCalls = await CallLog.find({
+      clientId: req.clientId,
+      'metadata.customParams.uniqueid': { $in: allUniqueIds },
+      $or: [
+        { isActive: true },
+        { leadStatus: 'maybe' },
+        { status: 'ongoing' },
+        { status: 'ringing' }
+      ]
+    }).sort({ createdAt: -1 }).lean();
+
+    console.log('Ongoing calls found:', ongoingCalls.length);
+    
+    // Debug: Log some ongoing call details
+    if (ongoingCalls.length > 0) {
+      console.log('Sample ongoing call:', {
+        uniqueId: ongoingCalls[0]?.metadata?.customParams?.uniqueid,
+        isActive: ongoingCalls[0]?.isActive,
+        leadStatus: ongoingCalls[0]?.leadStatus,
+        status: ongoingCalls[0]?.status
+      });
+    }
+
+    // 5. Create a map of uniqueId to latest log (prioritizing ongoing calls)
+    const uniqueIdToLog = new Map();
+    
+    // First add ongoing calls (they take priority)
+    for (const log of ongoingCalls) {
+      const uid = log?.metadata?.customParams?.uniqueid;
+      if (uid && !uniqueIdToLog.has(uid)) {
+        // Mark this as an ongoing call
+        const ongoingLog = { ...log, isOngoing: true };
+        console.log(`Marking call ${uid} as ongoing:`, {
+          isActive: ongoingLog.isActive,
+          leadStatus: ongoingLog.leadStatus,
+          status: ongoingLog.status,
+          duration: ongoingLog.duration
+        });
+        uniqueIdToLog.set(uid, ongoingLog);
+      }
+    }
+    
+    // Then add completed calls (only if not already added as ongoing)
+    for (const log of logs) {
+      const uid = log?.metadata?.customParams?.uniqueid;
+      if (uid && !uniqueIdToLog.has(uid)) {
+        uniqueIdToLog.set(uid, log);
+      }
+    }
+
+    // 5. Build merged list with deduplication
+    const mergedCalls = [];
+    const processedUniqueIds = new Set();
+
+    // First, add completed calls (these have priority)
+    for (const detail of details) {
+      const uniqueId = detail.uniqueId;
+      if (!uniqueId || processedUniqueIds.has(uniqueId)) continue;
+
+      const log = uniqueIdToLog.get(uniqueId);
+      if (log) {
+        // Determine if this is an ongoing call
+        const isOngoing = log.isOngoing || 
+                         log.isActive === true || 
+                         log.leadStatus === 'maybe' ||
+                         log.status === 'ongoing' ||
+                         log.status === 'ringing' ||
+                         (log.duration === 0 && log.leadStatus !== 'not_connected'); // New calls with no duration yet
+        
+        // Determine the specific status for better UI display
+        let callStatus;
+        if (isOngoing) {
+          if (log.leadStatus === 'maybe') {
+            callStatus = 'ongoing'; // User is answering
+          } else if (log.status === 'ringing') {
+            callStatus = 'ringing'; // Phone is ringing
+          } else if (log.isActive === true) {
+            callStatus = 'ongoing'; // Call is active
+          } else {
+            callStatus = 'ongoing'; // Default ongoing status
+          }
+        } else {
+          // If not ongoing, it's a completed call
+          callStatus = 'completed';
+        }
+        
+        // This is either a completed call or an ongoing call
+        mergedCalls.push({
+          documentId: uniqueId,
+          number: log.mobile || log.metadata?.callerId || null,
+          name: log.contactName || log.metadata?.customParams?.name || null,
+          leadStatus: log.leadStatus || 'not_connected',
+          contactId: detail.contactId,
+          time: detail.time || detail.createdAt,
+          status: callStatus,
+          duration: typeof log.duration === 'number' ? log.duration : 0,
+          isMissed: false,
+          isOngoing: isOngoing
+        });
+        
+        // Debug: Log status assignment
+        console.log(`Call ${uniqueId}: isOngoing=${isOngoing}, status=${callStatus}, leadStatus=${log.leadStatus}, isActive=${log.isActive}, duration=${log.duration}, logStatus=${log.status}`);
+        
+        processedUniqueIds.add(uniqueId);
+      }
+    }
+
+    // Then, add missed calls (only if not already processed)
+    for (const detail of details) {
+      const uniqueId = detail.uniqueId;
+      if (!uniqueId || processedUniqueIds.has(uniqueId)) continue;
+
+      // This is a missed call (no log found)
+      const contact = campaign.contacts?.find(c => String(c._id) === String(detail.contactId));
+      mergedCalls.push({
+        documentId: null,
+        number: contact?.phone || null,
+        name: contact?.name || null,
+        leadStatus: 'not_connected',
+        contactId: detail.contactId,
+        time: detail.time || detail.createdAt,
+        status: 'missed',
+        duration: 0,
+        isMissed: true
+      });
+      processedUniqueIds.add(uniqueId);
+    }
+
+    // 6. Sort by time (most recent first)
+    mergedCalls.sort((a, b) => {
+      const timeA = new Date(a.time || 0).getTime();
+      const timeB = new Date(b.time || 0).getTime();
+      return timeB - timeA;
+    });
+
+    console.log('Merged calls total:', mergedCalls.length);
+    console.log('Duplicates removed:', totalDetails - mergedCalls.length);
+    
+    // Debug: Log status distribution
+    const statusCounts = {};
+    const ongoingCounts = {};
+    mergedCalls.forEach(call => {
+      statusCounts[call.status] = (statusCounts[call.status] || 0) + 1;
+      ongoingCounts[call.isOngoing] = (ongoingCounts[call.isOngoing] || 0) + 1;
+    });
+    console.log('Status distribution:', statusCounts);
+    console.log('Ongoing vs Completed distribution:', ongoingCounts);
+    
+    // Show some examples of ongoing vs completed calls
+    const ongoingExamples = mergedCalls.filter(call => call.isOngoing).slice(0, 3);
+    const completedExamples = mergedCalls.filter(call => !call.isOngoing).slice(0, 3);
+    
+    if (ongoingExamples.length > 0) {
+      console.log('Sample ongoing calls:', ongoingExamples.map(call => ({
+        uniqueId: call.documentId,
+        status: call.status,
+        leadStatus: call.leadStatus,
+        duration: call.duration
+      })));
+    }
+    
+    if (completedExamples.length > 0) {
+      console.log('Sample completed calls:', completedExamples.map(call => ({
+        uniqueId: call.documentId,
+        status: call.status,
+        leadStatus: call.leadStatus,
+        duration: call.duration
+      })));
+    }
+
+    // 7. Apply pagination
+    const totalItems = mergedCalls.length;
+    const totalPages = Math.ceil(totalItems / limit);
+    const skip = (page - 1) * limit;
+    const pagedCalls = mergedCalls.slice(skip, skip + limit);
+
+    console.log('Pagination calculation:');
+    console.log('- Skip:', skip);
+    console.log('- Skip + Limit:', skip + limit);
+    console.log('- Paged calls length:', pagedCalls.length);
+    console.log('- Total Pages:', totalPages);
+    console.log('- Current Page:', page);
+
+    console.log('=== END DEBUG ===');
+
+    return res.json({
+      success: true,
+      data: pagedCalls,
+      campaign: {
+        _id: campaign._id,
+        name: campaign.name,
+        detailsCount: totalDetails
+      },
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalItems,
+        hasNextPage: skip + pagedCalls.length < totalItems,
+        hasPrevPage: page > 1
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching merged calls:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch merged calls' });
+  }
+});
+
 // by-document via query on the original call-logs path; returns only transcript
 router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) => {
   try {
