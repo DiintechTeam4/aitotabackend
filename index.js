@@ -1354,165 +1354,156 @@ app.post("/api/v1/debug/fix-specific-call", async (req, res) => {
 });
 
 // Single API for complete payment flow - frontend only sends amount and bearer token
-app.post('/api/v1/payments/process', express.json(), async (req, res) => {
+router.post("/api/v1/payments/process", express.json(), async (req, res) => {
   try {
-    const { amount } = req.body || {};
-    console.log('💳 [PAYMENT-PROCESS] Starting payment flow for amount:', amount);
+    const { amount, planKey } = req.body || {};
 
-    // Validate amount
+    // ✅ Validate amount
     const orderAmount = parseFloat(amount);
     if (!amount || isNaN(orderAmount) || orderAmount <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Valid amount is required'
+        message: "Valid amount is required",
       });
     }
 
-    // Auth validation
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    // ✅ Auth validation
+    const token = req.headers.authorization?.replace("Bearer ", "");
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: 'Authorization token required'
+        message: "Authorization token required",
       });
     }
-    console.log("hii")
 
-    // Verify JWT and get client
-    const jwt = require('jsonwebtoken');
+    // ✅ Verify JWT
     let clientId;
     try {
-      console.log(token)
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      console.log(decoded)
       clientId = decoded.id || decoded.clientId;
-    } catch (e) {
+    } catch {
       return res.status(401).json({
         success: false,
-        message: 'Invalid authorization token'
+        message: "Invalid or expired authorization token",
       });
     }
-    console.log("hii")
 
-    // Get client details
-    const Client = require('./models/Client');
+    // ✅ Get client details
     const client = await Client.findById(clientId);
     if (!client) {
       return res.status(404).json({
         success: false,
-        message: 'Client not found'
+        message: "Client not found",
       });
     }
 
-    // Prepare customer details
-    let customerName = client.name || client.username || client.email || 'Customer';
+    // ✅ Prepare customer details
+    let customerName = client.name || client.username || client.email || "Customer";
     let customerEmail = client.email || `${clientId}@aitota.com`;
-    let customerPhone = client.phone || client.mobile || client.mobileNo || '9999999999';
+    let customerPhone = client.phone || client.mobile || client.mobileNo || "9999999999";
     try {
-      const digits = String(customerPhone).replace(/\D/g, '');
+      const digits = String(customerPhone).replace(/\D/g, "");
       if (digits.length >= 10) customerPhone = digits.slice(-10);
-    } catch { }
+    } catch {
+      customerPhone = "9999999999";
+    }
 
-    // Generate order ID
-    const orderId = 'order_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    // ✅ Generate order ID
+    const orderId = `order_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const customerId = String(clientId);
 
-    // Get base URL
+    // ✅ Determine base URL
     const getBaseUrl = () => {
-      const host = req.get('host') || '';
-      if (host.includes('.onrender.com') || host.includes('.vercel.app') || host.includes('.herokuapp.com') || process.env.NODE_ENV === 'production') {
+      const host = req.get("host") || "";
+      if (
+        host.includes(".onrender.com") ||
+        host.includes(".vercel.app") ||
+        host.includes(".herokuapp.com") ||
+        process.env.NODE_ENV === "production"
+      ) {
         return `https://${host}`;
       }
-      const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http');
+      const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
       return `${proto}://${host}`;
     };
-    console.log("hello")
-
     const baseUrl = getBaseUrl();
 
-    // Get Cashfree credentials
-    const { BASE_URL, CLIENT_ID, CLIENT_SECRET } = require('./config/cashfree');
-    if (!CLIENT_ID || !CLIENT_SECRET) {
+    // ✅ Check Cashfree credentials
+    if (!CLIENT_ID || !CLIENT_SECRET || !BASE_URL) {
       return res.status(500).json({
         success: false,
-        message: 'Payment gateway not configured'
+        message: "Payment gateway not configured",
       });
     }
 
-    // Create order data
+    // ✅ Create Cashfree order payload
     const orderData = {
       order_id: orderId,
       order_amount: orderAmount,
-      order_currency: 'INR',
+      order_currency: "INR",
       customer_details: {
         customer_id: customerId,
         customer_name: customerName,
         customer_email: customerEmail,
-        customer_phone: customerPhone
+        customer_phone: customerPhone,
       },
       order_meta: {
         return_url: `${baseUrl}/api/v1/cashfree/callback?order_id=${orderId}`,
-        notify_url: `${baseUrl}/api/v1/cashfree/webhook`
+        notify_url: `${baseUrl}/api/v1/cashfree/webhook`,
       },
-      order_tags: { client_id: customerId }
+      order_tags: { client_id: customerId },
     };
 
-    // Create order with Cashfree
+    // ✅ Create order with Cashfree
     const headers = {
-      'x-client-id': CLIENT_ID,
-      'x-client-secret': CLIENT_SECRET,
-      'x-api-version': '2023-08-01',
-      'Accept': 'application/json',
-      'Content-Type': 'application/json'
+      "x-client-id": CLIENT_ID,
+      "x-client-secret": CLIENT_SECRET,
+      "x-api-version": "2023-08-01",
+      Accept: "application/json",
+      "Content-Type": "application/json",
     };
 
-    console.log('💳 [PAYMENT-PROCESS] Creating Cashfree order...');
-    console.log(BASE_URL)
     const cfResp = await axios.post(`${BASE_URL}/pg/orders`, orderData, { headers });
-    console.log(cfResp)
     const result = cfResp.data || {};
 
     if (!result.payment_session_id) {
       return res.status(400).json({
         success: false,
-        message: result.message || 'Failed to create payment order'
+        message: result.message || "Failed to create payment order",
       });
     }
 
-    // Save payment record
-    const Payment = require('./models/Payment');
+    // ✅ Save payment record
     await Payment.create({
       clientId,
       orderId,
-      planKey: req.body.planKey || req.body.plankey || 'basic',
+      planKey: planKey || "basic",
       amount: orderAmount,
       email: customerEmail,
       phone: customerPhone,
-      status: 'INITIATED',
-      gateway: 'cashfree',
+      status: "INITIATED",
+      gateway: "cashfree",
       sessionId: result.payment_session_id,
       orderStatus: result.order_status,
-      rawResponse: result
+      rawResponse: result,
     });
-    console.log("payment")
 
-    // ✅ Return session ID & order details for mobile app to use in SDK
+    // ✅ Return session ID & order details
     return res.json({
       success: true,
-      message: 'Order created successfully',
+      message: "Order created successfully",
       orderId,
       orderToken: result.payment_session_id,
       orderAmount,
       customerName,
       customerEmail,
-      customerPhone
+      customerPhone,
     });
-
   } catch (error) {
-    console.error('Payment process error:', error.response?.data || error.message);
+    console.error("💥 [PAYMENT-PROCESS] Error:", error.response?.data || error.message);
     return res.status(error.response?.status || 500).json({
       success: false,
-      message: error.response?.data?.message || 'Payment processing failed'
+      message: error.response?.data?.message || "Payment processing failed",
     });
   }
 });
