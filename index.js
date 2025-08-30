@@ -1502,7 +1502,7 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
       success: true,
       message: "Order created successfully",
       orderId,
-      orderToken: cleanSessionId,
+      orderToken: result.payment_session_id,
       orderAmount,
       customerName,
       customerEmail,
