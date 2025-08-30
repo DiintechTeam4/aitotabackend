@@ -4928,6 +4928,53 @@ router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req
   }
 });
 
+// GET /api/v1/client/call-logs/transcript/:uniqueId
+router.get('/call-logs/transcript/:uniqueId', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const CallLog = require('../models/CallLog');
+    const { uniqueId } = req.params;
+    const clientId = req.clientId;
+    
+    if (!uniqueId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unique ID is required'
+      });
+    }
+    
+    // Find call log by uniqueId and clientId
+    const callLog = await CallLog.findOne({ 
+      'metadata.uniqueid': uniqueId,
+      clientId: clientId 
+    }).lean();
+    
+    if (!callLog) {
+      return res.status(404).json({
+        success: false,
+        message: 'Call log not found'
+      });
+    }
+    
+    return res.json({
+      success: true,
+      data: {
+        transcript: callLog.transcript || '',
+        duration: callLog.duration || 0,
+        mobile: callLog.mobile || '',
+        callDirection: callLog.metadata?.callDirection || 'unknown',
+        timestamp: callLog.time || callLog.createdAt
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching call transcript:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch call transcript',
+      error: error.message
+    });
+  }
+});
+
 router.post('/plans/purchase', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
     const { planId, billingCycle, couponCode, autoRenew } = req.body;

@@ -1376,11 +1376,15 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
         message: 'Authorization token required'
       });
     }
+    console.log("hii")
 
     // Verify JWT and get client
+    const jwt = require('jsonwebtoken');
     let clientId;
     try {
+      console.log(token)
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log(decoded)
       clientId = decoded.id || decoded.clientId;
     } catch (e) {
       return res.status(401).json({
@@ -1388,6 +1392,7 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
         message: 'Invalid authorization token'
       });
     }
+    console.log("hii")
 
     // Get client details
     const Client = require('./models/Client');
@@ -1421,6 +1426,7 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
       const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http');
       return `${proto}://${host}`;
     };
+    console.log("hello")
 
     const baseUrl = getBaseUrl();
 
@@ -1461,7 +1467,9 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
     };
 
     console.log('💳 [PAYMENT-PROCESS] Creating Cashfree order...');
+    console.log(BASE_URL)
     const cfResp = await axios.post(`${BASE_URL}/pg/orders`, orderData, { headers });
+    console.log(cfResp)
     const result = cfResp.data || {};
 
     if (!result.payment_session_id) {
@@ -1476,6 +1484,7 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
     await Payment.create({
       clientId,
       orderId,
+      planKey:req.body.plankey,
       amount: orderAmount,
       email: customerEmail,
       phone: customerPhone,
@@ -1485,6 +1494,7 @@ app.post('/api/v1/payments/process', express.json(), async (req, res) => {
       orderStatus: result.order_status,
       rawResponse: result
     });
+    console.log("payment")
 
     // ✅ Return session ID & order details for mobile app to use in SDK
     return res.json({
