@@ -286,7 +286,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       uuid: clientId || "client-uuid-001",
       custom_param: {
         uniqueid: uniqueId,
-        name: contact.name
+        name: contact.name || ''
       },
       resFormat: 3,
     };
