@@ -209,17 +209,36 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
     // Map optional socials payload to schema fields if present
     const mapSocials = (src) => {
       if (!src || typeof src !== 'object') return;
+      console.log('🔧 Backend received socials data (create):', src);
+      
       const platforms = ['whatsapp', 'telegram', 'email', 'sms'];
       platforms.forEach((p) => {
         const enabledKey = `${p}Enabled`;
         if (typeof src[enabledKey] === 'boolean') {
           agentData[enabledKey] = src[enabledKey];
+          console.log(`🔧 ${p} enabled (create):`, agentData[enabledKey]);
+          if (!agentData[enabledKey]) {
+            // Also clear the convenience link field for WhatsApp
+            if (p === 'whatsapp') {
+              agentData.whatsapplink = undefined;
+            }
+          }
         }
         if (Array.isArray(src[p])) {
           // Normalize to [{ link }]
-          agentData[p] = src[p]
+          const filteredArr = src[p]
             .filter((it) => it && typeof it.link === 'string' && it.link.trim().length > 0)
             .map((it) => ({ link: it.link.trim() }));
+          
+          // Set to undefined if no valid links, to be consistent with model pre-save hook
+          agentData[p] = filteredArr.length > 0 ? filteredArr : undefined;
+          console.log(`🔧 ${p} array (create):`, agentData[p]);
+          
+          // Update the convenience link field for WhatsApp
+          if (p === 'whatsapp' && filteredArr.length > 0) {
+            agentData.whatsapplink = filteredArr[0].link;
+            console.log(`🔧 whatsapplink updated (create):`, agentData.whatsapplink);
+          }
         }
       });
     };
@@ -373,20 +392,37 @@ router.put('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res
     // Map optional socials payload to schema fields if present
     const mapSocialsUpdate = (src) => {
       if (!src || typeof src !== 'object') return;
+      console.log('🔧 Backend received socials data:', src);
+      
       const platforms = ['whatsapp', 'telegram', 'email', 'sms'];
       platforms.forEach((p) => {
         const enabledKey = `${p}Enabled`;
         if (Object.prototype.hasOwnProperty.call(src, enabledKey)) {
           agentData[enabledKey] = !!src[enabledKey];
+          console.log(`🔧 ${p} enabled:`, agentData[enabledKey]);
           if (!agentData[enabledKey]) {
             agentData[p] = undefined;
+            // Also clear the convenience link field for WhatsApp
+            if (p === 'whatsapp') {
+              agentData.whatsapplink = undefined;
+            }
           }
         }
         if (Object.prototype.hasOwnProperty.call(src, p)) {
           const arr = Array.isArray(src[p]) ? src[p] : [];
-          agentData[p] = arr
+          const filteredArr = arr
             .filter((it) => it && typeof it.link === 'string' && it.link.trim().length > 0)
             .map((it) => ({ link: it.link.trim() }));
+          
+          // Set to undefined if no valid links, to be consistent with model pre-save hook
+          agentData[p] = filteredArr.length > 0 ? filteredArr : undefined;
+          console.log(`🔧 ${p} array:`, agentData[p]);
+          
+          // Update the convenience link field for WhatsApp
+          if (p === 'whatsapp' && filteredArr.length > 0) {
+            agentData.whatsapplink = filteredArr[0].link;
+            console.log(`🔧 whatsapplink updated:`, agentData.whatsapplink);
+          }
         }
       });
     };

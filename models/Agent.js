@@ -159,6 +159,14 @@ const agentSchema = new mongoose.Schema({
     }
   ],
 
+  // Default template for each platform
+  defaultTemplate: {
+    templateId: { type: String },
+    templateName: { type: String },
+    templateUrl: { type: String },
+    platform: { type: String }
+  },
+
   // Timestamps
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
@@ -197,6 +205,7 @@ agentSchema.pre("save", function (next) {
   // Clean up disabled social media fields
   if (!this.whatsappEnabled) {
     this.whatsapp = undefined;
+    this.whatsapplink = undefined;
   }
   if (!this.telegramEnabled) {
     this.telegram = undefined;
