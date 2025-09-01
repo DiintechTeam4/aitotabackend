@@ -4,6 +4,7 @@ const router = express.Router()
 const Template = require('../models/Template')
 const Agent = require('../models/Agent')
 const mongoose = require('mongoose')
+const fetch = require('node-fetch')
 
 // Create a template
 router.post('/', async (req, res) => {
@@ -244,6 +245,39 @@ router.post('/assign-client', async (req, res) => {
   }
 })
 
+// Remove or restore an agent's WhatsApp template
+// POST /api/v1/templates/agent/template-status
+// body: { agentId, templateId, action: 'remove'|'restore' }
+router.post('/agent/template-status', async (req, res) => {
+  try {
+    const { agentId, templateId, action } = req.body || {}
+    if (!agentId || !templateId || !['remove', 'restore'].includes(String(action))) {
+      return res.status(400).json({ success: false, message: 'agentId, templateId and action(remove|restore) are required' })
+    }
+
+    const agent = await Agent.findById(agentId)
+    if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' })
+
+    if (!Array.isArray(agent.whatsappTemplates)) agent.whatsappTemplates = []
+    const tpl = agent.whatsappTemplates.find(t => String(t.templateId) === String(templateId))
+    if (!tpl) return res.status(404).json({ success: false, message: 'Template not found on agent' })
+
+    if (action === 'remove') {
+      tpl.status = 'REMOVED'
+      // Clear defaultTemplate if it points to this template
+      if (agent.defaultTemplate && String(agent.defaultTemplate.templateId) === String(templateId) && agent.defaultTemplate.platform === 'whatsapp') {
+        agent.defaultTemplate = undefined
+      }
+    } else if (action === 'restore') {
+      tpl.status = 'APPROVED'
+    }
+
+    await agent.save()
+    return res.json({ success: true, data: agent.whatsappTemplates })
+  } catch (e) {
+    console.error('Error updating agent template status:', e)
+    return res.status(500).json({ success: false, message: e.message })
+  }
+})
+
 module.exports = router
-
-
