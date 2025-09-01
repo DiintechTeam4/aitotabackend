@@ -126,9 +126,13 @@ const verifyAdminToken = async (req, res, next) => {
     // Add admin to request object
     req.admin = admin;
     req.adminId = String(decoded.id); // Also set adminId for consistency
+    req.user = {
+      id: admin._id,
+      userType: 'admin',
+      email: admin.email
+    };
     next();
   } catch (error) {
-    next();
     console.error('Admin token verification error:', error);
     return res.status(401).json({ success: false, message: 'Invalid token' });
   }
@@ -391,6 +395,75 @@ const verifyClientOrHumanAgentToken = async (req, res, next) => {
   }
 };
 
+// Verify agent or client token (accepts both)
+const verifyAgentOrClientToken = async (req, res, next) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'No token provided' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Check if it's a client token
+    if (decoded.userType === 'client') {
+      const client = await Client.findById(decoded.id).select('-password');
+      if (!client) {
+        return res.status(401).json({ success: false, message: 'Client not found' });
+      }
+      
+      // Add client to request object
+      req.client = client;
+      req.user = {
+        id: client._id,
+        userType: 'client',
+        email: client.email,
+        clientId: client.userId
+      };
+      next();
+      return;
+    }
+    
+    // Check if it's an agent token (from Agent model)
+    if (decoded.userType === 'agent') {
+      const Agent = require('../models/Agent');
+      const agent = await Agent.findById(decoded.id);
+      if (!agent) {
+        return res.status(401).json({ success: false, message: 'Agent not found' });
+      }
+      
+      // Check if agent is active
+      if (!agent.isActive) {
+        return res.status(401).json({ success: false, message: 'Agent account is not active' });
+      }
+      
+      // Add agent to request object
+      req.agent = agent;
+      req.user = {
+        id: agent._id,
+        userType: 'agent',
+        clientId: agent.clientId
+      };
+      next();
+      return;
+    }
+    
+    // If neither client nor agent token
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Invalid token type. Only client or agent tokens are allowed' 
+    });
+    
+  } catch (error) {
+    console.error('Agent or Client token verification error:', error);
+    return res.status(401).json({ success: false, message: 'Invalid token' });
+  }
+};
+
 module.exports = { 
   verifyClientToken, 
   verifyAdminToken, 
@@ -400,7 +473,8 @@ module.exports = {
   checkClientAccess, 
   ensureUserBelongsToClient,
   verifyHumanAgentToken,
-  verifyClientOrHumanAgentToken
+  verifyClientOrHumanAgentToken,
+  verifyAgentOrClientToken
 }; 
 
 // Accepts either a client or admin token. If admin, requires a clientId in query/body/params.

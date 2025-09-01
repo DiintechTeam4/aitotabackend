@@ -92,6 +92,7 @@ router.get("/", extractClientId, async (req, res) => {
   }
 })
 
+
 // Update client information
 router.put("/", extractClientId, async (req, res) => {
   try {
@@ -586,6 +587,20 @@ router.get('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =>
     res.json({success: true, data: agents});
   } catch (error) {
     console.error("Error fetching agents:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch agents" });
+  }
+});
+
+// Get all agents for client without audio data
+router.get('/agents/no-audio', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const filter = req.clientId ? { clientId: req.clientId } : {};
+    const agents = await Agent.find(filter)
+      .select('-audioBytes -audioFile -audioMetadata -startingMessages') // Exclude all audio-related fields including startingMessages
+      .sort({ createdAt: -1 });
+    res.json({success: true, data: agents});
+  } catch (error) {
+    console.error("Error fetching agents without audio:", error);
     res.status(500).json({ success: false, error: "Failed to fetch agents" });
   }
 });

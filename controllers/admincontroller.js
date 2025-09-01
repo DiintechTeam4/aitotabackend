@@ -2,6 +2,7 @@ const Admin = require("../models/Admin");
 const bcrypt=require("bcrypt");
 const jwt = require('jsonwebtoken');
 const Client = require("../models/Client");
+const Agent = require("../models/Agent");
 const { getobject } = require("../utils/s3");
 
 
@@ -169,6 +170,7 @@ const getClients = async (req, res) => {
       });
     }
   };
+
   const registerclient = async (req, res) => {
     try {
       const {
@@ -341,4 +343,250 @@ const approveClient = async (req, res) => {
   }
 };
 
-module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient };
+// Get all agents from all clients
+const getAllAgents = async (req, res) => {
+  try {
+    
+    const agents = await Agent.find()
+      .populate('clientId', 'name businessName')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: agents
+    });
+  } catch (error) {
+    console.error('Error fetching all agents:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to fetch agents'
+    });
+  }
+};
+
+// Toggle agent status (enable/disable)
+const toggleAgentStatus = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    
+    if (!agentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Agent ID is required'
+      });
+    }
+
+    
+    // Find the agent first to get current status
+    const currentAgent = await Agent.findById(agentId);
+    if (!currentAgent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Agent not found'
+      });
+    }
+
+    // Toggle the status
+    const newStatus = !currentAgent.isActive;
+    
+    // Update the agent
+    const agent = await Agent.findByIdAndUpdate(
+      agentId,
+      { isActive: newStatus },
+      { new: true, runValidators: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: `Agent ${newStatus ? 'enabled' : 'disabled'} successfully`,
+      data: agent
+    });
+  } catch (error) {
+    console.error('Error toggling agent status:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to toggle agent status'
+    });
+  }
+};
+
+// Delete agent
+const deleteAgent = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    
+    if (!agentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Agent ID is required'
+      });
+    }
+
+    
+    // Find the agent first
+    const agent = await Agent.findById(agentId);
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Agent not found'
+      });
+    }
+
+    // Delete the agent
+    await Agent.findByIdAndDelete(agentId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Agent deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting agent:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to delete agent'
+    });
+  }
+};
+
+// Copy agent to another client
+const copyAgent = async (req, res) => {
+  try {
+    const { agentId, targetClientId } = req.body;
+    
+    if (!agentId || !targetClientId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Agent ID and target client ID are required'
+      });
+    }
+
+    
+    // Verify the target client exists and is approved
+    const targetClient = await Client.findById(targetClientId);
+    if (!targetClient) {
+      return res.status(404).json({
+        success: false,
+        message: 'Target client not found'
+      });
+    }
+    
+    if (!targetClient.isApproved) {
+      return res.status(400).json({
+        success: false,
+        message: 'Target client is not approved'
+      });
+    }
+
+    // Get the source agent
+    const sourceAgent = await Agent.findById(agentId);
+    if (!sourceAgent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Source agent not found'
+      });
+    }
+
+    // Create a copy of the agent with new client ID
+    const agentCopy = {
+      ...sourceAgent.toObject(),
+      _id: undefined, // Remove the original ID
+      clientId: targetClientId,
+      agentName: `${sourceAgent.agentName}`,
+      isActive: false, // Start as inactive by default
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Remove any fields that shouldn't be copied
+    delete agentCopy._id;
+    delete agentCopy.__v;
+
+    // Create the new agent
+    const newAgent = await Agent.create(agentCopy);
+
+    res.status(201).json({
+      success: true,
+      message: 'Agent copied successfully',
+      data: newAgent
+    });
+  } catch (error) {
+    console.error('Error copying agent:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to copy agent'
+    });
+  }
+};
+
+// Update agent
+const updateAgent = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const updateData = req.body;
+
+    // Remove fields that shouldn't be updated
+    const allowedFields = [
+      'agentName',
+      'description', 
+      'category',
+      'personality',
+      'language',
+      'firstMessage',
+      'systemPrompt',
+      'sttSelection',
+      'ttsSelection',
+      'llmSelection',
+      'voiceSelection',
+      'contextMemory',
+      'brandInfo',
+      'startingMessages',
+      'whatsappEnabled',
+      'telegramEnabled',
+      'emailEnabled',
+      'smsEnabled',
+      'whatsapplink',
+      'whatsapp',
+      'telegram',
+      'email',
+      'sms'
+    ];
+
+    const filteredUpdateData = {};
+    Object.keys(updateData).forEach(key => {
+      if (allowedFields.includes(key)) {
+        filteredUpdateData[key] = updateData[key];
+      }
+    });
+
+    // Add updatedAt timestamp
+    filteredUpdateData.updatedAt = new Date();
+
+    const updatedAgent = await Agent.findByIdAndUpdate(
+      agentId,
+      filteredUpdateData,
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedAgent) {
+      return res.status(404).json({
+        success: false,
+        message: "Agent not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Agent updated successfully",
+      data: updatedAgent
+    });
+
+  } catch (error) {
+    console.error('Error updating agent:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "An error occurred while updating the agent"
+    });
+  }
+};
+
+module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent };
