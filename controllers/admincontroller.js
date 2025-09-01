@@ -2,6 +2,7 @@ const Admin = require("../models/Admin");
 const bcrypt=require("bcrypt");
 const jwt = require('jsonwebtoken');
 const Client = require("../models/Client");
+const { getobject } = require("../utils/s3");
 
 
 // Generate JWT Token for admin
@@ -116,11 +117,26 @@ const registerAdmin = async (req, res) => {
 const getClients = async (req, res) => {
     try {
       const clients = await Client.find().select('-password');
-      
+
+      const clientsWithLogos = await Promise.all(
+        clients.map(async (c) => {
+          const clientObj = c.toObject();
+          try {
+            if (clientObj.businessLogoKey) {
+              clientObj.businessLogoUrl = await getobject(clientObj.businessLogoKey);
+            }
+          } catch (e) {
+            // If URL generation fails, fall back to existing or null
+            clientObj.businessLogoUrl = clientObj.businessLogoUrl || null;
+          }
+          return clientObj;
+        })
+      );
+
       res.status(200).json({
         success: true,
-        count: clients.length,
-        data: clients
+        count: clientsWithLogos.length,
+        data: clientsWithLogos
       });
     } catch (error) {
       res.status(500).json({
