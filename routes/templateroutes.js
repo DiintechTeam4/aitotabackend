@@ -4,7 +4,7 @@ const router = express.Router()
 const Template = require('../models/Template')
 const Agent = require('../models/Agent')
 const mongoose = require('mongoose')
-const fetch = require('node-fetch')
+// fetch will be imported dynamically where needed
 
 // Create a template
 router.post('/', async (req, res) => {
@@ -182,6 +182,7 @@ router.post('/assign-client', async (req, res) => {
     // If platform is WhatsApp, assign to all agents
     if (platform === 'whatsapp') {
       // Get template data from external service
+      const { default: fetch } = await import('node-fetch')
       const templateResp = await fetch('https://whatsapp-template-module.onrender.com/api/whatsapp/get-templates')
       const templateData = await templateResp.json()
       const templates = Array.isArray(templateData?.templates) ? templateData.templates : []
