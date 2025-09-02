@@ -596,9 +596,22 @@ router.get('/agents/no-audio', verifyClientOrAdminAndExtractClientId, async (req
   try {
     const filter = req.clientId ? { clientId: req.clientId } : {};
     const agents = await Agent.find(filter)
-      .select('-audioBytes -audioFile -audioMetadata -startingMessages') // Exclude all audio-related fields including startingMessages
+      .select('-audioBytes -audioFile -audioMetadata -defaultTemplate -whatsappTemplates -systemPrompt -whatsappEnabled -telegramEnabled -emailEnabled -smsEnabled -whatsapp -telegram -email -sms -templets') // Exclude audio-related fields but keep startingMessages
       .sort({ createdAt: -1 });
-    res.json({success: true, data: agents});
+    
+    // Remove audioBase64 from startingMessages array
+    const agentsWithoutAudio = agents.map(agent => {
+      const agentObj = agent.toObject();
+      if (agentObj.startingMessages && Array.isArray(agentObj.startingMessages)) {
+        agentObj.startingMessages = agentObj.startingMessages.map(message => {
+          const { audioBase64, ...messageWithoutAudio } = message;
+          return messageWithoutAudio;
+        });
+      }
+      return agentObj;
+    });
+    
+    res.json({success: true, data: agentsWithoutAudio});
   } catch (error) {
     console.error("Error fetching agents without audio:", error);
     res.status(500).json({ success: false, error: "Failed to fetch agents" });
