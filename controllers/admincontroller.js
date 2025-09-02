@@ -159,9 +159,18 @@ const getClients = async (req, res) => {
         });
       }
       
+      const clientObj = client.toObject();
+      try {
+        if (clientObj.businessLogoKey) {
+          clientObj.businessLogoUrl = await getobject(clientObj.businessLogoKey);
+        }
+      } catch (e) {
+        clientObj.businessLogoUrl = clientObj.businessLogoUrl || null;
+      }
+
       res.status(200).json({
         success: true,
-        data: client
+        data: clientObj
       });
     } catch (error) {
       res.status(500).json({

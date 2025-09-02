@@ -24,6 +24,11 @@ const ClientSchema = new mongoose.Schema({
       return !this.googleId;
     },
   },
+  clientType:{
+    type: String,
+    enum: ['Prime', 'demo', 'testing', 'new','owned','rejected'],
+    default: 'new',
+  },
   businessLogoKey: {
     type: String,
     required: function () {

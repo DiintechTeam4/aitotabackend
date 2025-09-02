@@ -42,7 +42,6 @@ const clientApiService = new ClientApiService()
 // Middleware to extract client ID from token or fallback to headers/query
 const extractClientId = (req, res, next) => {
   try {
-    console.log('extractClientId middleware called');
     if(!req.headers.authorization)
     {
       return res.status(401).json({ success: false, error: 'Authorization header is required' });
@@ -106,6 +105,32 @@ router.put("/", extractClientId, async (req, res) => {
   } catch (error) {
     console.error("Error updating client:", error)
     res.status(500).json({ error: "Failed to update client information" })
+  }
+})
+
+// Update client information (currently supports clientType update)
+router.put("/client-type", extractClientId, async (req, res) => {
+  try {
+    const { clientType } = req.body
+
+    if (!clientType) {
+      return res.status(400).json({ error: "clientType is required" })
+    }
+
+    const client = await Client.findByIdAndUpdate(
+      req.clientId,
+      { clientType, updatedAt: new Date() },
+      { new: true },
+    )
+
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" })
+    }
+
+    return res.json({ success: true, data: client, message: "Client information updated successfully" })
+  } catch (error) {
+    console.error("Error updating client:", error)
+    return res.status(500).json({ error: "Failed to update client information" })
   }
 })
 
@@ -596,7 +621,7 @@ router.get('/agents/no-audio', verifyClientOrAdminAndExtractClientId, async (req
   try {
     const filter = req.clientId ? { clientId: req.clientId } : {};
     const agents = await Agent.find(filter)
-      .select('-audioBytes -audioFile -audioMetadata -defaultTemplate -whatsappTemplates -systemPrompt -whatsappEnabled -telegramEnabled -emailEnabled -smsEnabled -whatsapp -telegram -email -sms -templets') // Exclude audio-related fields but keep startingMessages
+      .select('-audioBytes -audioFile -audioMetadata -defaultTemplate -whatsappTemplates')
       .sort({ createdAt: -1 });
     
     // Remove audioBase64 from startingMessages array
@@ -2591,11 +2616,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     const { id } = req.params;
     const page = parseInt(req.query.page || '1', 10);
     const limit = parseInt(req.query.limit || '50', 10);
-
-    console.log('=== DEBUG: Merged Calls API ===');
-    console.log('Campaign ID:', id);
-    console.log('Requested Page:', page);
-    console.log('Requested Limit:', limit);
 
     const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
     if (!campaign) {
