@@ -2645,15 +2645,21 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     console.log('All uniqueIds:', allUniqueIds.length);
 
     // 3. Find CallLogs for these uniqueIds
-    const logs = await CallLog.find({
+    let logs = await CallLog.find({
       clientId: req.clientId,
       'metadata.customParams.uniqueid': { $in: allUniqueIds }
     }).sort({ createdAt: -1 }).lean();
+    // Fallback: if none found under this clientId, try without client constraint
+    if (!logs || logs.length === 0) {
+      logs = await CallLog.find({
+        'metadata.customParams.uniqueid': { $in: allUniqueIds }
+      }).sort({ createdAt: -1 }).lean();
+    }
 
     console.log('CallLogs found:', logs.length);
 
     // 4. Also check for ongoing calls (calls that started but haven't completed)
-    const ongoingCalls = await CallLog.find({
+    let ongoingCalls = await CallLog.find({
       clientId: req.clientId,
       'metadata.customParams.uniqueid': { $in: allUniqueIds },
       $or: [
@@ -2663,6 +2669,17 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         { status: 'ringing' }
       ]
     }).sort({ createdAt: -1 }).lean();
+    if (!ongoingCalls || ongoingCalls.length === 0) {
+      ongoingCalls = await CallLog.find({
+        'metadata.customParams.uniqueid': { $in: allUniqueIds },
+        $or: [
+          { isActive: true },
+          { leadStatus: 'maybe' },
+          { status: 'ongoing' },
+          { status: 'ringing' }
+        ]
+      }).sort({ createdAt: -1 }).lean();
+    }
 
     console.log('Ongoing calls found:', ongoingCalls.length);
     
@@ -2763,30 +2780,12 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
 
       const log = uniqueIdToLog.get(uniqueId);
       if (log) {
-        // Determine if this is an ongoing call
-        const isOngoing = log.isOngoing || 
-                         log.isActive === true || 
-                         log.leadStatus === 'maybe' ||
-                         log.status === 'ongoing' ||
-                         log.status === 'ringing' ||
-                         (log.duration === 0 && log.leadStatus !== 'not_connected'); // New calls with no duration yet
-        
-        // Determine the specific status for better UI display
-        let callStatus;
-        if (isOngoing) {
-          if (log.leadStatus === 'maybe') {
-            callStatus = 'ongoing'; // User is answering
-          } else if (log.status === 'ringing') {
-            callStatus = 'ringing'; // Phone is ringing
-          } else if (log.isActive === true) {
-            callStatus = 'ongoing'; // Call is active
-          } else {
-            callStatus = 'missed'; // Default ongoing status
-          }
-        } else {
-          // If not ongoing, it's a completed call
-          callStatus = 'completed';
-        }
+        // SIMPLE RULES:
+        // - If there is a CallLog: status from metadata.isActive (true -> ongoing, else completed)
+        // - Missed is only decided in the no-logs branch below
+        const isActiveFlag = log?.metadata?.isActive;
+        const isOngoingFlag = isActiveFlag === true;
+        let callStatus = isOngoingFlag ? 'ongoing' : 'completed';
         
         // Compute a robust duration: prefer numeric duration; else derive from timestamps
         let computedDuration = (typeof log.duration === 'number' && log.duration > 0)
@@ -2829,11 +2828,11 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           status: callStatus,
           duration: computedDuration,
           isMissed: false,
-          isOngoing: isOngoing
+          isOngoing: isOngoingFlag
         });
         
         // Debug: Log status assignment
-        console.log(`Call ${uniqueId}: isOngoing=${isOngoing}, status=${callStatus}, leadStatus=${log.leadStatus}, isActive=${log.isActive}, duration=${log.duration}, logStatus=${log.status}`);
+        console.log(`Call ${uniqueId}: isOngoing=${isOngoingFlag}, status=${callStatus}, leadStatus=${log.leadStatus}, isActive=${log.isActive}, duration=${log.duration}, logStatus=${log.status}`);
         
         processedUniqueIds.add(uniqueId);
       }
