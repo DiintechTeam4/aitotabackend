@@ -291,9 +291,8 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
       return res.status(400).json({ error: 'Invalid default starting message index.' });
     }
     
-    // Set default firstMessage and audioBytes
+    // Set default firstMessage 
     agentData.firstMessage = startingMessages[defaultStartingMessageIndex].text;
-    agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
     
     // Set the appropriate ID based on token type
@@ -464,7 +463,6 @@ router.put('/agents/:id', extractClientId, async (req, res) => {
     }
     // Set default firstMessage and audioBytes
     agentData.firstMessage = startingMessages[defaultStartingMessageIndex].text;
-    agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
 
     // If we are activating this agent, deactivate others first to satisfy unique index
@@ -550,7 +548,6 @@ router.put('/agents/mob/:id', extractClientId, async(req,res)=>{
         if (typeof msg === 'string') {
           return {
             text: msg,
-            audioBase64: null
           };
         }
         return msg;
@@ -720,16 +717,11 @@ router.post('/voice/synthesize', verifyClientOrAdminAndExtractClientId, async (r
     if (!text || !text.trim()) {
       return res.status(400).json({ error: "Text is required" });
     }
-    const audioResult = await voiceService.textToSpeech(text, language, speaker);
-    if (!audioResult.audioBuffer || !audioResult.audioBase64) {
-      throw new Error("Invalid audio buffer received from voice service");
-    }
     // Return both for frontend: buffer for playback, base64 for DB
     res.set({
       "Content-Type": "application/json",
     });
     res.json({
-      audioBase64: audioResult.audioBase64,
       audioBuffer: audioResult.audioBuffer.toString('base64'), // for compatibility
       format: audioResult.format,
       size: audioResult.size,
@@ -2785,6 +2777,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         // - Missed is only decided in the no-logs branch below
         const isActiveFlag = log?.metadata?.isActive;
         const isOngoingFlag = isActiveFlag === true;
+        // Show 'ongoin' while the call is actively in progress
         let callStatus = isOngoingFlag ? 'ongoing' : 'completed';
         
         // Compute a robust duration: prefer numeric duration; else derive from timestamps
@@ -2845,22 +2838,17 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
 
       // No CallLog found for this uniqueId yet – fall back to campaign.details status
       const contact = campaign.contacts?.find(c => String(c._id) === String(detail.contactId));
-      const fallbackStatusRaw = String(detail.status || '').toLowerCase();
-      let fallbackStatus =
-        fallbackStatusRaw === 'ongoing' || fallbackStatusRaw === 'ringing'
-          ? 'ongoing'
-          : fallbackStatusRaw === 'completed'
-          ? 'completed'
-          : 'missed';
+      // Default: ringing immediately after initiation until timeout threshold
+      let fallbackStatus = 'ringing';
 
-      // If there are no logs for this uniqueId and it's been >=45s since initiation, mark as missed
+      // If there are no logs for this uniqueId then:
+      // - if age < 40s => ringing
+      // - else => missed
       try {
         const startTs = detail.time || detail.createdAt;
         const startMs = startTs ? new Date(startTs).getTime() : 0;
         const ageSec = startMs ? Math.round((Date.now() - startMs) / 1000) : 0;
-        if (ageSec >= 45) {
-          fallbackStatus = 'missed';
-        }
+        fallbackStatus = ageSec >= 40 ? 'missed' : 'ringing';
       } catch (_) {}
       const isMissedDerived = fallbackStatus === 'missed';
       // Compute a best-effort duration from detail if available
