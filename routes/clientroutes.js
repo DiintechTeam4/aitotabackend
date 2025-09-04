@@ -291,9 +291,8 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
       return res.status(400).json({ error: 'Invalid default starting message index.' });
     }
     
-    // Set default firstMessage and audioBytes
+    // Set default firstMessage 
     agentData.firstMessage = startingMessages[defaultStartingMessageIndex].text;
-    agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
     
     // Set the appropriate ID based on token type
@@ -409,9 +408,8 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
   }
 });
 
-
 // Update agent with multiple starting messages and default selection
-router.put('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+router.put('/agents/:id', extractClientId, async (req, res) => {
   try {
     const { startingMessages, defaultStartingMessageIndex, ...agentData } = req.body;
 
@@ -465,7 +463,6 @@ router.put('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res
     }
     // Set default firstMessage and audioBytes
     agentData.firstMessage = startingMessages[defaultStartingMessageIndex].text;
-    agentData.audioBytes = startingMessages[defaultStartingMessageIndex].audioBase64 || '';
     agentData.startingMessages = startingMessages;
 
     // If we are activating this agent, deactivate others first to satisfy unique index
@@ -551,7 +548,6 @@ router.put('/agents/mob/:id', extractClientId, async(req,res)=>{
         if (typeof msg === 'string') {
           return {
             text: msg,
-            audioBase64: null
           };
         }
         return msg;
@@ -721,16 +717,11 @@ router.post('/voice/synthesize', verifyClientOrAdminAndExtractClientId, async (r
     if (!text || !text.trim()) {
       return res.status(400).json({ error: "Text is required" });
     }
-    const audioResult = await voiceService.textToSpeech(text, language, speaker);
-    if (!audioResult.audioBuffer || !audioResult.audioBase64) {
-      throw new Error("Invalid audio buffer received from voice service");
-    }
     // Return both for frontend: buffer for playback, base64 for DB
     res.set({
       "Content-Type": "application/json",
     });
     res.json({
-      audioBase64: audioResult.audioBase64,
       audioBuffer: audioResult.audioBuffer.toString('base64'), // for compatibility
       format: audioResult.format,
       size: audioResult.size,
@@ -2646,15 +2637,21 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     console.log('All uniqueIds:', allUniqueIds.length);
 
     // 3. Find CallLogs for these uniqueIds
-    const logs = await CallLog.find({
+    let logs = await CallLog.find({
       clientId: req.clientId,
       'metadata.customParams.uniqueid': { $in: allUniqueIds }
     }).sort({ createdAt: -1 }).lean();
+    // Fallback: if none found under this clientId, try without client constraint
+    if (!logs || logs.length === 0) {
+      logs = await CallLog.find({
+        'metadata.customParams.uniqueid': { $in: allUniqueIds }
+      }).sort({ createdAt: -1 }).lean();
+    }
 
     console.log('CallLogs found:', logs.length);
 
     // 4. Also check for ongoing calls (calls that started but haven't completed)
-    const ongoingCalls = await CallLog.find({
+    let ongoingCalls = await CallLog.find({
       clientId: req.clientId,
       'metadata.customParams.uniqueid': { $in: allUniqueIds },
       $or: [
@@ -2664,6 +2661,17 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         { status: 'ringing' }
       ]
     }).sort({ createdAt: -1 }).lean();
+    if (!ongoingCalls || ongoingCalls.length === 0) {
+      ongoingCalls = await CallLog.find({
+        'metadata.customParams.uniqueid': { $in: allUniqueIds },
+        $or: [
+          { isActive: true },
+          { leadStatus: 'maybe' },
+          { status: 'ongoing' },
+          { status: 'ringing' }
+        ]
+      }).sort({ createdAt: -1 }).lean();
+    }
 
     console.log('Ongoing calls found:', ongoingCalls.length);
     
@@ -2676,6 +2684,55 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         status: ongoingCalls[0]?.status
       });
     }
+
+    // Helper: compute robust duration by querying all logs for a uniqueId
+    async function getDurationByUniqueId(uid) {
+      try {
+        if (!uid) return 0;
+        let logsForUid = await CallLog.find({
+          'metadata.customParams.uniqueid': uid,
+          ...(req.clientId ? { clientId: req.clientId } : {})
+        }).sort({ createdAt: 1 }).lean();
+        if (!logsForUid || logsForUid.length === 0) {
+          // Fallback without client filter
+          logsForUid = await CallLog.find({
+            'metadata.customParams.uniqueid': uid
+          }).sort({ createdAt: 1 }).lean();
+        }
+        if (!logsForUid || logsForUid.length === 0) return 0;
+        // Max of explicit durations
+        const maxExplicit = logsForUid.reduce((m, l) => {
+          const d = typeof l.duration === 'number' ? l.duration : 0;
+          return Math.max(m, d);
+        }, 0);
+        // Derive from timestamps
+        const first = logsForUid[0];
+        const last = logsForUid[logsForUid.length - 1];
+        const startMs = (first?.createdAt ? new Date(first.createdAt).getTime() : 0);
+        const endCandidate = last?.metadata?.callEndTime || last?.updatedAt || last?.time || last?.createdAt;
+        const endMs = endCandidate ? new Date(endCandidate).getTime() : 0;
+        const derived = Math.max(0, Math.round((endMs - startMs) / 1000));
+        const best = Math.max(maxExplicit, derived);
+        return Number.isFinite(best) ? best : 0;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    // Helper: sanitize display name to avoid numbers posing as names
+    const sanitizeName = (raw, fallbackNumber) => {
+      try {
+        const name = (raw || '').toString().trim();
+        if (!name) return '';
+        const digits = name.replace(/\D/g, '');
+        const phoneDigits = (fallbackNumber || '').toString().replace(/\D/g, '');
+        const numberLike = digits.length >= 6 && /^\d+$/.test(digits);
+        const sameAsPhone = phoneDigits && digits === phoneDigits;
+        return (!numberLike && !sameAsPhone) ? name : '';
+      } catch (_) {
+        return '';
+      }
+    };
 
     // 5. Create a map of uniqueId to latest log (prioritizing ongoing calls)
     const uniqueIdToLog = new Map();
@@ -2715,69 +2772,118 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
 
       const log = uniqueIdToLog.get(uniqueId);
       if (log) {
-        // Determine if this is an ongoing call
-        const isOngoing = log.isOngoing || 
-                         log.isActive === true || 
-                         log.leadStatus === 'maybe' ||
-                         log.status === 'ongoing' ||
-                         log.status === 'ringing' ||
-                         (log.duration === 0 && log.leadStatus !== 'not_connected'); // New calls with no duration yet
+        // SIMPLE RULES:
+        // - If there is a CallLog: status from metadata.isActive (true -> ongoing, else completed)
+        // - Missed is only decided in the no-logs branch below
+        const isActiveFlag = log?.metadata?.isActive;
+        const isOngoingFlag = isActiveFlag === true;
+        // Show 'ongoin' while the call is actively in progress
+        let callStatus = isOngoingFlag ? 'ongoing' : 'completed';
         
-        // Determine the specific status for better UI display
-        let callStatus;
-        if (isOngoing) {
-          if (log.leadStatus === 'maybe') {
-            callStatus = 'ongoing'; // User is answering
-          } else if (log.status === 'ringing') {
-            callStatus = 'ringing'; // Phone is ringing
-          } else if (log.isActive === true) {
-            callStatus = 'ongoing'; // Call is active
-          } else {
-            callStatus = 'ongoing'; // Default ongoing status
-          }
-        } else {
-          // If not ongoing, it's a completed call
-          callStatus = 'completed';
+        // Compute a robust duration: prefer numeric duration; else derive from timestamps
+        let computedDuration = (typeof log.duration === 'number' && log.duration > 0)
+          ? log.duration
+          : (() => {
+              try {
+                const endTs = log?.metadata?.callEndTime || log?.updatedAt || log?.time;
+                const startTs = log?.createdAt || log?.time;
+                const endMs = endTs ? new Date(endTs).getTime() : 0;
+                const startMs = startTs ? new Date(startTs).getTime() : 0;
+                const diffSec = Math.max(0, Math.round((endMs - startMs) / 1000));
+                return Number.isFinite(diffSec) ? diffSec : 0;
+              } catch (_) {
+                return 0;
+              }
+            })();
+
+        // If still zero, fetch from DB using uniqueId
+        if (!computedDuration || computedDuration === 0) {
+          computedDuration = await getDurationByUniqueId(uniqueId);
         }
-        
+
+        // Build a clean display name
+        const fallbackNumber = log.mobile || log.metadata?.callerId || null;
+        const displayName = sanitizeName(
+          log.contactName ||
+          log.metadata?.customParams?.contact_name ||
+          log.metadata?.customParams?.name,
+          fallbackNumber
+        ) || null;
+
         // This is either a completed call or an ongoing call
         mergedCalls.push({
           documentId: uniqueId,
           number: log.mobile || log.metadata?.callerId || null,
-          name: log.contactName || log.metadata?.customParams?.name || null,
+          name: displayName,
           leadStatus: log.leadStatus || 'not_connected',
           contactId: detail.contactId,
           time: detail.time || detail.createdAt,
           status: callStatus,
-          duration: typeof log.duration === 'number' ? log.duration : 0,
+          duration: computedDuration,
           isMissed: false,
-          isOngoing: isOngoing
+          isOngoing: isOngoingFlag
         });
         
         // Debug: Log status assignment
-        console.log(`Call ${uniqueId}: isOngoing=${isOngoing}, status=${callStatus}, leadStatus=${log.leadStatus}, isActive=${log.isActive}, duration=${log.duration}, logStatus=${log.status}`);
+        console.log(`Call ${uniqueId}: isOngoing=${isOngoingFlag}, status=${callStatus}, leadStatus=${log.leadStatus}, isActive=${log.isActive}, duration=${log.duration}, logStatus=${log.status}`);
         
         processedUniqueIds.add(uniqueId);
       }
     }
 
-    // Then, add missed calls (only if not already processed)
+    // Then, add items with no logs yet (derive status/duration from detail fields)
     for (const detail of details) {
       const uniqueId = detail.uniqueId;
       if (!uniqueId || processedUniqueIds.has(uniqueId)) continue;
 
-      // This is a missed call (no log found)
+      // No CallLog found for this uniqueId yet – fall back to campaign.details status
       const contact = campaign.contacts?.find(c => String(c._id) === String(detail.contactId));
+      // Default: ringing immediately after initiation until timeout threshold
+      let fallbackStatus = 'ringing';
+
+      // If there are no logs for this uniqueId then:
+      // - if age < 40s => ringing
+      // - else => missed
+      try {
+        const startTs = detail.time || detail.createdAt;
+        const startMs = startTs ? new Date(startTs).getTime() : 0;
+        const ageSec = startMs ? Math.round((Date.now() - startMs) / 1000) : 0;
+        fallbackStatus = ageSec >= 40 ? 'missed' : 'ringing';
+      } catch (_) {}
+      const isMissedDerived = fallbackStatus === 'missed';
+      // Compute a best-effort duration from detail if available
+      let computedDetailDuration = (() => {
+        try {
+          if (typeof detail.callDuration === 'number' && detail.callDuration > 0) {
+            return detail.callDuration;
+          }
+          const endTs = detail.lastStatusUpdate || detail.updatedAt || detail.time;
+          const startTs = detail.time || detail.createdAt;
+          const endMs = endTs ? new Date(endTs).getTime() : 0;
+          const startMs = startTs ? new Date(startTs).getTime() : 0;
+          const diffSec = Math.max(0, Math.round((endMs - startMs) / 1000));
+          return Number.isFinite(diffSec) ? diffSec : 0;
+        } catch (_) {
+          return 0;
+        }
+      })();
+      if (!computedDetailDuration || computedDetailDuration === 0) {
+        computedDetailDuration = await getDurationByUniqueId(uniqueId);
+      }
+      // Build a clean display name from contact when logs are absent
+      const fallbackNumber2 = contact?.phone || null;
+      const displayName2 = sanitizeName(contact?.name || '', fallbackNumber2) || null;
+
       mergedCalls.push({
-        documentId: null,
+        documentId: uniqueId,
         number: contact?.phone || null,
-        name: contact?.name || null,
+        name: displayName2,
         leadStatus: 'not_connected',
         contactId: detail.contactId,
         time: detail.time || detail.createdAt,
-        status: 'missed',
-        duration: 0,
-        isMissed: true
+        status: fallbackStatus,
+        duration: computedDetailDuration,
+        isMissed: isMissedDerived
       });
       processedUniqueIds.add(uniqueId);
     }
@@ -2862,7 +2968,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
   }
 });
 
-// by-document via query on the original call-logs path; returns only transcript
+// Fetch transcript for a call by uniqueId (documentId)
 router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2872,32 +2978,36 @@ router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) 
       return res.status(400).json({ success: false, error: 'documentId query parameter is required' });
     }
 
-    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
-    }
+    // Try to find the campaign, but don't hard-fail transcript lookup if missing
+    let campaign = null;
+    try {
+      campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    } catch (_) {}
 
-    // Check if documentId exists in campaign details
-    const detailExists = Array.isArray(campaign.details) && 
-      campaign.details.some(detail => detail.uniqueId === documentId);
-    
-    if (!detailExists) {
-      return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
-    }
+    // If campaign exists but detail is absent, continue anyway (logs may still exist)
 
-    // Relaxed filter: match by clientId and uniqueid only, to avoid campaignId mismatches
-    const latest = await CallLog.findOne({
+    // Step 1: Strict lookup (by clientId + uniqueid)
+    let latest = await CallLog.findOne({
       clientId: req.clientId,
-      'metadata.customParams.uniqueid': documentId,
-      transcript: { $ne: '' }
+      'metadata.customParams.uniqueid': documentId
     })
       .sort({ createdAt: -1 })
       .select('transcript createdAt')
       .lean();
 
+    // Step 2: Fallback lookup (by uniqueid only) in case clientId wasn't set on the log
+    if (!latest) {
+      latest = await CallLog.findOne({
+        'metadata.customParams.uniqueid': documentId
+      })
+        .sort({ createdAt: -1 })
+        .select('transcript createdAt')
+        .lean();
+    }
+
     return res.json({
       success: true,
-      transcript: latest ? latest.transcript : '',
+      transcript: latest && typeof latest.transcript === 'string' ? latest.transcript : '',
       documentId
     });
   } catch (error) {

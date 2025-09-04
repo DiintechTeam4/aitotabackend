@@ -278,6 +278,15 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
   
   try {
     
+    // Sanitize name: avoid sending number as name
+    const rawName = (contact && contact.name) ? String(contact.name).trim() : '';
+    const digitsOnly = (str) => (str || '').replace(/\D/g, '');
+    const isNumberLike = rawName && digitsOnly(rawName).length >= 6 && (
+      !isNaN(Number(digitsOnly(rawName)))
+    );
+    const sameAsPhone = rawName && digitsOnly(rawName) === digitsOnly(contact.phone || '');
+    const safeName = (rawName && !isNumberLike && !sameAsPhone) ? rawName : '';
+
     const callPayload = {
       transaction_id: "CTI_BOT_DIAL",
       phone_num: contact.phone.replace(/[^\d]/g, ""),
@@ -286,7 +295,8 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       uuid: clientId || "client-uuid-001",
       custom_param: {
         uniqueid: uniqueId,
-        name: contact.name || ''
+        name: safeName,
+        contact_name: safeName
       },
       resFormat: 3,
     };
