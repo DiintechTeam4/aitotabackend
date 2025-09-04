@@ -88,9 +88,14 @@ const agentSchema = new mongoose.Schema({
   callerId: { type: String, index: true }, // For outbound call matching
   serviceProvider: {
     type: String,
-    enum: ["twilio", "vonage", "plivo", "bandwidth", "other", "c-zentrix", "tata"],
+    enum: ["twilio", "vonage", "plivo", "bandwidth", "other", "c-zentrix", "tata", "snapbx"],
   },
   X_API_KEY: { type: String }, // Add missing X_API_KEY field
+
+  // SnapBX provider fields
+  didNumber: { type: String },
+  accessToken: { type: String },
+  accessKey: { type: String },
 
   // Audio storage - Store as base64 string instead of Buffer
   audioFile: { type: String }, // File path (legacy support)

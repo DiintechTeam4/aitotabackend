@@ -3296,13 +3296,82 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       return res.status(500).json({ success: false, error: 'Credit check failed' });
     }
 
+    // Load agent for provider-specific dialing
+    const agent = await Agent.findById(agentId).lean();
+    if (!agent) {
+      return res.status(404).json({ success: false, error: 'Agent not found' });
+    }
+
+    // Helper: normalize phone to digits only, trim common prefixes
+    const normalizePhone = (raw) => {
+      try {
+        if (!raw) return '';
+        let p = String(raw).replace(/[^\d]/g, '');
+        // Drop leading country code if longer than 10-12 digits
+        if (p.length > 12 && p.startsWith('91')) p = p.slice(2);
+        if (p.length > 11 && p.startsWith('1')) p = p.slice(1);
+        if (p.startsWith('0')) p = p.replace(/^0+/, '');
+        return p;
+      } catch (_) { return String(raw || ''); }
+    };
+
+    // Branch: SANPBX provider flow
+    if (String(agent.serviceProvider).toLowerCase() === 'snapbx' || String(agent.serviceProvider).toLowerCase() === 'sanpbx') {
+      console.log("hii")
+      try {
+        const axios = require('axios');
+        const accessToken = agent.accessToken;
+        const accessKey = agent.accessKey;
+        const callerId = agent.callerId;
+        // Normalize then ensure leading '0'
+        const normalizedDigits = String(contact.phone || '').replace(/[^\d]/g, '');
+        const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
+        console.log(accessToken, accessKey, callerId, callTo)
+
+        if (!accessToken || !accessKey || !callerId) {
+          return res.status(400).json({ success: false, error: 'SANPBX_MISSING_FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
+        }
+
+        // 1) Generate API token (send access token in header)
+        const tokenUrl = `https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken`;
+        const tokenResp = await axios.post(
+          tokenUrl,
+          { access_key: accessKey },
+          { headers: { Accesstoken: accessToken } }
+        );
+        console.log(tokenUrl)
+        console.log(tokenResp)
+        const sanToken = tokenResp?.data?.Apitoken;
+        if (!sanToken) {
+          return res.status(502).json({ success: false, error: 'SANPBX_TOKEN_FAILED', data: tokenResp?.data || null });
+        }
+
+        // 2) Dial call (send API token in header)
+        const dialUrl = `https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall`;
+        const dialBody = {
+          appid: 2,
+          call_to: callTo,
+          caller_id: callerId,
+        };
+        console.log(dialUrl, dialBody, sanToken)
+        const dialResp = await axios.post(
+          dialUrl,
+          dialBody,
+          { headers: { Apitoken: sanToken } }
+        );
+
+        return res.status(200).json({ success: true, provider: 'sanpbx', data: dialResp?.data || {} });
+      } catch (e) {
+        const status = e?.response?.status;
+        const data = e?.response?.data;
+        return res.status(502).json({ success: false, error: 'SANPBX_DIAL_FAILED', status, data, message: e.message });
+      }
+    }
+
+    // Default: fall back to existing C-Zentrax flow via makeSingleCall
     // Resolve API key: prefer agent's X_API_KEY like start-calling; fallback to client key
     let resolvedApiKey = apiKey;
     if (!resolvedApiKey) {
-      const agent = await Agent.findById(agentId).lean();
-      if (!agent) {
-        return res.status(404).json({ success: false, error: 'Agent not found' });
-      }
       resolvedApiKey = agent.X_API_KEY || '';
       if (!resolvedApiKey) {
         // fallback to client-level key if agent key missing

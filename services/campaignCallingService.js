@@ -1,5 +1,6 @@
 const axios = require('axios');
 const ApiKey = require('../models/ApiKey');
+const Agent = require('../models/Agent');
 const CallLog = require('../models/CallLog');
 const mongoose = require('mongoose');
 
@@ -277,7 +278,46 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
   const uniqueId = generateUniqueId(); // Generate uniqueId at the start for both success and failure cases
   
   try {
-    
+    // Load agent to branch by provider
+    const agent = await Agent.findById(agentId).lean();
+    const provider = String(agent?.serviceProvider || '').toLowerCase();
+
+    // SANPBX provider flow
+    if (provider === 'snapbx' || provider === 'sanpbx') {
+      const accessToken = agent?.accessToken;
+      const accessKey = agent?.accessKey;
+      const callerId = agent?.callerId;
+      if (!accessToken || !accessKey || !callerId) {
+        throw new Error('SANPBX_MISSING_FIELDS');
+      }
+
+      // Normalize phone and ensure it starts with '0'
+      const normalizedDigits = String(contact?.phone || '').replace(/[^\d]/g, '');
+      const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
+
+      // 1) Get API token (access token in header)
+      const tokenUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken';
+      const tokenResp = await axios.post(tokenUrl, { access_key: accessKey }, { headers: { Accesstoken: accessToken } });
+      const sanToken = tokenResp?.data?.Apitoken;
+      if (!sanToken) {
+        throw new Error('SANPBX_TOKEN_FAILED');
+      }
+
+      // 2) Dial call (apitoken in header)
+      const dialUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall';
+      const dialBody = { appid: 2, call_to: callTo, caller_id: callerId };
+      const response = await axios.post(dialUrl, dialBody, { headers: { Apitoken: sanToken } });
+
+      return {
+        success: true,
+        uniqueId,
+        contact,
+        timestamp: new Date(),
+        externalResponse: response.data,
+        provider: 'sanpbx'
+      };
+    }
+
     // Sanitize name: avoid sending number as name
     const rawName = (contact && contact.name) ? String(contact.name).trim() : '';
     const digitsOnly = (str) => (str || '').replace(/\D/g, '');

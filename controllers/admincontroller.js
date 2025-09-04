@@ -557,7 +557,17 @@ const updateAgent = async (req, res) => {
       'whatsapp',
       'telegram',
       'email',
-      'sms'
+      'sms',
+      // Telephony/provider fields
+      'serviceProvider',
+      'accountSid',
+      'callingNumber',
+      'callerId',
+      'X_API_KEY',
+      // SnapBX fields
+      'didNumber',
+      'accessToken',
+      'accessKey'
     ];
 
     const filteredUpdateData = {};
