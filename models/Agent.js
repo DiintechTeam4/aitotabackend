@@ -15,6 +15,7 @@ const agentSchema = new mongoose.Schema({
   agentId: {type: String},
   // Active Status
   isActive: { type: Boolean, default: true, index: true },
+  isApproved: { type: Boolean, default: false, index: true },
 
   // Personal Information
   agentName: { type: String, required: true },

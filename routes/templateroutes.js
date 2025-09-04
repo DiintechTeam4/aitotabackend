@@ -252,6 +252,9 @@ router.post('/assign-client', async (req, res) => {
 router.post('/agent/template-status', async (req, res) => {
   try {
     const { agentId, templateId, action } = req.body || {}
+    console.log('agentId', agentId)
+    console.log('templateId', templateId)
+    console.log('action', action)
     if (!agentId || !templateId || !['remove', 'restore'].includes(String(action))) {
       return res.status(400).json({ success: false, message: 'agentId, templateId and action(remove|restore) are required' })
     }
