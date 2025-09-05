@@ -29,6 +29,7 @@ const getUploadUrl = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
 const getUploadUrlMyBusiness = async (req, res) => {
   try {
     const { fileName, fileType } = req.query;
@@ -36,6 +37,20 @@ const getUploadUrlMyBusiness = async (req, res) => {
       return res.status(400).json({ success: false, message: 'fileName and fileType are required' });
     }
     const key = `mybusiness/${Date.now()}_${fileName}`;
+    const url = await putobject(key, fileType);
+    res.json({ success: true, url, key });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getUploadUrlCustomization = async (req, res) => {
+  try {
+    const { fileName, fileType } = req.query;
+    if (!fileName || !fileType) {
+      return res.status(400).json({ success: false, message: 'fileName and fileType are required' });
+    }
+    const key = `agentCustomization/${Date.now()}_${fileName}`;
     const url = await putobject(key, fileType);
     res.json({ success: true, url, key });
   } catch (error) {
@@ -1035,6 +1050,7 @@ const loginHumanAgentGoogle = async (req, res) => {
 module.exports = { 
   getUploadUrl,
   getUploadUrlMyBusiness,
+  getUploadUrlCustomization,
   loginClient, 
   googleLogin,
   registerClient,
