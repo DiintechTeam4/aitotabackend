@@ -1,12 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
   const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
-const { getobject } = require('../utils/s3')
 const Agent = require('../models/Agent');
 const VoiceService = require('../services/voiceService');
 const voiceService = new VoiceService();
@@ -210,8 +209,6 @@ router.get("/providers", (req, res) => {
 router.get('/upload-url',getUploadUrl);
 
 router.get('/upload-url-mybusiness',getUploadUrlMyBusiness);
-
-router.get('/upload-url-customization',getUploadUrlCustomization);
 
 router.post('/login', loginClient);
 
@@ -2824,7 +2821,11 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           status: callStatus,
           duration: computedDuration,
           isMissed: false,
-          isOngoing: isOngoingFlag
+          isOngoing: isOngoingFlag,
+          whatsappMessageSent: log.metadata?.customParams?.whatsappMessageSent || 
+                            log.metadata?.whatsappMessageSent || 
+                            detail.whatsappMessageSent || 
+                            false 
         });
         
         // Debug: Log status assignment
@@ -2886,7 +2887,8 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         time: detail.time || detail.createdAt,
         status: fallbackStatus,
         duration: computedDetailDuration,
-        isMissed: isMissedDerived
+        isMissed: isMissedDerived,
+        whatsappMessageSent: detail.whatsappMessageSent || false
       });
       processedUniqueIds.add(uniqueId);
     }
@@ -4259,19 +4261,7 @@ router.get('/agents/:id/public', async (req, res) => {
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    const agentObj = agent.toObject();
-    try {
-      if (agentObj.uiImage && typeof agentObj.uiImage === 'string') {
-        agentObj.uiImageUrl = await getobject(agentObj.uiImage);
-      }
-      if (agentObj.backgroundImage && typeof agentObj.backgroundImage === 'string') {
-        agentObj.backgroundImageUrl = await getobject(agentObj.backgroundImage);
-      }
-    } catch (e) {
-      console.warn('Failed to sign public customization URLs:', e.message);
-    }
-
-    res.json({ success: true, data: agentObj });
+    res.json({ success: true, data: agent });
   } catch (error) {
     console.error('Error fetching agent by ID:', error);
     res.status(500).json({ error: 'Failed to fetch agent' });
@@ -4301,21 +4291,12 @@ router.get('/public/:clientId', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Client not found' });
     }
 
-    let logoUrl = client.businessLogoUrl || null;
-    try {
-      if (!logoUrl && client.businessLogoKey) {
-        logoUrl = await getobject(client.businessLogoKey);
-      }
-    } catch (e) {
-      console.warn('Failed to sign client business logo URL:', e.message);
-    }
-
     const minimal = {
       id: client._id,
       name: client.name || client.clientName || 'Client',
       email: client.email || null,
       businessName: client.businessName || null,
-      businessLogoUrl: logoUrl,
+      businessLogoUrl: client.businessLogoUrl || null,
       websiteUrl: client.websiteUrl || null,
     };
 
@@ -4337,20 +4318,7 @@ router.get('/agents/:id', verifyClientOrAdminAndExtractClientId, async (req, res
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    // Generate fresh signed URLs for customization images if keys are present
-    const agentObj = agent.toObject();
-    try {
-      if (agentObj.uiImage && typeof agentObj.uiImage === 'string') {
-        agentObj.uiImageUrl = await getobject(agentObj.uiImage);
-      }
-      if (agentObj.backgroundImage && typeof agentObj.backgroundImage === 'string') {
-        agentObj.backgroundImageUrl = await getobject(agentObj.backgroundImage);
-      }
-    } catch (e) {
-      console.warn('Failed to sign customization URLs:', e.message);
-    }
-
-    res.json({ success: true, data: agentObj });
+    res.json({ success: true, data: agent });
   } catch (error) {
     console.error('Error fetching agent by ID:', error);
     res.status(500).json({ error: 'Failed to fetch agent' });
@@ -6466,4 +6434,3 @@ router.get('/payments/status/:orderId', verifyClientOrAdminAndExtractClientId, a
 });
 
 module.exports = router;
-
