@@ -3285,8 +3285,9 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
 // Make single call
 router.post('/calls/single', extractClientId, async (req, res) => {
   try {
-    const { contact, agentId, apiKey, campaignId } = req.body || {};
-    if (!contact || !contact.phone) {
+    const { contact, agentId, apiKey, campaignId, custom_field } = req.body || {};
+    console.log(req.body)
+    if (!contact ) {
       return res.status(400).json({ success: false, error: 'Missing contact.phone' });
     }
     if (!agentId) {
@@ -3338,7 +3339,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
         const accessKey = agent.accessKey;
         const callerId = agent.callerId;
         // Normalize then ensure leading '0'
-        const normalizedDigits = String(contact.phone || '').replace(/[^\d]/g, '');
+        const normalizedDigits = String(contact || '').replace(/[^\d]/g, '');
         const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
         console.log(accessToken, accessKey, callerId, callTo)
 
@@ -3366,6 +3367,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
           appid: 2,
           call_to: callTo,
           caller_id: callerId,
+          custom_field
         };
         console.log(dialUrl, dialBody, sanToken)
         const dialResp = await axios.post(
