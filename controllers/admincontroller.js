@@ -117,7 +117,7 @@ const registerAdmin = async (req, res) => {
 }
 const getClients = async (req, res) => {
     try {
-      const clients = await Client.find().select('-password');
+      const clients = await Client.find().select('-password').sort({createdAt:-1});
 
       const clientsWithLogos = await Promise.all(
         clients.map(async (c) => {
