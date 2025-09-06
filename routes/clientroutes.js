@@ -2605,6 +2605,7 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
 });
 
 // Get merged call logs (completed + missed calls) with deduplication
+// Get merged call logs (completed + missed calls) with deduplication
 router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
   try {
     const { id } = req.params;
@@ -2824,7 +2825,15 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           status: callStatus,
           duration: computedDuration,
           isMissed: false,
-          isOngoing: isOngoingFlag
+          isOngoing: isOngoingFlag,
+          whatsappMessageSent: log.metadata?.customParams?.whatsappMessageSent || 
+                            log.metadata?.whatsappMessageSent || 
+                            detail.whatsappMessageSent || 
+                            false ,
+          whatsappRequested: log.metadata?.customParams?.whatsappRequested || 
+                            log.metadata?.whatsappRequested || 
+                            detail.whatsappRequested || 
+                            false 
         });
         
         // Debug: Log status assignment
@@ -2886,7 +2895,9 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         time: detail.time || detail.createdAt,
         status: fallbackStatus,
         duration: computedDetailDuration,
-        isMissed: isMissedDerived
+        isMissed: isMissedDerived,
+        whatsappMessageSent: detail.whatsappMessageSent || false,
+        whatsappRequested: detail.whatsappRequested || false  
       });
       processedUniqueIds.add(uniqueId);
     }
@@ -6466,4 +6477,3 @@ router.get('/payments/status/:orderId', verifyClientOrAdminAndExtractClientId, a
 });
 
 module.exports = router;
-
