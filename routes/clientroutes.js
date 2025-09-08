@@ -2622,10 +2622,8 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     const details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
     const totalDetails = details.length;
 
-    console.log('Total details in campaign:', totalDetails);
 
     if (totalDetails === 0) {
-      console.log('No details found, returning empty response');
       return res.json({
         success: true,
         data: [],
@@ -2636,7 +2634,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
 
     // 2. Get all uniqueIds
     const allUniqueIds = details.map(d => d.uniqueId).filter(Boolean);
-    console.log('All uniqueIds:', allUniqueIds.length);
 
     // 3. Find CallLogs for these uniqueIds
     let logs = await CallLog.find({
@@ -2650,7 +2647,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       }).sort({ createdAt: -1 }).lean();
     }
 
-    console.log('CallLogs found:', logs.length);
 
     // 4. Also check for ongoing calls (calls that started but haven't completed)
     let ongoingCalls = await CallLog.find({
@@ -2675,17 +2671,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       }).sort({ createdAt: -1 }).lean();
     }
 
-    console.log('Ongoing calls found:', ongoingCalls.length);
-    
-    // Debug: Log some ongoing call details
-    if (ongoingCalls.length > 0) {
-      console.log('Sample ongoing call:', {
-        uniqueId: ongoingCalls[0]?.metadata?.customParams?.uniqueid,
-        isActive: ongoingCalls[0]?.isActive,
-        leadStatus: ongoingCalls[0]?.leadStatus,
-        status: ongoingCalls[0]?.status
-      });
-    }
 
     // Helper: compute robust duration by querying all logs for a uniqueId
     async function getDurationByUniqueId(uid) {
@@ -2745,12 +2730,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       if (uid && !uniqueIdToLog.has(uid)) {
         // Mark this as an ongoing call
         const ongoingLog = { ...log, isOngoing: true };
-        console.log(`Marking call ${uid} as ongoing:`, {
-          isActive: ongoingLog.isActive,
-          leadStatus: ongoingLog.leadStatus,
-          status: ongoingLog.status,
-          duration: ongoingLog.duration
-        });
         uniqueIdToLog.set(uid, ongoingLog);
       }
     }
@@ -2834,8 +2813,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
                             false 
         });
         
-        // Debug: Log status assignment
-        console.log(`Call ${uniqueId}: isOngoing=${isOngoingFlag}, status=${callStatus}, leadStatus=${log.leadStatus}, isActive=${log.isActive}, duration=${log.duration}, logStatus=${log.status}`);
         
         processedUniqueIds.add(uniqueId);
       }
@@ -2916,27 +2893,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       ongoingCounts[call.isOngoing] = (ongoingCounts[call.isOngoing] || 0) + 1;
     });
     
-    // Show some examples of ongoing vs completed calls
-    const ongoingExamples = mergedCalls.filter(call => call.isOngoing).slice(0, 3);
-    const completedExamples = mergedCalls.filter(call => !call.isOngoing).slice(0, 3);
     
-    if (ongoingExamples.length > 0) {
-      console.log('Sample ongoing calls:', ongoingExamples.map(call => ({
-        uniqueId: call.documentId,
-        status: call.status,
-        leadStatus: call.leadStatus,
-        duration: call.duration
-      })));
-    }
-    
-    if (completedExamples.length > 0) {
-      console.log('Sample completed calls:', completedExamples.map(call => ({
-        uniqueId: call.documentId,
-        status: call.status,
-        leadStatus: call.leadStatus,
-        duration: call.duration
-      })));
-    }
 
     // 7. Apply pagination
     const totalItems = mergedCalls.length;
@@ -2968,7 +2925,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       totalDuration: 0
     });
 
-    console.log('Campaign totals calculated:', totals);
 
     return res.json({
       success: true,
