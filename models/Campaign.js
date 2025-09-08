@@ -58,6 +58,7 @@ const campaignSchema = new mongoose.Schema({
     _id: {type: mongoose.Schema.Types.ObjectId},
     name: { type: String, required: true },
     phone: { type: String, required: true },
+    status: { type: String, enum: ['default', 'interested', 'maybe', 'not interested'], default: 'default' },
     email: { type: String, default: "" },
     addedAt: { type: Date, default: Date.now }
   }],

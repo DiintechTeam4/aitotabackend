@@ -1873,6 +1873,89 @@ router.delete('/groups/:groupId/contacts/:contactId', extractClientId, async (re
   }
 });
 
+// Normalize phone number helper used in multiple routes
+function normalizePhoneNumber(phone) {
+  if (!phone || typeof phone !== 'string') return '';
+  return phone.replace(/\D/g, '').replace(/^0+/, '');
+}
+
+// POST: Update contact status within groups linked to a campaign by phone
+// Body: { campaignId, phone, status }
+// NOTE: This route must be declared AFTER extractClientId middleware definition.
+router.post('/groups/mark-contact-status', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { campaignId, phone, status } = req.body;
+
+    const allowed = ['default', 'interested', 'maybe', 'not interested'];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status value' });
+    }
+
+    if (!campaignId || !phone) {
+      return res.status(400).json({ error: 'campaignId and phone are required' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    if (!Array.isArray(campaign.groupIds) || campaign.groupIds.length === 0) {
+      return res.status(400).json({ error: 'Campaign has no groups' });
+    }
+
+    const normalizedTarget = normalizePhoneNumber(String(phone));
+    if (!normalizedTarget) {
+      return res.status(400).json({ error: 'Invalid phone' });
+    }
+
+    // Load groups for this client and campaign
+    const groups = await Group.find({ _id: { $in: campaign.groupIds }, clientId: req.clientId });
+
+    let updated = false;
+    for (const group of groups) {
+      if (!Array.isArray(group.contacts)) continue;
+      for (const contact of group.contacts) {
+        const normalized = normalizePhoneNumber(String(contact && contact.phone));
+        if (normalized && normalized === normalizedTarget) {
+          contact.status = status;
+          updated = true;
+          break;
+        }
+      }
+      if (updated) {
+        await group.save();
+        break;
+      }
+    }
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Contact not found in campaign groups' });
+    }
+
+    // Also update the status in campaign.contacts if present
+    let campaignUpdated = false;
+    if (Array.isArray(campaign.contacts) && campaign.contacts.length > 0) {
+      for (const c of campaign.contacts) {
+        const norm = normalizePhoneNumber(String(c && c.phone));
+        if (norm && norm === normalizedTarget) {
+          c.status = status;
+          campaignUpdated = true;
+          break;
+        }
+      }
+      if (campaignUpdated) {
+        await campaign.save();
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error marking contact status:', err);
+    return res.status(500).json({ error: 'Failed to mark contact status' });
+  }
+});
+
 // ==================== CAMPAIGNS API ====================
 
 // Get all campaigns for client
