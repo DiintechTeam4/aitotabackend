@@ -2618,8 +2618,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    console.log('Campaign found:', campaign.name);
-
     // 1. Get all campaign details (uniqueIds)
     const details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
     const totalDetails = details.length;
@@ -2909,8 +2907,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       return timeB - timeA;
     });
 
-    console.log('Merged calls total:', mergedCalls.length);
-    console.log('Duplicates removed:', totalDetails - mergedCalls.length);
     
     // Debug: Log status distribution
     const statusCounts = {};
@@ -2919,8 +2915,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       statusCounts[call.status] = (statusCounts[call.status] || 0) + 1;
       ongoingCounts[call.isOngoing] = (ongoingCounts[call.isOngoing] || 0) + 1;
     });
-    console.log('Status distribution:', statusCounts);
-    console.log('Ongoing vs Completed distribution:', ongoingCounts);
     
     // Show some examples of ongoing vs completed calls
     const ongoingExamples = mergedCalls.filter(call => call.isOngoing).slice(0, 3);
@@ -2950,14 +2944,31 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     const skip = (page - 1) * limit;
     const pagedCalls = mergedCalls.slice(skip, skip + limit);
 
-    console.log('Pagination calculation:');
-    console.log('- Skip:', skip);
-    console.log('- Skip + Limit:', skip + limit);
-    console.log('- Paged calls length:', pagedCalls.length);
-    console.log('- Total Pages:', totalPages);
-    console.log('- Current Page:', page);
 
-    console.log('=== END DEBUG ===');
+    // Calculate totals from all mergedCalls (before pagination)
+    const totals = mergedCalls.reduce((acc, call) => {
+      // Add duration for all calls (including ongoing ones)
+      if (call.duration > 0) {
+        acc.totalDuration += call.duration;
+      }
+      
+      // Count connected calls (completed calls with duration > 0 or status indicating connection)
+      if ((call.status === 'completed' || call.leadStatus === 'connected') && call.duration > 0) {
+        acc.totalConnected += 1;
+      }
+      // Count missed calls
+      else if (call.status === 'missed' || call.isMissed) {
+        acc.totalMissed += 1;
+      }
+      
+      return acc;
+    }, {
+      totalConnected: 0,
+      totalMissed: 0,
+      totalDuration: 0
+    });
+
+    console.log('Campaign totals calculated:', totals);
 
     return res.json({
       success: true,
@@ -2966,6 +2977,12 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         _id: campaign._id,
         name: campaign.name,
         detailsCount: totalDetails
+      },
+      totals: {
+        totalItems: totalDetails,
+        totalConnected: totals.totalConnected,
+        totalMissed: totals.totalMissed,
+        totalDuration: totals.totalDuration
       },
       pagination: {
         currentPage: page,
