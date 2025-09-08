@@ -2791,6 +2791,17 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           fallbackNumber
         ) || null;
 
+        // Compute transcript count from metadata if available
+        const transcriptCount = (() => {
+          try {
+            const userCnt = Number(log?.metadata?.userTranscriptCount) || 0;
+            const aiCnt = Number(log?.metadata?.aiResponseCount) || 0;
+            return userCnt + aiCnt;
+          } catch (_) {
+            return 0;
+          }
+        })();
+
         // This is either a completed call or an ongoing call
         mergedCalls.push({
           documentId: uniqueId,
@@ -2803,6 +2814,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           duration: computedDuration,
           isMissed: false,
           isOngoing: isOngoingFlag,
+          transcriptCount,
           whatsappMessageSent: log.metadata?.customParams?.whatsappMessageSent || 
                             log.metadata?.whatsappMessageSent || 
                             detail.whatsappMessageSent || 
@@ -2871,6 +2883,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         status: fallbackStatus,
         duration: computedDetailDuration,
         isMissed: isMissedDerived,
+        transcriptCount: 0,
         whatsappMessageSent: detail.whatsappMessageSent || false,
         whatsappRequested: detail.whatsappRequested || false  
       });
