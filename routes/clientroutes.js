@@ -1873,6 +1873,89 @@ router.delete('/groups/:groupId/contacts/:contactId', extractClientId, async (re
   }
 });
 
+// Normalize phone number helper used in multiple routes
+function normalizePhoneNumber(phone) {
+  if (!phone || typeof phone !== 'string') return '';
+  return phone.replace(/\D/g, '').replace(/^0+/, '');
+}
+
+// POST: Update contact status within groups linked to a campaign by phone
+// Body: { campaignId, phone, status }
+// NOTE: This route must be declared AFTER extractClientId middleware definition.
+router.post('/groups/mark-contact-status', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { campaignId, phone, status } = req.body;
+
+    const allowed = ['default', 'interested', 'maybe', 'not interested'];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status value' });
+    }
+
+    if (!campaignId || !phone) {
+      return res.status(400).json({ error: 'campaignId and phone are required' });
+    }
+
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    if (!Array.isArray(campaign.groupIds) || campaign.groupIds.length === 0) {
+      return res.status(400).json({ error: 'Campaign has no groups' });
+    }
+
+    const normalizedTarget = normalizePhoneNumber(String(phone));
+    if (!normalizedTarget) {
+      return res.status(400).json({ error: 'Invalid phone' });
+    }
+
+    // Load groups for this client and campaign
+    const groups = await Group.find({ _id: { $in: campaign.groupIds }, clientId: req.clientId });
+
+    let updated = false;
+    for (const group of groups) {
+      if (!Array.isArray(group.contacts)) continue;
+      for (const contact of group.contacts) {
+        const normalized = normalizePhoneNumber(String(contact && contact.phone));
+        if (normalized && normalized === normalizedTarget) {
+          contact.status = status;
+          updated = true;
+          break;
+        }
+      }
+      if (updated) {
+        await group.save();
+        break;
+      }
+    }
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Contact not found in campaign groups' });
+    }
+
+    // Also update the status in campaign.contacts if present
+    let campaignUpdated = false;
+    if (Array.isArray(campaign.contacts) && campaign.contacts.length > 0) {
+      for (const c of campaign.contacts) {
+        const norm = normalizePhoneNumber(String(c && c.phone));
+        if (norm && norm === normalizedTarget) {
+          c.status = status;
+          campaignUpdated = true;
+          break;
+        }
+      }
+      if (campaignUpdated) {
+        await campaign.save();
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error marking contact status:', err);
+    return res.status(500).json({ error: 'Failed to mark contact status' });
+  }
+});
+
 // ==================== CAMPAIGNS API ====================
 
 // Get all campaigns for client
@@ -2618,16 +2701,12 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    console.log('Campaign found:', campaign.name);
-
     // 1. Get all campaign details (uniqueIds)
     const details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
     const totalDetails = details.length;
 
-    console.log('Total details in campaign:', totalDetails);
 
     if (totalDetails === 0) {
-      console.log('No details found, returning empty response');
       return res.json({
         success: true,
         data: [],
@@ -2638,7 +2717,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
 
     // 2. Get all uniqueIds
     const allUniqueIds = details.map(d => d.uniqueId).filter(Boolean);
-    console.log('All uniqueIds:', allUniqueIds.length);
 
     // 3. Find CallLogs for these uniqueIds
     let logs = await CallLog.find({
@@ -2652,7 +2730,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       }).sort({ createdAt: -1 }).lean();
     }
 
-    console.log('CallLogs found:', logs.length);
 
     // 4. Also check for ongoing calls (calls that started but haven't completed)
     let ongoingCalls = await CallLog.find({
@@ -2677,17 +2754,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       }).sort({ createdAt: -1 }).lean();
     }
 
-    console.log('Ongoing calls found:', ongoingCalls.length);
-    
-    // Debug: Log some ongoing call details
-    if (ongoingCalls.length > 0) {
-      console.log('Sample ongoing call:', {
-        uniqueId: ongoingCalls[0]?.metadata?.customParams?.uniqueid,
-        isActive: ongoingCalls[0]?.isActive,
-        leadStatus: ongoingCalls[0]?.leadStatus,
-        status: ongoingCalls[0]?.status
-      });
-    }
 
     // Helper: compute robust duration by querying all logs for a uniqueId
     async function getDurationByUniqueId(uid) {
@@ -2747,12 +2813,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       if (uid && !uniqueIdToLog.has(uid)) {
         // Mark this as an ongoing call
         const ongoingLog = { ...log, isOngoing: true };
-        console.log(`Marking call ${uid} as ongoing:`, {
-          isActive: ongoingLog.isActive,
-          leadStatus: ongoingLog.leadStatus,
-          status: ongoingLog.status,
-          duration: ongoingLog.duration
-        });
         uniqueIdToLog.set(uid, ongoingLog);
       }
     }
@@ -2814,6 +2874,17 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           fallbackNumber
         ) || null;
 
+        // Compute transcript count from metadata if available
+        const transcriptCount = (() => {
+          try {
+            const userCnt = Number(log?.metadata?.userTranscriptCount) || 0;
+            const aiCnt = Number(log?.metadata?.aiResponseCount) || 0;
+            return userCnt + aiCnt;
+          } catch (_) {
+            return 0;
+          }
+        })();
+
         // This is either a completed call or an ongoing call
         mergedCalls.push({
           documentId: uniqueId,
@@ -2826,6 +2897,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           duration: computedDuration,
           isMissed: false,
           isOngoing: isOngoingFlag,
+          transcriptCount,
           whatsappMessageSent: log.metadata?.customParams?.whatsappMessageSent || 
                             log.metadata?.whatsappMessageSent || 
                             detail.whatsappMessageSent || 
@@ -2836,8 +2908,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
                             false 
         });
         
-        // Debug: Log status assignment
-        console.log(`Call ${uniqueId}: isOngoing=${isOngoingFlag}, status=${callStatus}, leadStatus=${log.leadStatus}, isActive=${log.isActive}, duration=${log.duration}, logStatus=${log.status}`);
         
         processedUniqueIds.add(uniqueId);
       }
@@ -2896,6 +2966,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         status: fallbackStatus,
         duration: computedDetailDuration,
         isMissed: isMissedDerived,
+        transcriptCount: 0,
         whatsappMessageSent: detail.whatsappMessageSent || false,
         whatsappRequested: detail.whatsappRequested || false  
       });
@@ -2909,8 +2980,6 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       return timeB - timeA;
     });
 
-    console.log('Merged calls total:', mergedCalls.length);
-    console.log('Duplicates removed:', totalDetails - mergedCalls.length);
     
     // Debug: Log status distribution
     const statusCounts = {};
@@ -2919,30 +2988,8 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       statusCounts[call.status] = (statusCounts[call.status] || 0) + 1;
       ongoingCounts[call.isOngoing] = (ongoingCounts[call.isOngoing] || 0) + 1;
     });
-    console.log('Status distribution:', statusCounts);
-    console.log('Ongoing vs Completed distribution:', ongoingCounts);
     
-    // Show some examples of ongoing vs completed calls
-    const ongoingExamples = mergedCalls.filter(call => call.isOngoing).slice(0, 3);
-    const completedExamples = mergedCalls.filter(call => !call.isOngoing).slice(0, 3);
     
-    if (ongoingExamples.length > 0) {
-      console.log('Sample ongoing calls:', ongoingExamples.map(call => ({
-        uniqueId: call.documentId,
-        status: call.status,
-        leadStatus: call.leadStatus,
-        duration: call.duration
-      })));
-    }
-    
-    if (completedExamples.length > 0) {
-      console.log('Sample completed calls:', completedExamples.map(call => ({
-        uniqueId: call.documentId,
-        status: call.status,
-        leadStatus: call.leadStatus,
-        duration: call.duration
-      })));
-    }
 
     // 7. Apply pagination
     const totalItems = mergedCalls.length;
@@ -2950,14 +2997,30 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     const skip = (page - 1) * limit;
     const pagedCalls = mergedCalls.slice(skip, skip + limit);
 
-    console.log('Pagination calculation:');
-    console.log('- Skip:', skip);
-    console.log('- Skip + Limit:', skip + limit);
-    console.log('- Paged calls length:', pagedCalls.length);
-    console.log('- Total Pages:', totalPages);
-    console.log('- Current Page:', page);
 
-    console.log('=== END DEBUG ===');
+    // Calculate totals from all mergedCalls (before pagination)
+    const totals = mergedCalls.reduce((acc, call) => {
+      // Add duration for all calls (including ongoing ones)
+      if (call.duration > 0) {
+        acc.totalDuration += call.duration;
+      }
+      
+      // Count connected calls (completed calls with duration > 0 or status indicating connection)
+      if ((call.status === 'completed' || call.leadStatus === 'connected') && call.duration > 0) {
+        acc.totalConnected += 1;
+      }
+      // Count missed calls
+      else if (call.status === 'missed' || call.isMissed) {
+        acc.totalMissed += 1;
+      }
+      
+      return acc;
+    }, {
+      totalConnected: 0,
+      totalMissed: 0,
+      totalDuration: 0
+    });
+
 
     return res.json({
       success: true,
@@ -2966,6 +3029,12 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         _id: campaign._id,
         name: campaign.name,
         detailsCount: totalDetails
+      },
+      totals: {
+        totalItems: totalDetails,
+        totalConnected: totals.totalConnected,
+        totalMissed: totals.totalMissed,
+        totalDuration: totals.totalDuration
       },
       pagination: {
         currentPage: page,
@@ -3285,8 +3354,9 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
 // Make single call
 router.post('/calls/single', extractClientId, async (req, res) => {
   try {
-    const { contact, agentId, apiKey, campaignId } = req.body || {};
-    if (!contact || !contact.phone) {
+    const { contact, agentId, apiKey, campaignId, custom_field } = req.body || {};
+    console.log(req.body)
+    if (!contact ) {
       return res.status(400).json({ success: false, error: 'Missing contact.phone' });
     }
     if (!agentId) {
@@ -3338,7 +3408,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
         const accessKey = agent.accessKey;
         const callerId = agent.callerId;
         // Normalize then ensure leading '0'
-        const normalizedDigits = String(contact.phone || '').replace(/[^\d]/g, '');
+        const normalizedDigits = String(contact || '').replace(/[^\d]/g, '');
         const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
         console.log(accessToken, accessKey, callerId, callTo)
 
@@ -3366,6 +3436,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
           appid: 2,
           call_to: callTo,
           caller_id: callerId,
+          custom_field
         };
         console.log(dialUrl, dialBody, sanToken)
         const dialResp = await axios.post(

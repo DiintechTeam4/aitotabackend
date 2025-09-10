@@ -18,6 +18,11 @@ const contactSchema = new mongoose.Schema({
     lowercase: true,
     default: ''
   },
+  status: {
+    type: String,
+    enum: ['default', 'interested', 'maybe', 'not interested'],
+    default: 'default'
+  },
   createdAt: {
     type: Date,
     default: Date.now
