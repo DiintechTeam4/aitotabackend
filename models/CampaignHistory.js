@@ -6,9 +6,67 @@ const CampaignHistorySchema = new mongoose.Schema({
         ref: 'Campaign',
         required: true
     },
-    contacts:{
-        
+    runId: {
+        type: String,
+        required: true,
+        unique: true
+    },
+    instanceNumber: {
+        type: Number,
+        required: true
+    },
+    startTime: {
+        type: String,
+        required: true
+    },
+    endTime: {
+        type: String,
+        required: true
+    },
+    runTime: {
+        hours: { type: Number, default: 0 },
+        minutes: { type: Number, default: 0 },
+        seconds: { type: Number, default: 0 }
+    },
+    status: {
+        type: String,
+        enum: ['running', 'completed', 'failed', 'paused'],
+        default: 'running'
+    },
+    contacts: [{
+        documentId: String,
+        number: String,
+        name: String,
+        leadStatus: String,
+        contactId: String,
+        time: String,
+        status: String,
+        duration: Number,
+        transcriptCount: Number,
+        whatsappMessageSent: Boolean,
+        whatsappRequested: Boolean
+    }],
+    stats: {
+        totalContacts: { type: Number, default: 0 },
+        successfulCalls: { type: Number, default: 0 },
+        failedCalls: { type: Number, default: 0 },
+        totalCallDuration: { type: Number, default: 0 },
+        averageCallDuration: { type: Number, default: 0 }
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now
+    },
+    updatedAt: {
+        type: Date,
+        default: Date.now
     }
+});
+
+// Update the updatedAt field before saving
+CampaignHistorySchema.pre('save', function(next) {
+    this.updatedAt = new Date();
+    next();
 });
 
 module.exports = mongoose.model('CampaignHistory', CampaignHistorySchema);

@@ -462,6 +462,13 @@ const registerClient = async (req, res) => {
         console.error('Failed to initialize default credits for client:', e.message);
       }
 
+      // Telegram alert: client created by admin
+      try {
+        const { sendTelegramAlert } = require('../utils/telegramAlert');
+        const when = new Date().toLocaleString('en-IN', { hour12: false });
+        await sendTelegramAlert(`Client "${client.name || client.businessName || client.email}" is joined on ${when}.`);
+      } catch (_) {}
+
       // Generate token
       const token = generateToken(client._id);
 
@@ -516,6 +523,13 @@ const registerClient = async (req, res) => {
       } catch (e) {
         console.error('Failed to initialize default credits for client:', e.message);
       }
+
+      // Telegram alert: client self-registered
+      try {
+        const { sendTelegramAlert } = require('../utils/telegramAlert');
+        const when = new Date().toLocaleString('en-IN', { hour12: false });
+        await sendTelegramAlert(`Client "${client.name || client.businessName || client.email}" is joined on ${when}.`);
+      } catch (_) {}
 
       // Generate token
       const token = generateToken(client._id);
