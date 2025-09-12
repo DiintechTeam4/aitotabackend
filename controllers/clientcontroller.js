@@ -58,6 +58,36 @@ const getUploadUrlCustomization = async (req, res) => {
   }
 };
 
+// Knowledge Base: Generate presigned URL for uploading agent KB files
+const getUploadUrlKnowledgeBase = async (req, res) => {
+  try {
+    const { fileName, fileType } = req.query;
+    if (!fileName || !fileType) {
+      return res.status(400).json({ success: false, message: 'fileName and fileType are required' });
+    }
+    const key = `agentKnowledgeBase/${Date.now()}_${fileName}`;
+    const url = await putobject(key, fileType);
+    res.json({ success: true, url, key });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Generic: Generate presigned GET URL for a given S3 key
+const getFileUrlByKey = async (req, res) => {
+  try {
+    const { key } = req.query;
+    if (!key || typeof key !== 'string') {
+      return res.status(400).json({ success: false, message: 'key is required' });
+    }
+    const url = await getobject(key);
+    // Redirect to the signed URL so browsers can open/download directly
+    return res.redirect(url);
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 const getClientProfile = async (req, res) => {
   try {
     const clientId = req.user.id;
@@ -1065,6 +1095,8 @@ module.exports = {
   getUploadUrl,
   getUploadUrlMyBusiness,
   getUploadUrlCustomization,
+  getUploadUrlKnowledgeBase,
+  getFileUrlByKey,
   loginClient, 
   googleLogin,
   registerClient,
