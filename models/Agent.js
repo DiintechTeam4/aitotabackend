@@ -118,7 +118,6 @@ const agentSchema = new mongoose.Schema({
       sub: [{ type: String }],
     },
   ],
-
   // Audio storage - Store as base64 string instead of Buffer
   audioFile: { type: String }, // File path (legacy support)
   audioBytes: {
