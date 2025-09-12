@@ -297,7 +297,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
 
       // 1) Get API token (access token in header)
       const tokenUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken';
-      const tokenResp = await axios.post(tokenUrl, { access_key: accessKey }, { headers: { Accesstoken: accessToken } });
+      const tokenResp = await axios.post(tokenUrl, { access_key: accessKey }, { headers: { Accesstoken: accessToken }, timeout: 8000 });
       const sanToken = tokenResp?.data?.Apitoken;
       if (!sanToken) {
         throw new Error('SANPBX_TOKEN_FAILED');
@@ -306,7 +306,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       // 2) Dial call (apitoken in header)
       const dialUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall';
       const dialBody = { appid: 2, call_to: callTo, caller_id: callerId, custom_field: { uniqueid: uniqueId, name: contact.name , contact_name: contact.name, sanToken } };
-      const response = await axios.post(dialUrl, dialBody, { headers: { Apitoken: sanToken } });
+      const response = await axios.post(dialUrl, dialBody, { headers: { Apitoken: sanToken }, timeout: 10000 });
 
       return {
         success: true,
@@ -367,7 +367,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
     };
 
   } catch (error) {
-    console.error('Error making single call:', error);
+    console.error('Error making single call:', error?.response?.status, error?.response?.data || error?.message);
     
     return {
       success: false,

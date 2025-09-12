@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey } = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -234,6 +234,10 @@ router.post('/google-login',verifyGoogleToken, googleLogin);
 router.post('/register',verifyAdminTokenOnlyForRegister, registerClient);
 
 router.get('/profile', authMiddleware, getClientProfile);
+
+// Knowledge Base uploads and file access
+router.get('/upload-url-knowledge-base', getUploadUrlKnowledgeBase);
+router.get('/file-url', getFileUrlByKey);
 
 // Create new agent with multiple starting messages and default selection
 router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) => {
@@ -486,7 +490,103 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
     });
 
     await historyDoc.save();
-    // Clear transient details after persisting history
+
+    // After completion: fetch all merged calls for this run in batches of 50 and save into CampaignHistory (contacts array)
+    try {
+      const finalRunId = historyDoc.runId;
+      // Take a snapshot of uniqueIds for this run from the in-memory campaign we already loaded
+      let runDetails = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
+      if (finalRunId) {
+        runDetails = runDetails.filter((d) => d && d.runId === finalRunId);
+      }
+      const allUniqueIds = runDetails.map((d) => d && d.uniqueId).filter(Boolean);
+
+      // Helper to compute a robust duration like merged-calls
+      const getDurationByUniqueId = async (uid) => {
+        try {
+          if (!uid) return 0;
+          let logsForUid = await CallLog.find({
+            'metadata.customParams.uniqueid': uid,
+            ...(req.clientId ? { clientId: req.clientId } : {})
+          }).sort({ createdAt: 1 }).lean();
+          if (!logsForUid || logsForUid.length === 0) {
+            logsForUid = await CallLog.find({ 'metadata.customParams.uniqueid': uid }).sort({ createdAt: 1 }).lean();
+          }
+          if (!logsForUid || logsForUid.length === 0) return 0;
+          const maxExplicit = logsForUid.reduce((m, l) => {
+            const d = typeof l.duration === 'number' ? l.duration : 0;
+            return Math.max(m, d);
+          }, 0);
+          const first = logsForUid[0];
+          const last = logsForUid[logsForUid.length - 1];
+          const startMs = first?.createdAt ? new Date(first.createdAt).getTime() : 0;
+          const endCandidate = last?.metadata?.callEndTime || last?.updatedAt || last?.time || last?.createdAt;
+          const endMs = endCandidate ? new Date(endCandidate).getTime() : 0;
+          const derived = Math.max(0, Math.round((endMs - startMs) / 1000));
+          const best = Math.max(maxExplicit, derived);
+          return Number.isFinite(best) ? best : 0;
+        } catch {
+          return 0;
+        }
+      };
+
+      // Page through 50 at a time
+      for (let i = 0; i < allUniqueIds.length; i += 50) {
+        const slice = allUniqueIds.slice(i, i + 50);
+        if (slice.length === 0) break;
+
+        // Load logs for slice (most recent first)
+        let logs = await CallLog.find({
+          clientId: req.clientId,
+          'metadata.customParams.uniqueid': { $in: slice }
+        }).sort({ createdAt: -1 }).lean();
+        if (!logs || logs.length === 0) {
+          logs = await CallLog.find({ 'metadata.customParams.uniqueid': { $in: slice } }).sort({ createdAt: -1 }).lean();
+        }
+
+        // Map by uniqueId latest log
+        const latestByUid = new Map();
+        for (const log of logs) {
+          const uid = log?.metadata?.customParams?.uniqueid;
+          if (!uid) continue;
+          if (!latestByUid.has(uid)) latestByUid.set(uid, log);
+        }
+
+        // Build contacts for this page preserving the order of runDetails slice
+        const pageContacts = [];
+        for (const detail of runDetails.filter(d => slice.includes(d.uniqueId))) {
+          const uid = detail.uniqueId;
+          const log = latestByUid.get(uid) || null;
+          const number = log?.mobile || '';
+          const name = log?.metadata?.customParams?.name || '';
+          const leadStatus = log?.leadStatus || '';
+          const status = (log?.metadata?.isActive === true) ? 'ongoing' : (detail.status || 'completed');
+          const duration = await getDurationByUniqueId(uid);
+          pageContacts.push({
+            documentId: uid,
+            number,
+            name,
+            leadStatus,
+            contactId: detail.contactId || '',
+            time: detail.time || '',
+            status,
+            duration
+          });
+        }
+
+        if (pageContacts.length > 0) {
+          await CampaignHistory.updateOne(
+            { _id: historyDoc._id },
+            { $push: { contacts: { $each: pageContacts } } }
+          );
+        }
+      }
+    } catch (e) {
+      console.error('❌ Error snapshotting merged calls into history:', e?.message);
+    }
+
+    // Clear transient details after snapshotting (success path only)
+    // NOTE: Per requirement, do NOT clear details until the above snapshot finishes
     try {
       await Campaign.updateOne({ _id: id, clientId: req.clientId }, { $set: { details: [] } });
     } catch (e) {
@@ -3443,8 +3543,34 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
       return res.status(404).json({ success: false, error: 'Agent not found' });
     }
     const apiKey = agent.X_API_KEY || '';
-    if (!apiKey) {
+    if (!apiKey && String(agent?.serviceProvider || '').toLowerCase() !== 'sanpbx' && String(agent?.serviceProvider || '').toLowerCase() !== 'snapbx') {
       return res.status(400).json({ success: false, error: 'No API key found on agent' });
+    }
+
+    // Preflight for SANPBX/SNAPBX provider to surface errors early
+    try {
+      const provider = String(agent?.serviceProvider || '').toLowerCase();
+      if (provider === 'sanpbx' || provider === 'snapbx') {
+        const accessToken = agent?.accessToken;
+        const accessKey = agent?.accessKey;
+        const callerId = agent?.callerId;
+        if (!accessToken || !accessKey || !callerId) {
+          return res.status(400).json({ success: false, error: 'SANPBX_MISSING_FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
+        }
+        const axios = require('axios');
+        await axios.post(
+          'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken',
+          { access_key: accessKey },
+          { headers: { Accesstoken: accessToken }, timeout: 8000 }
+        ).then(r => {
+          if (!r?.data?.Apitoken) {
+            throw new Error('SANPBX_TOKEN_FAILED');
+          }
+        });
+      }
+    } catch (e) {
+      const isTimeout = (e?.code === 'ETIMEDOUT') || /timeout/i.test(e?.message || '');
+      return res.status(502).json({ success: false, error: 'PROVIDER_UNREACHABLE', message: isTimeout ? 'Dialer gateway timeout while generating token' : (e?.response?.data?.message || e?.message || 'Dialer preflight failed') });
     }
 
     // Update campaign status
