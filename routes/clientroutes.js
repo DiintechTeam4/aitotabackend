@@ -6,6 +6,7 @@ const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , veri
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
+const { generateClientApiKey, getActiveClientApiKey, copyActiveClientApiKey } = require("../controllers/clientApiKeyController")
 const { getobject } = require('../utils/s3')
 const Agent = require('../models/Agent');
 const VoiceService = require('../services/voiceService');
@@ -208,6 +209,15 @@ router.get("/providers", (req, res) => {
     res.status(500).json({ error: "Failed to fetch provider configurations" })
   }
 })
+
+// Generate per-client API key used for public API access
+router.post("/api-key/generate", extractClientId, generateClientApiKey)
+
+// Get current active API key metadata for the client
+router.get("/api-key", extractClientId, getActiveClientApiKey)
+
+// Copy full active API key (server decrypts and returns temporarily)
+router.post("/api-key/copy", extractClientId, copyActiveClientApiKey)
 
 router.get('/upload-url',getUploadUrl);
 
@@ -476,8 +486,14 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
     });
 
     await historyDoc.save();
+    // Clear transient details after persisting history
+    try {
+      await Campaign.updateOne({ _id: id, clientId: req.clientId }, { $set: { details: [] } });
+    } catch (e) {
+      console.warn('Warning: failed clearing campaign details after save-run:', e?.message);
+    }
 
-    return res.json({ success: true, data: historyDoc });
+    return res.json({ success: true, data: historyDoc, clearedDetails: true });
   } catch (error) {
     console.error('Error saving campaign run:', error);
     if (error && error.code === 11000) {
@@ -2053,10 +2069,12 @@ router.post('/groups/mark-contact-status', verifyClientOrAdminAndExtractClientId
 // Get all campaigns for client
 router.get('/campaigns', extractClientId, async (req, res) => {
   try {
+    // Exclude heavy/sensitive fields from list response
     const campaigns = await Campaign.find({ clientId: req.clientId })
+      .select('-details -uniqueIds -contacts')
       .populate('groupIds', 'name description')
       .sort({ createdAt: -1 });
-    
+
     res.json({ success: true, data: campaigns });
   } catch (error) {
     console.error('Error fetching campaigns:', error);
@@ -2115,7 +2133,8 @@ router.post('/campaigns', extractClientId, async (req, res) => {
 router.get('/campaigns/:id', extractClientId, async (req, res) => {
   try {
     const campaign = await Campaign.findOne({ _id: req.params.id, clientId: req.clientId })
-      .populate('groupIds', 'name description contacts');
+      .populate('groupIds', 'name description contacts')
+      .select('-details -uniqueIds -contacts');
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found' });
     }
@@ -3861,6 +3880,13 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
       existingRun.stats = stats;
       await existingRun.save();
 
+      // Clear transient details after persisting history
+      try {
+        await Campaign.updateOne({ _id: id, clientId: req.clientId }, { $set: { details: [] } });
+      } catch (e) {
+        console.warn('Warning: failed clearing campaign details after save-run:', e?.message);
+      }
+
       return res.json({
         success: true,
         data: {
@@ -3868,7 +3894,7 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
           instanceNumber: existingRun.instanceNumber,
           stats
         }
-      });
+      , clearedDetails: true });
     }
 
     // Create new campaign history entry
