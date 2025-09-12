@@ -232,6 +232,13 @@ const getClients = async (req, res) => {
         console.error('Failed to initialize default credits for client:', e.message);
       }
   
+      // Telegram alert: client created by admin panel
+      try {
+        const { sendTelegramAlert } = require('../utils/telegramAlert');
+        const when = new Date().toLocaleString('en-IN', { hour12: false });
+        await sendTelegramAlert(`Client "${client.name || client.businessName || client.email}" is joined on ${when}.`);
+      } catch (_) {}
+
       // Remove password from response
       const clientResponse = client.toObject();
       delete clientResponse.password;

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
 const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent } = require('../controllers/clientcontroller');
-  const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
+const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
@@ -11,6 +11,7 @@ const Agent = require('../models/Agent');
 const VoiceService = require('../services/voiceService');
 const voiceService = new VoiceService();
 const CallLog = require('../models/CallLog');
+const WaChat = require('../models/WaChat');
 const AgentSettings = require('../models/AgentSettings');
 const Group = require('../models/Group');
 const Campaign = require('../models/Campaign');
@@ -20,6 +21,7 @@ const Contacts = require('../models/Contacts');
 const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
 const User = require('../models/User'); // Added User model import
+const CampaignHistory = require('../models/CampaignHistory');
 const { generateBusinessHash } = require('../utils/hashUtils');
 const crypto = require('crypto');
 const PaytmConfig = require('../config/paytm');
@@ -411,6 +413,96 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
   }
 });
 
+// Save campaign run data to history
+router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { startTime, endTime, runTime, callLogs, runId } = req.body || {};
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const contacts = Array.isArray(callLogs) ? callLogs : [];
+    const toNum = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const isSuccess = (c) => (String(c.status || '').toLowerCase() === 'completed') || (String(c.leadStatus || '').toLowerCase() === 'connected');
+    const isFailed = (c) => ['missed', 'not_connected', 'failed'].includes(String(c.status || '').toLowerCase());
+
+    const totalContacts = contacts.length;
+    const successfulCalls = contacts.reduce((acc, c) => acc + (isSuccess(c) ? 1 : 0), 0);
+    const failedCalls = contacts.reduce((acc, c) => acc + (isFailed(c) ? 1 : 0), 0);
+    const totalCallDuration = contacts.reduce((acc, c) => acc + toNum(c.duration), 0);
+    const averageCallDuration = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
+
+    const existingCount = await CampaignHistory.countDocuments({ campaignId: id });
+    const instanceNumber = existingCount + 1;
+
+    const historyDoc = new CampaignHistory({
+      campaignId: id,
+      runId: runId || `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      instanceNumber,
+      startTime: startTime || '00:00:00',
+      endTime: endTime || '00:00:00',
+      runTime: {
+        hours: toNum(runTime && runTime.hours),
+        minutes: toNum(runTime && runTime.minutes),
+        seconds: toNum(runTime && runTime.seconds)
+      },
+      status: 'completed',
+      contacts: contacts.map(c => ({
+        documentId: c.documentId || c._id || '',
+        number: c.number || c.mobile || '',
+        name: c.name || c.contactName || '',
+        leadStatus: c.leadStatus || '',
+        contactId: c.contactId || '',
+        time: c.time || '',
+        status: c.status || '',
+        duration: toNum(c.duration),
+        transcriptCount: toNum(c.transcriptCount),
+        whatsappMessageSent: Boolean(c.whatsappMessageSent),
+        whatsappRequested: Boolean(c.whatsappRequested)
+      })),
+      stats: {
+        totalContacts,
+        successfulCalls,
+        failedCalls,
+        totalCallDuration,
+        averageCallDuration
+      }
+    });
+
+    await historyDoc.save();
+
+    return res.json({ success: true, data: historyDoc });
+  } catch (error) {
+    console.error('Error saving campaign run:', error);
+    if (error && error.code === 11000) {
+      return res.status(409).json({ success: false, error: 'Duplicate runId' });
+    }
+    return res.status(500).json({ success: false, error: 'Failed to save campaign run' });
+  }
+});
+
+// Fetch campaign run history
+router.get('/campaigns/:id/history', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId }).select('_id');
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const history = await CampaignHistory.find({ campaignId: id }).sort({ createdAt: -1 }).lean();
+    return res.json({ success: true, data: history });
+  } catch (error) {
+    console.error('Error fetching campaign history:', error);
+    return res.status(500).json({ success: false, error: 'Failed to fetch campaign history' });
+  }
+});
 // Update agent with multiple starting messages and default selection
 router.put('/agents/:id', extractClientId, async (req, res) => {
   try {
@@ -2206,7 +2298,7 @@ router.get('/campaigns/:id/groups', extractClientId, async (req, res) => {
 // Add unique ID to campaign (for tracking campaign calls)
 router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
   try {
-    const { uniqueId } = req.body;
+    const { uniqueId, runId } = req.body;
     
     if (!uniqueId || typeof uniqueId !== 'string') {
       return res.status(400).json({ error: 'uniqueId is required and must be a string' });
@@ -2228,7 +2320,8 @@ router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
         time: new Date(),
         status: 'ringing', // Start with 'ringing' status
         lastStatusUpdate: new Date(),
-        callDuration: 0
+        callDuration: 0,
+        ...(runId ? { runId } : {})
       };
       
       if (!Array.isArray(campaign.details)) {
@@ -2694,6 +2787,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     const { id } = req.params;
     const page = parseInt(req.query.page || '1', 10);
     const limit = parseInt(req.query.limit || '50', 10);
+    const runId = req.query.runId || null;
 
     const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
     if (!campaign) {
@@ -2702,7 +2796,13 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     }
 
     // 1. Get all campaign details (uniqueIds)
-    const details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
+    let details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
+    
+    // Filter by runId if provided
+    if (runId) {
+      details = details.filter(detail => detail.runId === runId);
+    }
+    
     const totalDetails = details.length;
 
 
@@ -3332,8 +3432,17 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
     campaign.isRunning = true;
     await campaign.save();
 
-    // Start calling process in background
-    startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, req.clientId);
+    // Start calling process in background with a runId for this instance
+    const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, req.clientId, runId);
+
+    // Telegram alert for campaign start
+    // try {
+    //   const { sendTelegramAlert } = require('../utils/telegramAlert');
+    //   const when = new Date().toLocaleString('en-IN', { hour12: false });
+    //   const client = await Client.findById(req.clientId).lean();
+    //   await sendTelegramAlert(`${campaign.name} campaign running from ${client?.name || client?.businessName} client`);
+    // } catch (_) {}
 
     res.json({
       success: true,
@@ -3341,7 +3450,8 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
       data: {
         campaignId: campaign._id,
         totalContacts: campaign.contacts.length,
-        status: 'started'
+        status: 'started',
+        runId
       }
     });
 
@@ -3351,13 +3461,77 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
   }
 });
 
+// Save or update WhatsApp chat history for a phone number (upsert by clientId+phoneNumber)
+router.post('/wa/chat/save', extractClientId, async (req, res) => {
+  try {
+    const { phoneNumber, contactName, messages } = req.body || {};
+    if (!phoneNumber || !Array.isArray(messages)) {
+      return res.status(400).json({ success: false, error: 'phoneNumber and messages[] are required' });
+    }
+
+    // Normalize incoming messages to schema
+    const normalized = messages.map((m) => ({
+      messageId: m.messageId || m.id || undefined,
+      direction: m.direction || (m.side === 'right' ? 'sent' : 'received'),
+      text: m.text || m.message || '',
+      status: m.status || '',
+      type: m.type || 'text',
+      timestamp: m.timestamp ? new Date(m.timestamp) : (m.time ? new Date(m.time) : new Date()),
+    }));
+
+    // Upsert document. Only append messages that are new
+    const existing = await WaChat.findOne({ clientId: req.clientId, phoneNumber });
+    if (!existing) {
+      const doc = await WaChat.create({
+        clientId: req.clientId,
+        phoneNumber,
+        contactName: contactName || '',
+        messages: normalized,
+        lastSyncedAt: new Date(),
+      });
+      return res.json({ success: true, created: true, count: doc.messages.length });
+    }
+
+    // Build sets for dedupe: prefer messageId if present, else use timestamp+text heuristic
+    const existingIdSet = new Set(
+      (existing.messages || [])
+        .map((m) => m.messageId)
+        .filter(Boolean)
+    );
+    const existingComposite = new Set(
+      (existing.messages || []).map((m) => `${new Date(m.timestamp).getTime()}|${(m.text || '').slice(0, 50)}`)
+    );
+    const toAppend = normalized.filter((m) => {
+      if (m.messageId && existingIdSet.has(m.messageId)) return false;
+      const comp = `${new Date(m.timestamp).getTime()}|${(m.text || '').slice(0, 50)}`;
+      if (existingComposite.has(comp)) return false;
+      return true;
+    });
+
+    if (contactName && !existing.contactName) existing.contactName = contactName;
+    if (toAppend.length > 0) {
+      existing.messages.push(...toAppend);
+      existing.lastSyncedAt = new Date();
+      await existing.save();
+    }
+
+    return res.json({ success: true, created: false, appended: toAppend.length, total: existing.messages.length });
+  } catch (e) {
+    console.error('Error saving WA chat:', e);
+    return res.status(500).json({ success: false, error: 'Failed to save chat' });
+  }
+});
+
 // Make single call
 router.post('/calls/single', extractClientId, async (req, res) => {
   try {
     const { contact, agentId, apiKey, campaignId, custom_field } = req.body || {};
-    console.log(req.body)
-    if (!contact ) {
-      return res.status(400).json({ success: false, error: 'Missing contact.phone' });
+    // Allow either a plain phone string or a contact object { phone, name }
+    const contactPhoneRaw =
+      typeof contact === 'string' ? contact : (contact && (contact.phone || contact.number));
+    const contactNameRaw = typeof contact === 'object' && contact ? (contact.name || contact.fullName || '') : '';
+    if (!contactPhoneRaw) {
+      return res.status(400).json({ success: false, error: 'Missing contact (phone)' });
     }
     if (!agentId) {
       return res.status(400).json({ success: false, error: 'Missing agentId' });
@@ -3398,19 +3572,20 @@ router.post('/calls/single', extractClientId, async (req, res) => {
         return p;
       } catch (_) { return String(raw || ''); }
     };
+    const normalizedDigits = normalizePhone(contactPhoneRaw);
+    if (!normalizedDigits) {
+      return res.status(400).json({ success: false, error: 'Invalid phone' });
+    }
 
     // Branch: SANPBX provider flow
     if (String(agent.serviceProvider).toLowerCase() === 'snapbx' || String(agent.serviceProvider).toLowerCase() === 'sanpbx') {
-      console.log("hii")
       try {
         const axios = require('axios');
         const accessToken = agent.accessToken;
         const accessKey = agent.accessKey;
         const callerId = agent.callerId;
-        // Normalize then ensure leading '0'
-        const normalizedDigits = String(contact || '').replace(/[^\d]/g, '');
+        // Ensure leading '0' if provider expects local dialing
         const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
-        console.log(accessToken, accessKey, callerId, callTo)
 
         if (!accessToken || !accessKey || !callerId) {
           return res.status(400).json({ success: false, error: 'SANPBX_MISSING_FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
@@ -3423,8 +3598,6 @@ router.post('/calls/single', extractClientId, async (req, res) => {
           { access_key: accessKey },
           { headers: { Accesstoken: accessToken } }
         );
-        console.log(tokenUrl)
-        console.log(tokenResp)
         const sanToken = tokenResp?.data?.Apitoken;
         if (!sanToken) {
           return res.status(502).json({ success: false, error: 'SANPBX_TOKEN_FAILED', data: tokenResp?.data || null });
@@ -3438,7 +3611,6 @@ router.post('/calls/single', extractClientId, async (req, res) => {
           caller_id: callerId,
           custom_field
         };
-        console.log(dialUrl, dialBody, sanToken)
         const dialResp = await axios.post(
           dialUrl,
           dialBody,
@@ -3469,8 +3641,8 @@ router.post('/calls/single', extractClientId, async (req, res) => {
 
     const result = await makeSingleCall(
       {
-        name: contact.name || 'Unknown',
-        phone: contact.phone,
+        name: contactNameRaw || 'Unknown',
+        phone: normalizedDigits,
       },
       agentId,
       resolvedApiKey,
@@ -3572,19 +3744,180 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
     // Get calling progress from memory
     const callingProgress = getCampaignCallingProgress(campaign._id.toString());
 
+    // Derive whether all calls are finalized (no ringing/ongoing; all initiated have status 'completed')
+    // Note: progress.completedCalls counts initiated calls, not finalized, so do NOT use it here
+    const details = Array.isArray(campaign.details) ? campaign.details : [];
+    const initiatedCount = details.length;
+    const hasActive = details.some(d => d && (d.status === 'ringing' || d.status === 'ongoing'));
+    const completedCount = details.filter(d => d && d.status === 'completed').length;
+    const allCallsFinalized = initiatedCount > 0 && !hasActive && completedCount === initiatedCount;
+
+    // Compute latestRunId and inferred runStartTime from details/progress
+    let latestRunId = null;
+    let runStartTime = null;
+    if (initiatedCount > 0) {
+      // Pick the most recent detail by time/lastStatusUpdate
+      const sorted = [...details].sort((a, b) => {
+        const at = new Date(a.lastStatusUpdate || a.time || 0).getTime();
+        const bt = new Date(b.lastStatusUpdate || b.time || 0).getTime();
+        return bt - at;
+      });
+      const mostRecent = sorted[0];
+      latestRunId = mostRecent && mostRecent.runId ? mostRecent.runId : null;
+      if (latestRunId) {
+        const sameRun = details.filter(d => d && d.runId === latestRunId);
+        // Earliest time in that run
+        const earliest = sameRun.reduce((min, d) => {
+          const t = new Date(d.time || d.lastStatusUpdate || Date.now()).getTime();
+          return Math.min(min, t);
+        }, Number.POSITIVE_INFINITY);
+        if (isFinite(earliest)) {
+          runStartTime = new Date(earliest);
+        }
+      }
+    }
+    if (!runStartTime && callingProgress && callingProgress.startTime) {
+      runStartTime = new Date(callingProgress.startTime);
+    }
+
+    // Compute UI isActive: true if there are active calls, or in-memory says running;
+    // false if nothing initiated or all finalized
+    let isActive = false;
+    if (callingProgress && callingProgress.isRunning === true) {
+      isActive = true;
+    } else if (hasActive) {
+      isActive = true;
+    } else if (initiatedCount === 0) {
+      isActive = false;
+    } else {
+      isActive = !allCallsFinalized;
+    }
+
     res.json({
       success: true,
       data: {
         campaignId: campaign._id,
+        // Keep legacy isRunning; expose computed isActive for the UI
         isRunning: campaign.isRunning,
+        isActive,
         totalContacts: campaign.contacts.length,
-        progress: callingProgress
+        progress: callingProgress,
+        allCallsFinalized,
+        latestRunId,
+        runStartTime
       }
     });
 
   } catch (error) {
     console.error('Error getting campaign calling status:', error);
     res.status(500).json({ success: false, error: 'Failed to get campaign calling status' });
+  }
+});
+
+// Save campaign run data to history
+router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { startTime, endTime, runTime, callLogs, runId: providedRunId } = req.body;
+
+    // Verify campaign exists
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    // If a run with the same runId already exists, update it (idempotent save)
+    let existingRun = null;
+    let runId = providedRunId || null;
+    if (runId) {
+      existingRun = await CampaignHistory.findOne({ campaignId: id, runId });
+    }
+
+    // Get next instance number for new runs only
+    const existingRuns = await CampaignHistory.find({ campaignId: id }).sort({ instanceNumber: -1 });
+    const nextInstanceNumber = existingRuns.length > 0 ? existingRuns[0].instanceNumber + 1 : 1;
+
+    if (!runId) {
+      // Generate a new runId if none provided (fallback)
+      runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+
+    // Calculate stats from call logs
+    const stats = {
+      totalContacts: callLogs.length,
+      successfulCalls: callLogs.filter(call => call.status === 'completed' && call.duration > 0).length,
+      failedCalls: callLogs.filter(call => call.status === 'missed' || call.isMissed).length,
+      totalCallDuration: callLogs.reduce((sum, call) => sum + (call.duration || 0), 0),
+      averageCallDuration: callLogs.length > 0 ? Math.round(callLogs.reduce((sum, call) => sum + (call.duration || 0), 0) / callLogs.length) : 0
+    };
+
+    if (existingRun) {
+      // Update existing run (do not change instanceNumber)
+      existingRun.startTime = startTime;
+      existingRun.endTime = endTime;
+      existingRun.runTime = runTime;
+      existingRun.status = 'completed';
+      existingRun.contacts = callLogs;
+      existingRun.stats = stats;
+      await existingRun.save();
+
+      return res.json({
+        success: true,
+        data: {
+          runId,
+          instanceNumber: existingRun.instanceNumber,
+          stats
+        }
+      });
+    }
+
+    // Create new campaign history entry
+    const newRun = new CampaignHistory({
+      campaignId: id,
+      runId,
+      instanceNumber: nextInstanceNumber,
+      startTime,
+      endTime,
+      runTime,
+      status: 'completed',
+      contacts: callLogs,
+      stats
+    });
+
+    await newRun.save();
+
+    res.json({
+      success: true,
+      data: {
+        runId,
+        instanceNumber: nextInstanceNumber,
+        stats
+      }
+    });
+
+  } catch (error) {
+    console.error('Error saving campaign run:', error);
+    res.status(500).json({ success: false, error: 'Failed to save campaign run' });
+  }
+});
+
+// Get campaign history
+router.get('/campaigns/:id/history', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const history = await CampaignHistory.find({ campaignId: id })
+      .sort({ instanceNumber: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: history
+    });
+
+  } catch (error) {
+    console.error('Error fetching campaign history:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch campaign history' });
   }
 });
 

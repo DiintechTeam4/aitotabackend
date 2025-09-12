@@ -318,9 +318,13 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       };
     }
 
-    // Sanitize name: avoid sending number as name
+    // Sanitize name and phone
     const rawName = (contact && contact.name) ? String(contact.name).trim() : '';
     const digitsOnly = (str) => (str || '').replace(/\D/g, '');
+    const sanitizedPhone = digitsOnly(contact?.phone || '');
+    if (!sanitizedPhone) {
+      throw new Error('Missing phone');
+    }
     const isNumberLike = rawName && digitsOnly(rawName).length >= 6 && (
       !isNaN(Number(digitsOnly(rawName)))
     );
@@ -329,7 +333,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
 
     const callPayload = {
       transaction_id: "CTI_BOT_DIAL",
-      phone_num: contact.phone.replace(/[^\d]/g, ""),
+      phone_num: sanitizedPhone,
       uniqueid: uniqueId,
       callerid: "168353225",
       uuid: clientId || "client-uuid-001",
@@ -378,7 +382,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
 /**
  * Start campaign calling process
  */
-async function startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, clientId) {
+async function startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, clientId, runId) {
   const campaignId = campaign._id.toString();
   
   // Initialize progress tracking
@@ -400,13 +404,13 @@ async function startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls
   
 
   // Process calls in background
-  processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress);
+  processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress, runId);
 }
 
 /**
  * Process campaign calls in background
  */
-async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress) {
+async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress, runId) {
   const campaignId = campaign._id.toString();
   
   try {
@@ -443,7 +447,8 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
             time: initiatedAt,
             status: 'ringing', // Start with 'ringing' status when call is initiated
             lastStatusUpdate: initiatedAt,
-            callDuration: 0
+            callDuration: 0,
+            ...(runId ? { runId } : {})
           };
           
           // Check if this uniqueId already exists to avoid duplicates
