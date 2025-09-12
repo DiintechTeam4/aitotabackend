@@ -486,8 +486,14 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
     });
 
     await historyDoc.save();
+    // Clear transient details after persisting history
+    try {
+      await Campaign.updateOne({ _id: id, clientId: req.clientId }, { $set: { details: [] } });
+    } catch (e) {
+      console.warn('Warning: failed clearing campaign details after save-run:', e?.message);
+    }
 
-    return res.json({ success: true, data: historyDoc });
+    return res.json({ success: true, data: historyDoc, clearedDetails: true });
   } catch (error) {
     console.error('Error saving campaign run:', error);
     if (error && error.code === 11000) {
@@ -3874,6 +3880,13 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
       existingRun.stats = stats;
       await existingRun.save();
 
+      // Clear transient details after persisting history
+      try {
+        await Campaign.updateOne({ _id: id, clientId: req.clientId }, { $set: { details: [] } });
+      } catch (e) {
+        console.warn('Warning: failed clearing campaign details after save-run:', e?.message);
+      }
+
       return res.json({
         success: true,
         data: {
@@ -3881,7 +3894,7 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
           instanceNumber: existingRun.instanceNumber,
           stats
         }
-      });
+      , clearedDetails: true });
     }
 
     // Create new campaign history entry
