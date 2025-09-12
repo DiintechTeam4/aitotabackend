@@ -556,6 +556,8 @@ const updateAgent = async (req, res) => {
       'contextMemory',
       'brandInfo',
       'startingMessages',
+      'knowledgeBase',
+      'depositions',
       'whatsappEnabled',
       'telegramEnabled',
       'emailEnabled',
