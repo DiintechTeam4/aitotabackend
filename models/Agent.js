@@ -110,7 +110,6 @@ const agentSchema = new mongoose.Schema({
       key: { type: String }, // Made optional to support new format
       name: { type: String },
       uploadedAt: { type: Date, default: Date.now },
-      
       // New format fields (from KnowledgeBase model)
       _id: { type: mongoose.Schema.Types.ObjectId },
       agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
