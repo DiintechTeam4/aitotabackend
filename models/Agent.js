@@ -102,12 +102,43 @@ const agentSchema = new mongoose.Schema({
   backgroundImage: { type: String }, // base64 image for background
   backgroundColor: { type: String }, // hex color string
 
-  // Knowledge Base: store S3 keys and optional titles
+  // Knowledge Base: reference to separate KnowledgeBase collection
+  // This field is kept for backward compatibility but will be populated from KnowledgeBase model
   knowledgeBase: [
     {
-      key: { type: String, required: true },
+      // Old format fields (for backward compatibility)
+      key: { type: String }, // Made optional to support new format
       name: { type: String },
       uploadedAt: { type: Date, default: Date.now },
+      
+      // New format fields (from KnowledgeBase model)
+      _id: { type: mongoose.Schema.Types.ObjectId },
+      agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
+      clientId: { type: String },
+      type: { 
+        type: String, 
+        enum: ['pdf', 'text', 'image', 'youtube', 'link', 'website'] 
+      },
+      title: { type: String },
+      description: { type: String },
+      content: {
+        s3Key: { type: String },
+        text: { type: String },
+        youtubeId: { type: String },
+        youtubeUrl: { type: String },
+        url: { type: String },
+        linkText: { type: String },
+      },
+      fileMetadata: {
+        originalName: { type: String },
+        fileSize: { type: Number },
+        mimeType: { type: String },
+        uploadedAt: { type: Date },
+      },
+      tags: [{ type: String }],
+      isActive: { type: Boolean, default: true },
+      createdAt: { type: Date },
+      updatedAt: { type: Date },
     },
   ],
 

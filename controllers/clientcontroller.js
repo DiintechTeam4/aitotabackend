@@ -3,6 +3,7 @@ const HumanAgent = require("../models/HumanAgent");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { getobject, putobject } = require("../utils/s3");
+const KnowledgeBase = require("../models/KnowledgeBase");
 const { OAuth2Client } = require("google-auth-library");
 const Profile = require("../models/Profile");
 
@@ -85,6 +86,306 @@ const getFileUrlByKey = async (req, res) => {
     return res.redirect(url);
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Knowledge Base CRUD operations
+
+// Create knowledge base item
+const createKnowledgeItem = async (req, res) => {
+  try {
+    const { agentId, type, title, description, content, tags } = req.body;
+    const clientId = req.user.id;
+
+    if (!agentId || !type || !title) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'agentId, type, and title are required' 
+      });
+    }
+
+    // Validate content based on type
+    let validatedContent = {};
+    switch (type) {
+      case 'pdf':
+        if (!content.s3Key) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'S3 key is required for PDF files' 
+          });
+        }
+        validatedContent = { s3Key: content.s3Key };
+        break;
+        
+      case 'text':
+        if (!content.text) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Text content is required' 
+          });
+        }
+        validatedContent = { text: content.text };
+        break;
+        
+      case 'image':
+        if (!content.imageKey) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'S3 key is required for images' 
+          });
+        }
+        validatedContent = { imageKey: content.imageKey };
+        break;
+        
+      case 'youtube':
+        if (!content.youtubeId && !content.youtubeUrl) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'YouTube ID or URL is required' 
+          });
+        }
+        validatedContent = { 
+          youtubeId: content.youtubeId,
+          youtubeUrl: content.youtubeUrl 
+        };
+        break;
+        
+      case 'link':
+        if (!content.url) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'URL is required for links' 
+          });
+        }
+        validatedContent = { 
+          url: content.url,
+          linkText: content.linkText || content.url
+        };
+        break;
+        
+      case 'website':
+        if (!content.url) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'URL is required for websites' 
+          });
+        }
+        validatedContent = { 
+          url: content.url
+        };
+        break;
+        
+      default:
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid content type' 
+        });
+    }
+
+    const knowledgeItem = new KnowledgeBase({
+      agentId,
+      clientId,
+      type,
+      title,
+      description,
+      content: validatedContent,
+      tags: tags || [],
+      fileMetadata: content.fileMetadata || {}
+    });
+
+    await knowledgeItem.save();
+
+    res.status(201).json({
+      success: true,
+      data: knowledgeItem,
+      message: 'Knowledge item created successfully'
+    });
+
+  } catch (error) {
+    console.error('Error creating knowledge item:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
+// Get knowledge base items for an agent
+const getKnowledgeItems = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { type } = req.query;
+    const clientId = req.user.id;
+
+    let query = { agentId, clientId, isActive: true };
+    if (type) {
+      query.type = type;
+    }
+
+    const knowledgeItems = await KnowledgeBase.find(query)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Generate URLs for items that need them
+    const itemsWithUrls = await Promise.all(
+      knowledgeItems.map(async (item) => {
+        const itemObj = item.toObject ? item.toObject() : item;
+        try {
+          itemObj.contentUrl = await getContentUrl(itemObj);
+        } catch (error) {
+          console.error('Error generating URL for item:', item._id, error);
+          itemObj.contentUrl = null;
+        }
+        return itemObj;
+      })
+    );
+
+    res.json({
+      success: true,
+      data: itemsWithUrls
+    });
+
+  } catch (error) {
+    console.error('Error fetching knowledge items:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
+// Update knowledge base item
+const updateKnowledgeItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description, content, tags } = req.body;
+    const clientId = req.user.id;
+
+    const knowledgeItem = await KnowledgeBase.findOne({ 
+      _id: id, 
+      clientId, 
+      isActive: true 
+    });
+
+    if (!knowledgeItem) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Knowledge item not found' 
+      });
+    }
+
+    // Update fields
+    if (title) knowledgeItem.title = title;
+    if (description !== undefined) knowledgeItem.description = description;
+    if (content) {
+      // Validate content based on type
+      let validatedContent = {};
+      switch (knowledgeItem.type) {
+        case 'pdf':
+          if (content.s3Key) validatedContent = { s3Key: content.s3Key };
+          break;
+        case 'text':
+          if (content.text) validatedContent = { text: content.text };
+          break;
+        case 'image':
+          if (content.imageKey) validatedContent = { imageKey: content.imageKey };
+          break;
+        case 'youtube':
+          validatedContent = { 
+            youtubeId: content.youtubeId || knowledgeItem.content.youtubeId,
+            youtubeUrl: content.youtubeUrl || knowledgeItem.content.youtubeUrl
+          };
+          break;
+        case 'link':
+          validatedContent = { 
+            url: content.url || knowledgeItem.content.url,
+            linkText: content.linkText || knowledgeItem.content.linkText
+          };
+          break;
+      }
+      if (Object.keys(validatedContent).length > 0) {
+        knowledgeItem.content = { ...knowledgeItem.content, ...validatedContent };
+      }
+    }
+    if (tags) knowledgeItem.tags = tags;
+
+    await knowledgeItem.save();
+
+    res.json({
+      success: true,
+      data: knowledgeItem,
+      message: 'Knowledge item updated successfully'
+    });
+
+  } catch (error) {
+    console.error('Error updating knowledge item:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
+// Delete knowledge base item
+const deleteKnowledgeItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const clientId = req.user.id;
+
+    const knowledgeItem = await KnowledgeBase.findOne({ 
+      _id: id, 
+      clientId, 
+      isActive: true 
+    });
+
+    if (!knowledgeItem) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Knowledge item not found' 
+      });
+    }
+
+    // Soft delete
+    knowledgeItem.isActive = false;
+    await knowledgeItem.save();
+
+    res.json({
+      success: true,
+      message: 'Knowledge item deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Error deleting knowledge item:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
+// Helper function to get content URL
+const getContentUrl = async (item) => {
+  switch (item.type) {
+    case 'pdf':
+    case 'image':
+      if (item.content.s3Key) {
+        try {
+          return await getobject(item.content.s3Key);
+        } catch (error) {
+          console.error('Error generating S3 URL:', error);
+          return null;
+        }
+      }
+      return null;
+      
+    case 'youtube':
+      return item.content.youtubeUrl || `https://www.youtube.com/watch?v=${item.content.youtubeId}`;
+      
+    case 'link':
+      return item.content.url;
+      
+    default:
+      return null;
   }
 };
 
@@ -1097,6 +1398,10 @@ module.exports = {
   getUploadUrlCustomization,
   getUploadUrlKnowledgeBase,
   getFileUrlByKey,
+  createKnowledgeItem,
+  getKnowledgeItems,
+  updateKnowledgeItem,
+  deleteKnowledgeItem,
   loginClient, 
   googleLogin,
   registerClient,

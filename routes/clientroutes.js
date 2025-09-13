@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem } = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -238,6 +238,12 @@ router.get('/profile', authMiddleware, getClientProfile);
 // Knowledge Base uploads and file access
 router.get('/upload-url-knowledge-base', getUploadUrlKnowledgeBase);
 router.get('/file-url', getFileUrlByKey);
+
+// Knowledge Base CRUD operations
+router.post('/knowledge-base', authMiddleware, createKnowledgeItem);
+router.get('/knowledge-base/:agentId', authMiddleware, getKnowledgeItems);
+router.put('/knowledge-base/:id', authMiddleware, updateKnowledgeItem);
+router.delete('/knowledge-base/:id', authMiddleware, deleteKnowledgeItem);
 
 // Create new agent with multiple starting messages and default selection
 router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) => {
