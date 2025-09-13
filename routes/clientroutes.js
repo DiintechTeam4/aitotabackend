@@ -444,19 +444,12 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    const contacts = Array.isArray(callLogs) ? callLogs : [];
     const toNum = (v) => {
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     };
     const isSuccess = (c) => (String(c.status || '').toLowerCase() === 'completed') || (String(c.leadStatus || '').toLowerCase() === 'connected');
     const isFailed = (c) => ['missed', 'not_connected', 'failed'].includes(String(c.status || '').toLowerCase());
-
-    const totalContacts = contacts.length;
-    const successfulCalls = contacts.reduce((acc, c) => acc + (isSuccess(c) ? 1 : 0), 0);
-    const failedCalls = contacts.reduce((acc, c) => acc + (isFailed(c) ? 1 : 0), 0);
-    const totalCallDuration = contacts.reduce((acc, c) => acc + toNum(c.duration), 0);
-    const averageCallDuration = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
 
     const existingCount = await CampaignHistory.countDocuments({ campaignId: id });
     const instanceNumber = existingCount + 1;
@@ -473,25 +466,13 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
         seconds: toNum(runTime && runTime.seconds)
       },
       status: 'completed',
-      contacts: contacts.map(c => ({
-        documentId: c.documentId || c._id || '',
-        number: c.number || c.mobile || '',
-        name: c.name || c.contactName || '',
-        leadStatus: c.leadStatus || '',
-        contactId: c.contactId || '',
-        time: c.time || '',
-        status: c.status || '',
-        duration: toNum(c.duration),
-        transcriptCount: toNum(c.transcriptCount),
-        whatsappMessageSent: Boolean(c.whatsappMessageSent),
-        whatsappRequested: Boolean(c.whatsappRequested)
-      })),
+      contacts: [], // Start with empty contacts array - will be populated by batch fetching
       stats: {
-        totalContacts,
-        successfulCalls,
-        failedCalls,
-        totalCallDuration,
-        averageCallDuration
+        totalContacts: 0,
+        successfulCalls: 0,
+        failedCalls: 0,
+        totalCallDuration: 0,
+        averageCallDuration: 0
       }
     });
 
@@ -563,21 +544,58 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
         for (const detail of runDetails.filter(d => slice.includes(d.uniqueId))) {
           const uid = detail.uniqueId;
           const log = latestByUid.get(uid) || null;
-          const number = log?.mobile || '';
-          const name = log?.metadata?.customParams?.name || '';
-          const leadStatus = log?.leadStatus || '';
-          const status = (log?.metadata?.isActive === true) ? 'ongoing' : (detail.status || 'completed');
+          
+          // Get contact details from campaign contacts first
+          let contactName = '';
+          let contactNumber = '';
+          let contactLeadStatus = '';
+          
+          if (detail.contactId) {
+            // Find the contact in campaign contacts
+            const campaignContact = campaign.contacts.find(c => {
+              const contactIdStr = c._id ? c._id.toString() : '';
+              const detailIdStr = detail.contactId ? detail.contactId.toString() : '';
+              return contactIdStr === detailIdStr;
+            });
+            
+            if (campaignContact) {
+              contactName = campaignContact.name || '';
+              contactNumber = campaignContact.phone || campaignContact.mobile || '';
+            }
+          }
+          
+          // Use log data if available, otherwise use campaign contact data
+          const number = log?.mobile || contactNumber;
+          const name = log?.metadata?.customParams?.name || contactName;
+          const leadStatus = log?.leadStatus || contactLeadStatus;
           const duration = await getDurationByUniqueId(uid);
-          pageContacts.push({
+          
+          // Determine status based on call data
+          let status;
+          if (log?.metadata?.isActive === true) {
+            status = 'ongoing';
+          } else if (log?.metadata?.isActive === false) {
+            status = 'completed';
+          } else {
+            // No call logs found
+            status = 'missed';
+            // For missed calls, set leadStatus to not_connected
+            contactLeadStatus = 'not_connected';
+          }
+
+          // Create contact object
+          const contact = {
             documentId: uid,
             number,
             name,
-            leadStatus,
+            leadStatus: leadStatus || contactLeadStatus,
             contactId: detail.contactId || '',
             time: detail.time || '',
             status,
             duration
-          });
+          };
+
+          pageContacts.push(contact);
         }
 
         if (pageContacts.length > 0) {
@@ -585,6 +603,100 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
             { _id: historyDoc._id },
             { $push: { contacts: { $each: pageContacts } } }
           );
+        }
+      }
+
+      // After all contacts are fetched, calculate final stats
+      const finalHistory = await CampaignHistory.findById(historyDoc._id).lean();
+      const allContacts = finalHistory?.contacts || [];
+      
+      const totalContacts = allContacts.length;
+      const successfulCalls = allContacts.reduce((acc, c) => acc + (isSuccess(c) ? 1 : 0), 0);
+      const failedCalls = allContacts.reduce((acc, c) => acc + (isFailed(c) ? 1 : 0), 0);
+      const totalCallDuration = allContacts.reduce((acc, c) => acc + toNum(c.duration), 0);
+      const averageCallDuration = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
+
+      // Update the stats
+      await CampaignHistory.updateOne(
+        { _id: historyDoc._id },
+        { 
+          $set: { 
+            stats: {
+              totalContacts,
+              successfulCalls,
+              failedCalls,
+              totalCallDuration,
+              averageCallDuration
+            }
+          } 
+        }
+      );
+
+      // Update CallLog entries to match the campaign history data
+      // This ensures the frontend call logs table shows the correct status
+      for (const contact of allContacts) {
+        try {
+          const uniqueId = contact.documentId;
+          if (uniqueId) {
+            // Get contact details from campaign contacts using contactId
+            let contactName = contact.name;
+            let contactNumber = contact.number;
+            
+            if (contact.contactId && (!contactName || !contactNumber)) {
+              // Find the contact in campaign contacts
+              const campaignContact = campaign.contacts.find(c => c._id && c._id.toString() === contact.contactId);
+              if (campaignContact) {
+                contactName = contactName || campaignContact.name || '';
+                contactNumber = contactNumber || campaignContact.phone || campaignContact.mobile || '';
+              }
+            }
+
+            // Find the CallLog entry for this uniqueId
+            const callLog = await CallLog.findOne({
+              'metadata.customParams.uniqueid': uniqueId,
+              clientId: req.clientId
+            });
+
+            if (callLog) {
+              // Update the CallLog with the correct status and leadStatus
+              await CallLog.updateOne(
+                { _id: callLog._id },
+                {
+                  $set: {
+                    mobile: contactNumber,
+                    leadStatus: contact.leadStatus || 'not_connected',
+                    duration: contact.duration,
+                    'metadata.isActive': false, // Mark as not active
+                    'metadata.callEndTime': new Date(),
+                    'metadata.customParams.name': contactName
+                  }
+                }
+              );
+            } else {
+              // Create a new CallLog entry if it doesn't exist
+              const newCallLog = new CallLog({
+                clientId: req.clientId,
+                campaignId: id,
+                mobile: contactNumber,
+                time: new Date(contact.time || new Date()),
+                duration: contact.duration,
+                leadStatus: contact.leadStatus || 'not_connected',
+                callType: 'outbound',
+                statusText: contact.status === 'missed' ? 'Not Accepted / Busy / Disconnected' : 'Completed',
+                metadata: {
+                  customParams: {
+                    uniqueid: uniqueId,
+                    name: contactName
+                  },
+                  isActive: false,
+                  callEndTime: new Date()
+                }
+              });
+              await newCallLog.save();
+            }
+          }
+        } catch (error) {
+          console.error(`Error updating CallLog for contact ${contact.documentId}:`, error);
         }
       }
     } catch (e) {
@@ -3965,99 +4077,6 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
   }
 });
 
-// Save campaign run data to history
-router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { startTime, endTime, runTime, callLogs, runId: providedRunId } = req.body;
-
-    // Verify campaign exists
-    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
-    }
-
-    // If a run with the same runId already exists, update it (idempotent save)
-    let existingRun = null;
-    let runId = providedRunId || null;
-    if (runId) {
-      existingRun = await CampaignHistory.findOne({ campaignId: id, runId });
-    }
-
-    // Get next instance number for new runs only
-    const existingRuns = await CampaignHistory.find({ campaignId: id }).sort({ instanceNumber: -1 });
-    const nextInstanceNumber = existingRuns.length > 0 ? existingRuns[0].instanceNumber + 1 : 1;
-
-    if (!runId) {
-      // Generate a new runId if none provided (fallback)
-      runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    }
-
-    // Calculate stats from call logs
-    const stats = {
-      totalContacts: callLogs.length,
-      successfulCalls: callLogs.filter(call => call.status === 'completed' && call.duration > 0).length,
-      failedCalls: callLogs.filter(call => call.status === 'missed' || call.isMissed).length,
-      totalCallDuration: callLogs.reduce((sum, call) => sum + (call.duration || 0), 0),
-      averageCallDuration: callLogs.length > 0 ? Math.round(callLogs.reduce((sum, call) => sum + (call.duration || 0), 0) / callLogs.length) : 0
-    };
-
-    if (existingRun) {
-      // Update existing run (do not change instanceNumber)
-      existingRun.startTime = startTime;
-      existingRun.endTime = endTime;
-      existingRun.runTime = runTime;
-      existingRun.status = 'completed';
-      existingRun.contacts = callLogs;
-      existingRun.stats = stats;
-      await existingRun.save();
-
-      // Clear transient details after persisting history
-      try {
-        await Campaign.updateOne({ _id: id, clientId: req.clientId }, { $set: { details: [] } });
-      } catch (e) {
-        console.warn('Warning: failed clearing campaign details after save-run:', e?.message);
-      }
-
-      return res.json({
-        success: true,
-        data: {
-          runId,
-          instanceNumber: existingRun.instanceNumber,
-          stats
-        }
-      , clearedDetails: true });
-    }
-
-    // Create new campaign history entry
-    const newRun = new CampaignHistory({
-      campaignId: id,
-      runId,
-      instanceNumber: nextInstanceNumber,
-      startTime,
-      endTime,
-      runTime,
-      status: 'completed',
-      contacts: callLogs,
-      stats
-    });
-
-    await newRun.save();
-
-    res.json({
-      success: true,
-      data: {
-        runId,
-        instanceNumber: nextInstanceNumber,
-        stats
-      }
-    });
-
-  } catch (error) {
-    console.error('Error saving campaign run:', error);
-    res.status(500).json({ success: false, error: 'Failed to save campaign run' });
-  }
-});
 
 // Get campaign history
 router.get('/campaigns/:id/history', extractClientId, async (req, res) => {
