@@ -36,6 +36,24 @@ const CallLogSchema = new mongoose.Schema({
     default: 'maybe' 
   },
   
+  // Disposition tracking based on agent's depositions
+  disposition: { 
+    type: String, 
+    default: null 
+  },
+  subDisposition: { 
+    type: String, 
+    default: null 
+  },
+  dispositionId: { 
+    type: String, 
+    default: null 
+  },
+  subDispositionId: { 
+    type: String, 
+    default: null 
+  },
+  
   // Telephony identifiers for call management
   streamSid: { type: String, index: true }, // For active call tracking
   callSid: { type: String, index: true },   // For call identification
@@ -61,7 +79,10 @@ const CallLogSchema = new mongoose.Schema({
     // Technical details
     sttProvider: { type: String, default: 'deepgram' },
     ttsProvider: { type: String, default: 'sarvam' },
-    llmProvider: { type: String, default: 'openai' }
+    llmProvider: { type: String, default: 'openai' },
+    // WhatsApp tracking (persist intent and send status)
+    whatsappRequested: { type: Boolean, default: false },
+    whatsappMessageSent: { type: Boolean, default: false }
   }
 }, {
   timestamps: true
