@@ -69,6 +69,17 @@ const knowledgeBaseSchema = new mongoose.Schema({
   
   // Status
   isActive: { type: Boolean, default: true },
+  // Embedding status
+  isEmbedded: { type: Boolean, default: false, index: true },
+  embeddedAt: { type: Date },
+  embedMeta: {
+    message: { type: String },
+    processedChunks: { type: Number },
+    totalBatches: { type: Number },
+    totalLatency: { type: String },
+    chunkingLatency: { type: String },
+    embeddingLatency: { type: String }
+  },
   
   // Timestamps
   createdAt: { type: Date, default: Date.now },
@@ -79,6 +90,7 @@ const knowledgeBaseSchema = new mongoose.Schema({
 knowledgeBaseSchema.index({ agentId: 1, type: 1 });
 knowledgeBaseSchema.index({ clientId: 1, type: 1 });
 knowledgeBaseSchema.index({ isActive: 1 });
+knowledgeBaseSchema.index({ isEmbedded: 1 });
 
 // Update the updatedAt field before saving
 knowledgeBaseSchema.pre("save", function (next) {

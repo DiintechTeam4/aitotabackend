@@ -3,6 +3,7 @@ const http = require('http');
 const Agent = require('./models/Agent');
 const User = require('./models/User');
 const Chat = require('./models/Chat');
+const SystemPrompt = require('./models/SystemPrompt');
 const VoiceService = require('./services/voiceService');
 const axios = require('axios');
 
@@ -662,46 +663,49 @@ class VoiceChatWebSocketServer {
     if (!connection || !connection.agent || !connection.user) return null;
 
     try {
-      // Get conversation history
-      const history = connection.user.getConversationHistory(connection.agent._id, 10);
-      
-      // Build messages array for OpenAI
-      const messages = [
-        { role: 'system', content: connection.agent.systemPrompt }
-      ];
-      
-      // Add conversation history
-      history.forEach(msg => {
-        if (msg.role !== 'system') {
-          messages.push({ role: msg.role, content: msg.content });
+      // Build combined system prompt: default SystemPrompt (if any) + agent.systemPrompt
+      let combinedSystemPrompt = connection.agent.systemPrompt || '';
+      try {
+        const defaultPrompt = await SystemPrompt.findOne({ isDefault: true });
+        if (defaultPrompt && defaultPrompt.promptText) {
+          combinedSystemPrompt = `${defaultPrompt.promptText}\n\n${combinedSystemPrompt}`.trim();
         }
-      });
-      
-      // Add current user message
-      messages.push({ role: 'user', content: userMessage });
-      
-      // Registration prompt disabled
-      this.sendLog(connectionId, 'info', 'Calling OpenAI with messages', { count: messages.length });
-      
-      // Call OpenAI API
-      const response = await axios.post(
-        'https://api.openai.com/v1/chat/completions',
-        { model: 'gpt-3.5-turbo', messages, max_tokens: 200, temperature: 0.7 },
-        { headers: { 'Authorization': `Bearer ${this.openaiApiKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+      } catch (_) {}
+
+      // Prepare request body for external RAG endpoint
+      const queryId = `query_${Date.now()}`;
+      const sessionId = connection.sessionId || `session_${Date.now()}`;
+      const body = {
+        query_id: queryId,
+        session_id: sessionId,
+        query: userMessage,
+        book_name: connection.agent && connection.agent._id ? String(connection.agent._id) : 'unknown',
+        chapter_name: '',
+        client_id: connection.clientId ? String(connection.clientId) : 'unknown',
+        system_prompt: combinedSystemPrompt || 'you are a helpful assistant',
+        llm: 'openai',
+        top_k: 5
+      };
+      console.log(body);
+      this.sendLog(connectionId, 'info', 'Calling RAG endpoint', { url: 'https://vectrize.ailisher.com/api/v1/rag/query', query_id: body.query_id });
+      const resp = await axios.post(
+        'https://vectrize.ailisher.com/api/v1/rag/query',
+        body,
+        { headers: { 'Content-Type': 'application/json' }, timeout: 20000 }
       );
-      
-      if (response.data?.choices?.[0]) {
-        const aiResponse = response.data.choices[0].message.content;
-        this.sendLog(connectionId, 'success', 'OpenAI responded', { textPreview: aiResponse.slice(0, 120) });
-        
-        return { text: aiResponse };
+
+      const llmResponse = resp?.data?.data?.llm_response;
+      if (llmResponse && typeof llmResponse === 'string') {
+        this.sendLog(connectionId, 'success', 'RAG responded', { textPreview: llmResponse.slice(0, 120) });
+        return { text: llmResponse };
       }
-      
-      this.sendLog(connectionId, 'warning', 'OpenAI returned no choices');
-      return null;
+      console.log(llmResponse);
+
+      this.sendLog(connectionId, 'warning', 'RAG returned no llm_response');
+      return { text: "I'm sorry, I couldn't find an answer to that." };
     } catch (error) {
-      console.error(`[OPENAI] Error generating response:`, error);
-      this.sendLog(connectionId, 'error', 'OpenAI error', { error: error.response?.data || error.message });
+      console.error('[RAG] Error generating response:', error.message);
+      this.sendLog(connectionId, 'error', 'RAG error', { error: error.response?.data || error.message });
       return { text: "I'm sorry, I'm having trouble processing your request right now." };
     }
   }

@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { getobject, putobject } = require("../utils/s3");
 const KnowledgeBase = require("../models/KnowledgeBase");
+const axios = require('axios');
 const { OAuth2Client } = require("google-auth-library");
 const Profile = require("../models/Profile");
 
@@ -118,13 +119,14 @@ const createKnowledgeItem = async (req, res) => {
         break;
         
       case 'text':
-        if (!content.text) {
+        // Enforce S3 storage for text as .txt
+        if (!content.s3Key) {
           return res.status(400).json({ 
             success: false, 
-            message: 'Text content is required' 
+            message: 'S3 key is required for text files' 
           });
         }
-        validatedContent = { text: content.text };
+        validatedContent = { s3Key: content.s3Key };
         break;
         
       case 'image':
@@ -210,6 +212,80 @@ const createKnowledgeItem = async (req, res) => {
   }
 };
 
+// Embed (process) a knowledge base document via external RAG API
+const embedKnowledgeItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const clientId = req.user.id;
+
+    const item = await KnowledgeBase.findOne({ _id: id, clientId, isActive: true });
+    if (!item) {
+      return res.status(404).json({ success: false, message: 'Knowledge item not found' });
+    }
+
+    // Only PDF and image types currently rely on S3; links/websites/youtube could also be supported if URL exists
+    let url = null;
+    if (item.type === 'pdf' || item.type === 'image') {
+      if (!item.content?.s3Key) {
+        return res.status(400).json({ success: false, message: 'Missing S3 key for this item' });
+      }
+      // Generate a temporary GET URL
+      try {
+        url = await getobject(item.content.s3Key);
+      } catch (e) {
+        return res.status(500).json({ success: false, message: 'Failed to generate file URL' });
+      }
+    } else if (item.type === 'text' || item.type === 'link' || item.type === 'website' || item.type === 'youtube') {
+      if (item.type === 'text') {
+        if (!item.content?.s3Key) {
+          return res.status(400).json({ success: false, message: 'Missing S3 key for this text item' });
+        }
+        try {
+          url = await getobject(item.content.s3Key);
+        } catch (e) {
+          return res.status(500).json({ success: false, message: 'Failed to generate file URL' });
+        }
+      } else {
+        url = item.content?.url || item.content?.youtubeUrl || null;
+      }
+      if (!url) {
+        return res.status(400).json({ success: false, message: 'No URL available to embed for this item' });
+      }
+    } else {
+      return res.status(400).json({ success: false, message: 'Embedding supported only for pdf/image/link/website/youtube' });
+    }
+
+    const payload = {
+      url,
+      book_name: String(item.agentId),
+      chapter_name: String(item._id),
+      client_id: String(clientId)
+    };
+
+    const ragUrl = 'https://vectrize.ailisher.com/api/v1/rag/process-document';
+    const resp = await axios.post(ragUrl, payload, { headers: { 'Content-Type': 'application/json' }, timeout: 30000 });
+
+    // Mark item as embedded with metadata
+    item.isEmbedded = true;
+    item.embeddedAt = new Date();
+    const meta = resp?.data?.data || {};
+    item.embedMeta = {
+      message: meta.message,
+      processedChunks: meta.processed_chunks,
+      totalBatches: meta.total_batches,
+      totalLatency: meta.total_latency,
+      chunkingLatency: meta.chunking_latency,
+      embeddingLatency: meta.embedding_latency
+    };
+    await item.save();
+
+    res.json({ success: true, data: resp.data, message: 'Embedding completed' });
+  } catch (error) {
+    console.error('Error embedding knowledge item:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to embed knowledge item' });
+  }
+};
+
 // Get knowledge base items for an agent
 const getKnowledgeItems = async (req, res) => {
   try {
@@ -285,7 +361,7 @@ const updateKnowledgeItem = async (req, res) => {
           if (content.s3Key) validatedContent = { s3Key: content.s3Key };
           break;
         case 'text':
-          if (content.text) validatedContent = { text: content.text };
+          if (content.s3Key) validatedContent = { s3Key: content.s3Key };
           break;
         case 'image':
           if (content.imageKey) validatedContent = { imageKey: content.imageKey };
@@ -1402,6 +1478,7 @@ module.exports = {
   getKnowledgeItems,
   updateKnowledgeItem,
   deleteKnowledgeItem,
+  embedKnowledgeItem,
   loginClient, 
   googleLogin,
   registerClient,

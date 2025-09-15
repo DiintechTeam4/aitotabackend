@@ -1,4 +1,5 @@
 const Admin = require("../models/Admin");
+const SystemPrompt = require("../models/SystemPrompt");
 const bcrypt=require("bcrypt");
 const jwt = require('jsonwebtoken');
 const Client = require("../models/Client");
@@ -618,3 +619,99 @@ const updateAgent = async (req, res) => {
 };
 
 module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent };
+// System Prompt Handlers
+module.exports.createSystemPrompt = async (req, res) => {
+  try {
+    const { title, promptText, isDefault, tags } = req.body;
+    if (!title || !promptText) {
+      return res.status(400).json({ success: false, message: 'title and promptText are required' });
+    }
+
+    if (isDefault) {
+      await SystemPrompt.updateMany({ isDefault: true }, { $set: { isDefault: false } });
+    }
+
+    const created = await SystemPrompt.create({
+      title,
+      promptText,
+      isDefault: !!isDefault,
+      tags: Array.isArray(tags) ? tags : [],
+      createdBy: req.user?.id || undefined,
+    });
+
+    res.status(201).json({ success: true, data: created });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.getSystemPrompts = async (_req, res) => {
+  try {
+    const items = await SystemPrompt.find().sort({ isDefault: -1, createdAt: -1 });
+    res.json({ success: true, data: items });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.setDefaultSystemPrompt = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ success: false, message: 'id is required' });
+
+    await SystemPrompt.updateMany({ isDefault: true }, { $set: { isDefault: false } });
+    const updated = await SystemPrompt.findByIdAndUpdate(id, { isDefault: true }, { new: true });
+    if (!updated) return res.status(404).json({ success: false, message: 'SystemPrompt not found' });
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.deleteSystemPrompt = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await SystemPrompt.findById(id);
+    if (!existing) return res.status(404).json({ success: false, message: 'SystemPrompt not found' });
+
+    await SystemPrompt.findByIdAndDelete(id);
+    // If it was default and others exist, set the newest as default automatically
+    if (existing.isDefault) {
+      const newest = await SystemPrompt.findOne().sort({ createdAt: -1 });
+      if (newest) {
+        await SystemPrompt.findByIdAndUpdate(newest._id, { isDefault: true });
+      }
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.updateSystemPrompt = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, promptText, isDefault, tags } = req.body;
+    if (!id) return res.status(400).json({ success: false, message: 'id is required' });
+
+    const update = {};
+    if (typeof title === 'string') update.title = title;
+    if (typeof promptText === 'string') update.promptText = promptText;
+    if (Array.isArray(tags)) update.tags = tags;
+
+    if (typeof isDefault === 'boolean') {
+      if (isDefault) {
+        await SystemPrompt.updateMany({ isDefault: true }, { $set: { isDefault: false } });
+        update.isDefault = true;
+      } else {
+        update.isDefault = false;
+      }
+    }
+
+    const updated = await SystemPrompt.findByIdAndUpdate(id, update, { new: true });
+    if (!updated) return res.status(404).json({ success: false, message: 'SystemPrompt not found' });
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

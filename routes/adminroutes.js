@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent } = require("../controllers/admincontroller");
+const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, createSystemPrompt, getSystemPrompts, setDefaultSystemPrompt, deleteSystemPrompt, updateSystemPrompt } = require("../controllers/admincontroller");
 const { verifyAdminToken } = require("../middlewares/authmiddleware");
 const planController = require("../controllers/planController");
 const creditController = require("../controllers/creditController");
@@ -21,6 +21,13 @@ router.put("/toggle-agent-status/:agentId", verifyAdminToken, toggleAgentStatus)
 router.post("/copy-agent", verifyAdminToken, copyAgent);
 router.delete("/delete-agent/:agentId", verifyAdminToken, deleteAgent);
 router.put("/update-agent/:agentId", verifyAdminToken, updateAgent);
+
+// System Prompts
+router.post('/system-prompts', verifyAdminToken, createSystemPrompt);
+router.get('/system-prompts', verifyAdminToken, getSystemPrompts);
+router.put('/system-prompts/:id/default', verifyAdminToken, setDefaultSystemPrompt);
+router.put('/system-prompts/:id', verifyAdminToken, updateSystemPrompt);
+router.delete('/system-prompts/:id', verifyAdminToken, deleteSystemPrompt);
 
 // Plan Management Routes
 router.post('/plans', verifyAdminToken, planController.createPlan);
