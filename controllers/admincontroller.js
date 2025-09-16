@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const Client = require("../models/Client");
 const Agent = require("../models/Agent");
 const { getobject } = require("../utils/s3");
+const DidNumber = require("../models/DidNumber");
 
 
 // Generate JWT Token for admin
@@ -343,6 +344,112 @@ const getClientToken = async (req, res) => {
   }
 };
 
+// DID Numbers CRUD and assignment
+const listDidNumbers = async (req, res) => {
+  try {
+    const { provider } = req.query;
+    const filter = {};
+    if (provider) {
+      filter.provider = provider;
+    }
+    const items = await DidNumber.find(filter).sort({ createdAt: -1 });
+    res.json({ success: true, data: items });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const createDidNumber = async (req, res) => {
+  try {
+    const { did, provider, callerId, notes } = req.body;
+    if (!did || !provider) {
+      return res.status(400).json({ success: false, message: 'did and provider are required' });
+    }
+    const exists = await DidNumber.findOne({ did });
+    if (exists) {
+      return res.status(409).json({ success: false, message: 'DID already exists' });
+    }
+    const finalCallerId = callerId && String(callerId).trim() !== '' ? callerId : DidNumber.deriveCallerIdFromDid(did);
+    const created = await DidNumber.create({ did, provider, callerId: finalCallerId, status: 'available', assignedAgent: null, assignedClient: null, notes });
+    res.status(201).json({ success: true, data: created });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const assignDidToAgent = async (req, res) => {
+  try {
+    const { did } = req.params;
+    const { agentId } = req.body;
+    if (!did || !agentId) {
+      return res.status(400).json({ success: false, message: 'did and agentId are required' });
+    }
+    const didDoc = await DidNumber.findOne({ did });
+    if (!didDoc) return res.status(404).json({ success: false, message: 'DID not found' });
+    const agent = await Agent.findById(agentId);
+    if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' });
+
+    // Update agent telephony fields for SANPBX/SNAPBX
+    const derivedCallerId = didDoc.callerId && didDoc.callerId.trim() !== ''
+      ? didDoc.callerId
+      : DidNumber.deriveCallerIdFromDid(didDoc.did);
+
+    // If DID is already assigned to another agent, unassign it from them first
+    if (didDoc.assignedAgent && String(didDoc.assignedAgent) !== String(agent._id)) {
+      await Agent.findByIdAndUpdate(didDoc.assignedAgent, {
+        $unset: { didNumber: '', callerId: '' },
+      });
+    }
+
+    // Also ensure no other agents still carry this DID (data hygiene)
+    await Agent.updateMany(
+      { didNumber: didDoc.did, _id: { $ne: agent._id } },
+      { $unset: { didNumber: '', callerId: '' } }
+    );
+
+    agent.serviceProvider = agent.serviceProvider || didDoc.provider;
+    agent.didNumber = didDoc.did;
+    agent.callerId = derivedCallerId;
+    // Preserve existing accessToken/accessKey; they may be configured elsewhere
+    await agent.save();
+
+    // Update DID assignment
+    didDoc.status = 'assigned';
+    didDoc.assignedAgent = agent._id;
+    didDoc.assignedClient = agent.clientId || null;
+    if (!didDoc.callerId) didDoc.callerId = derivedCallerId;
+    await didDoc.save();
+
+    res.json({ success: true, data: { did: didDoc, agent } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const unassignDid = async (req, res) => {
+  try {
+    const { did } = req.params;
+    const didDoc = await DidNumber.findOne({ did });
+    if (!didDoc) return res.status(404).json({ success: false, message: 'DID not found' });
+
+    // If linked to an agent, clear that agent's did/callerId
+    if (didDoc.assignedAgent) {
+      await Agent.findByIdAndUpdate(didDoc.assignedAgent, {
+        $unset: { didNumber: '', callerId: '' },
+      });
+    }
+
+    didDoc.status = 'available';
+    didDoc.assignedAgent = null;
+    didDoc.assignedClient = null;
+    await didDoc.save();
+
+    res.json({ success: true, data: didDoc });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // Approve client (set isApproved to true)
 const approveClient = async (req, res) => {
   try {
@@ -640,7 +747,7 @@ const updateAgent = async (req, res) => {
   }
 };
 
-module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent };
+module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, listDidNumbers, createDidNumber, assignDidToAgent, unassignDid };
 // System Prompt Handlers
 module.exports.createSystemPrompt = async (req, res) => {
   try {

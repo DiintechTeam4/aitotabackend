@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, createSystemPrompt, getSystemPrompts, setDefaultSystemPrompt, deleteSystemPrompt, updateSystemPrompt } = require("../controllers/admincontroller");
+const adminCtrl = require("../controllers/admincontroller");
 const { verifyAdminToken } = require("../middlewares/authmiddleware");
 const planController = require("../controllers/planController");
 const creditController = require("../controllers/creditController");
@@ -61,5 +62,11 @@ router.put('/coupons/:id', verifyAdminToken, couponController.updateCoupon);
 router.delete('/coupons/:id', verifyAdminToken, couponController.deleteCoupon);
 router.patch('/coupons/:id/toggle', verifyAdminToken, couponController.toggleCouponStatus);
 router.post('/coupons/validate', verifyAdminToken, couponController.validateCouponCode);
+
+// DID Numbers Management
+router.get('/did-numbers', verifyAdminToken, adminCtrl.listDidNumbers);
+router.post('/did-numbers', verifyAdminToken, adminCtrl.createDidNumber);
+router.post('/did-numbers/:did/assign', verifyAdminToken, adminCtrl.assignDidToAgent);
+router.post('/did-numbers/:did/unassign', verifyAdminToken, adminCtrl.unassignDid);
 
 module.exports = router;
