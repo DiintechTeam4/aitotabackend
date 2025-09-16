@@ -60,7 +60,7 @@ const campaignSchema = new mongoose.Schema({
   // Array to store campaign contacts (copied from groups but can be manipulated independently)
   contacts: [{
     _id: {type: mongoose.Schema.Types.ObjectId},
-    name: { type: String, required: true },
+    name: { type: String, required: false, default: '' },
     phone: { type: String, required: true },
     status: { type: String, enum: ['default', 'interested', 'maybe', 'not interested'], default: 'default' },
     email: { type: String, default: "" },

@@ -1847,13 +1847,13 @@ router.post('/sync/contacts', extractClientId, async (req, res) => {
       });
     }
 
-    // Validate each contact
+    // Validate each contact (require phone; name optional)
     for (let i = 0; i < contacts.length; i++) {
       const contact = contacts[i];
-      if (!contact.name || !contact.name.trim() || !contact.phone || !contact.phone.trim()) {
+      if (!contact || !contact.phone || !String(contact.phone).trim()) {
         return res.status(400).json({ 
           status: false, 
-          message: `Contact at index ${i}: name and phone are required` 
+          message: `Contact at index ${i}: phone is required` 
         });
       }
     }
@@ -1918,11 +1918,15 @@ router.post('/sync/contacts', extractClientId, async (req, res) => {
         }
 
         // Create new contact with cleaned phone and country code
+        const rawName = (contact.name || '').toString().trim();
+        const looksLikeNumber = /^\+?\d[\d\s-]*$/.test(rawName);
+        const safeName = (!rawName || looksLikeNumber) ? '' : rawName;
+
         const newContact = new Contacts({
-          name: contact.name.trim(),
+          name: safeName,
           phone: cleanPhone,
           countyCode: countryCode, // Save the country code
-          email: contact.email?.trim() || '',
+          email: contact.email?.toString().trim() || '',
           clientId
         });
 
@@ -1983,7 +1987,21 @@ router.post('/sync/contacts', extractClientId, async (req, res) => {
 // Get all groups for client
 router.get('/groups', extractClientId, async (req, res) => {
   try {
-    const groups = await Group.find({ clientId: req.clientId }).sort({ createdAt: -1 });
+    const groups = await Group.aggregate([
+      { $match: { clientId: req.clientId } },
+      { $sort: { createdAt: -1 } },
+      {
+        $project: {
+          name: 1,
+          category: 1,
+          description: 1,
+          clientId: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          contactsCount: { $size: { $ifNull: ["$contacts", []] } }
+        }
+      }
+    ]);
     res.json({ success: true, data: groups });
   } catch (error) {
     console.error('Error fetching groups:', error);
@@ -2178,6 +2196,17 @@ router.post('/groups/:id/contacts', extractClientId, async (req, res) => {
     group.contacts.push(contact);
     await group.save();
 
+    // Sync campaigns including this group (add contact's phone)
+    try {
+      await syncCampaignContactsForGroup({
+        clientId: req.clientId,
+        groupId: group._id,
+        phonesAdded: [contact.phone]
+      });
+    } catch (e) {
+      console.error('Campaign sync after add failed:', e);
+    }
+
     res.status(201).json({ 
       success: true, 
       data: contact,
@@ -2202,8 +2231,74 @@ router.delete('/groups/:groupId/contacts/:contactId', extractClientId, async (re
       return res.status(404).json({ error: 'Group not found' });
     }
 
+    // Find the contact slated for deletion
+    const contactToDelete = (Array.isArray(group.contacts) && group.contacts.find(c => c && c._id && c._id.toString() === contactId)) || null;
+
+    // Before deleting, store it in Contacts using the same normalization as /sync/contacts
+    if (contactToDelete && contactToDelete.phone) {
+      try {
+        let cleanPhone = String(contactToDelete.phone).trim().replace(/\s+/g, '');
+        let countryCode = '';
+        const countryCodes = ['+91', '+1', '+44', '+61', '+86', '+81', '+49', '+33', '+39', '+34', '+7', '+55', '+52', '+31', '+46', '+47', '+45', '+358', '+46', '+47', '+45', '+358'];
+
+        for (const code of countryCodes) {
+          if (cleanPhone.startsWith(code)) {
+            countryCode = code;
+            cleanPhone = cleanPhone.substring(code.length);
+            break;
+          }
+        }
+
+        if (!countryCode && cleanPhone.length === 10 && /^[2-9]\d{9}$/.test(cleanPhone)) {
+          countryCode = '+1';
+        }
+
+        if (!countryCode && cleanPhone.length === 11 && cleanPhone.startsWith('1')) {
+          countryCode = '+1';
+          cleanPhone = cleanPhone.substring(1);
+        }
+
+        if (cleanPhone.startsWith('0')) {
+          cleanPhone = cleanPhone.substring(1);
+        }
+
+        const exists = await Contacts.findOne({ clientId: req.clientId, phone: cleanPhone });
+        if (!exists) {
+          const rawName = (contactToDelete.name || '').toString().trim();
+          const looksLikeNumber = /^\+?\d[\d\s-]*$/.test(rawName);
+          const safeName = (!rawName || looksLikeNumber) ? '' : rawName;
+          const newContact = new Contacts({
+            name: safeName,
+            phone: cleanPhone,
+            countyCode: countryCode,
+            email: (contactToDelete.email || '').toString().trim(),
+            clientId: req.clientId
+          });
+          await newContact.save();
+        }
+      } catch (syncError) {
+        // Do not block deletion on sync failure
+        console.error('Failed to sync contact before deletion:', syncError);
+      }
+    }
+
+    // Proceed with deletion from group
+    const deleted = group.contacts.find(contact => contact._id.toString() === contactId);
     group.contacts = group.contacts.filter(contact => contact._id.toString() !== contactId);
     await group.save();
+
+    // Sync campaigns including this group for removed phone (if no other group has it)
+    try {
+      if (deleted && deleted.phone) {
+        await syncCampaignContactsForGroup({
+          clientId: req.clientId,
+          groupId: group._id,
+          phonesRemoved: [deleted.phone]
+        });
+      }
+    } catch (e) {
+      console.error('Campaign sync after delete failed:', e);
+    }
 
     res.json({ success: true, message: 'Contact deleted successfully' });
   } catch (error) {
@@ -2212,10 +2307,303 @@ router.delete('/groups/:groupId/contacts/:contactId', extractClientId, async (re
   }
 });
 
+// Bulk add contacts to a group in a single request
+// Body: { contacts: [{ name?: string, phone: string, email?: string }] }
+router.post('/groups/:groupId/contacts/bulk-add', extractClientId, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { contacts } = req.body || {};
+
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ success: false, error: 'contacts must be a non-empty array' });
+    }
+
+    // Soft cap to prevent excessively large payloads
+    if (contacts.length > 5000) {
+      return res.status(400).json({ success: false, error: 'Maximum 5000 contacts per request' });
+    }
+
+    const group = await Group.findOne({ _id: groupId, clientId: req.clientId });
+    if (!group) {
+      return res.status(404).json({ success: false, error: 'Group not found' });
+    }
+
+    // Build set of existing normalized phones in this group
+    const existingSet = new Set(
+      (Array.isArray(group.contacts) ? group.contacts : []).map(c => {
+        const raw = c && (c.normalizedPhone || c.phone) ? String(c.normalizedPhone || c.phone) : '';
+        return normalizePhoneNumber(raw);
+      }).filter(Boolean)
+    );
+
+    // Prepare new contacts
+    const toInsert = [];
+    const seenIncoming = new Set();
+
+    for (const c of contacts) {
+      if (!c || !c.phone || !String(c.phone).trim()) continue;
+
+      const inputPhone = String(c.phone).trim();
+      const normalized = normalizePhoneNumber(inputPhone);
+      if (!normalized) continue;
+
+      // Deduplicate within request and against existing group
+      if (existingSet.has(normalized) || seenIncoming.has(normalized)) continue;
+      seenIncoming.add(normalized);
+
+      const rawName = (c.name || '').toString().trim();
+      const looksLikeNumber = /^\+?\d[\d\s-]*$/.test(rawName);
+      const safeName = (!rawName || looksLikeNumber) ? '' : rawName;
+
+      const safeEmail = (c.email || '').toString().trim();
+
+      toInsert.push({
+        name: safeName,
+        phone: inputPhone,
+        normalizedPhone: normalized,
+        email: safeEmail,
+        createdAt: new Date()
+      });
+    }
+
+    if (toInsert.length === 0) {
+      return res.status(200).json({ success: true, message: 'No new contacts to add', added: 0, duplicates: contacts.length });
+    }
+
+    // Atomic push using $each
+    const updateResult = await Group.updateOne(
+      { _id: group._id, clientId: req.clientId },
+      { $push: { contacts: { $each: toInsert } } }
+    );
+
+    // Sync campaigns including this group for added phones
+    try {
+      await syncCampaignContactsForGroup({
+        clientId: req.clientId,
+        groupId: group._id,
+        phonesAdded: toInsert.map(c => c.phone)
+      });
+    } catch (e) {
+      console.error('Campaign sync after bulk-add failed:', e);
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: `Added ${toInsert.length} contact(s) to group`,
+      added: toInsert.length,
+      requested: contacts.length,
+      modifiedCount: updateResult && typeof updateResult.modifiedCount === 'number' ? updateResult.modifiedCount : undefined
+    });
+  } catch (error) {
+    console.error('Error bulk-adding contacts to group:', error);
+    return res.status(500).json({ success: false, error: 'Failed to bulk add contacts' });
+  }
+});
+
+// Bulk delete contacts from group (with pre-sync to Contacts)
+// Body: { contactIds: string[] }
+router.post('/groups/:groupId/contacts/bulk-delete', extractClientId, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { contactIds } = req.body || {};
+
+    if (!Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'contactIds must be a non-empty array' });
+    }
+
+    const group = await Group.findOne({ _id: groupId, clientId: req.clientId });
+    if (!group) {
+      return res.status(404).json({ success: false, error: 'Group not found' });
+    }
+
+    // Build set of string ids for quick lookup
+    const idsSet = new Set(contactIds.map(id => String(id)));
+    const contactsToRemove = (Array.isArray(group.contacts) ? group.contacts : []).filter(c => c && c._id && idsSet.has(String(c._id)));
+
+    // Pre-sync: normalize phones and upsert missing into Contacts in bulk
+    const toNormalize = [];
+    for (const c of contactsToRemove) {
+      if (c && c.phone) {
+        let cleanPhone = String(c.phone).trim().replace(/\s+/g, '');
+        let countryCode = '';
+        const countryCodes = ['+91', '+1', '+44', '+61', '+86', '+81', '+49', '+33', '+39', '+34', '+7', '+55', '+52', '+31', '+46', '+47', '+45', '+358', '+46', '+47', '+45', '+358'];
+        for (const code of countryCodes) {
+          if (cleanPhone.startsWith(code)) {
+            countryCode = code;
+            cleanPhone = cleanPhone.substring(code.length);
+            break;
+          }
+        }
+        if (!countryCode && cleanPhone.length === 10 && /^[2-9]\d{9}$/.test(cleanPhone)) {
+          countryCode = '+1';
+        }
+        if (!countryCode && cleanPhone.length === 11 && cleanPhone.startsWith('1')) {
+          countryCode = '+1';
+          cleanPhone = cleanPhone.substring(1);
+        }
+        if (cleanPhone.startsWith('0')) {
+          cleanPhone = cleanPhone.substring(1);
+        }
+        const rawName = (c.name || '').toString().trim();
+        const looksLikeNumber = /^\+?\d[\d\s-]*$/.test(rawName);
+        const safeName = (!rawName || looksLikeNumber) ? '' : rawName;
+        toNormalize.push({
+          name: safeName,
+          email: (c.email || '').toString().trim(),
+          phone: cleanPhone,
+          countyCode: countryCode
+        });
+      }
+    }
+
+    // Deduplicate by phone
+    const phoneSet = new Set(toNormalize.map(x => x.phone).filter(Boolean));
+    const uniquePhones = Array.from(phoneSet);
+
+    if (uniquePhones.length > 0) {
+      try {
+        const existing = await Contacts.find({ clientId: req.clientId, phone: { $in: uniquePhones } }, { phone: 1 }).lean();
+        const existingPhones = new Set((existing || []).map(e => String(e.phone)));
+        const toInsert = toNormalize
+          .filter(x => x.phone && !existingPhones.has(String(x.phone)))
+          .map(x => ({
+            name: x.name,
+            phone: x.phone,
+            countyCode: x.countyCode,
+            email: x.email,
+            clientId: req.clientId
+          }));
+
+        if (toInsert.length > 0) {
+          await Contacts.insertMany(toInsert, { ordered: false });
+        }
+      } catch (syncErr) {
+        // Log but do not block deletion
+        console.error('Bulk sync before deletion failed:', syncErr);
+      }
+    }
+
+    // Perform atomic bulk removal
+    const mongoose = require('mongoose');
+    const objectIds = contactIds
+      .map(id => (mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null))
+      .filter(Boolean);
+
+    // Pull by ObjectId matches
+    const updateResultObj = objectIds.length > 0
+      ? await Group.updateOne(
+          { _id: group._id, clientId: req.clientId },
+          { $pull: { contacts: { _id: { $in: objectIds } } } }
+        )
+      : { modifiedCount: 0 };
+
+    // Also attempt pull by raw string ids in case subdocument _id are stored as strings
+    const stringIds = contactIds.map(id => String(id));
+    const updateResultStr = stringIds.length > 0
+      ? await Group.updateOne(
+          { _id: group._id, clientId: req.clientId },
+          { $pull: { contacts: { _id: { $in: stringIds } } } }
+        )
+      : { modifiedCount: 0 };
+
+    // Reload counts for response
+    const updatedGroup = await Group.findById(group._id).select('contacts');
+    const remaining = Array.isArray(updatedGroup && updatedGroup.contacts) ? updatedGroup.contacts.length : 0;
+
+    // Sync campaigns for removed phones (compute from contactsToRemove)
+    try {
+      const removedPhones = contactsToRemove.map(c => c && c.phone).filter(Boolean);
+      if (removedPhones.length > 0) {
+        await syncCampaignContactsForGroup({
+          clientId: req.clientId,
+          groupId: group._id,
+          phonesRemoved: removedPhones
+        });
+      }
+    } catch (e) {
+      console.error('Campaign sync after bulk-delete failed:', e);
+    }
+
+    return res.json({
+      success: true,
+      message: 'Contacts deleted successfully',
+      deletedRequested: contactIds.length,
+      actuallyMatchedInGroup: contactsToRemove.length,
+      modifiedCountObjectId: updateResultObj && typeof updateResultObj.modifiedCount === 'number' ? updateResultObj.modifiedCount : undefined,
+      modifiedCountStringId: updateResultStr && typeof updateResultStr.modifiedCount === 'number' ? updateResultStr.modifiedCount : undefined,
+      remainingContactsInGroup: remaining
+    });
+  } catch (error) {
+    console.error('Error bulk-deleting contacts:', error);
+    return res.status(500).json({ success: false, error: 'Failed to bulk delete contacts' });
+  }
+});
+
 // Normalize phone number helper used in multiple routes
 function normalizePhoneNumber(phone) {
   if (!phone || typeof phone !== 'string') return '';
   return phone.replace(/\D/g, '').replace(/^0+/, '');
+}
+
+// Sync helper: ensure campaign.contacts reflects group contacts for campaigns containing the group
+async function syncCampaignContactsForGroup({ clientId, groupId, phonesAdded = [], phonesRemoved = [] }) {
+  try {
+    const campaigns = await Campaign.find({ clientId, groupIds: groupId });
+    if (!campaigns || campaigns.length === 0) return;
+
+    const normalizedAdded = Array.from(new Set(phonesAdded.map(p => normalizePhoneNumber(String(p || ''))).filter(Boolean)));
+    const normalizedRemoved = Array.from(new Set(phonesRemoved.map(p => normalizePhoneNumber(String(p || ''))).filter(Boolean)));
+
+    for (const campaign of campaigns) {
+      // Handle additions: push missing contacts based on normalized phone
+      if (normalizedAdded.length > 0) {
+        const existingPhones = new Set(
+          (campaign.contacts || []).map(c => normalizePhoneNumber(String(c && c.phone || ''))).filter(Boolean)
+        );
+
+        const toAdd = [];
+        for (const norm of normalizedAdded) {
+          if (!existingPhones.has(norm)) {
+            // We only have normalized phone; store as digits; name/email left empty
+            toAdd.push({ name: '', phone: norm, status: 'default', email: '', addedAt: new Date() });
+          }
+        }
+
+        if (toAdd.length > 0) {
+          await Campaign.updateOne(
+            { _id: campaign._id },
+            { $push: { contacts: { $each: toAdd } }, $set: { updatedAt: new Date() } }
+          );
+        }
+      }
+
+      // Handle removals: remove a phone only if it is not present in any other group of this campaign
+      if (normalizedRemoved.length > 0) {
+        if (Array.isArray(campaign.groupIds) && campaign.groupIds.length > 0) {
+          // Load all groups that feed this campaign
+          const groups = await Group.find({ _id: { $in: campaign.groupIds }, clientId });
+          const phonesStillPresent = new Set();
+          for (const g of groups) {
+            const contacts = Array.isArray(g && g.contacts) ? g.contacts : [];
+            for (const c of contacts) {
+              const np = normalizePhoneNumber(String(c && c.phone || ''));
+              if (np) phonesStillPresent.add(np);
+            }
+          }
+
+          const toRemove = normalizedRemoved.filter(p => !phonesStillPresent.has(p));
+          if (toRemove.length > 0) {
+            await Campaign.updateOne(
+              { _id: campaign._id },
+              { $pull: { contacts: { phone: { $in: toRemove } } }, $set: { updatedAt: new Date() } }
+            );
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Error syncing campaign contacts for group:', e);
+  }
 }
 
 // POST: Update contact status within groups linked to a campaign by phone
@@ -2501,6 +2889,9 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
     const { id, groupId } = req.params;
     let { startIndex, endIndex, replace, selectedIndices } = req.body;
 
+    // Ensure mongoose is available for ObjectId generation
+    const mongoose = require('mongoose');
+
     const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
     if (!campaign) {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
@@ -2562,9 +2953,12 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
       const phoneNorm = normalizePhoneNumber(contact.phone);
       if (!phoneNorm || existingPhones.has(phoneNorm)) continue;
       existingPhones.add(phoneNorm);
+      const rawName = contact.name && String(contact.name).trim() ? String(contact.name).trim() : '';
+      const looksLikeNumber = /^\+?\d[\d\s-]*$/.test(rawName);
+      const safeName = (!rawName || looksLikeNumber) ? '' : rawName;
       newContacts.push({
         _id: new mongoose.Types.ObjectId(),
-        name: contact.name && String(contact.name).trim() ? contact.name : (contact.phone || 'Contact'),
+        name: safeName,
         phone: contact.phone,
         email: contact.email || '',
         addedAt: new Date()
