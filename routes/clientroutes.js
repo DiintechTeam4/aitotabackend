@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
 const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem, embedKnowledgeItem } = require('../controllers/clientcontroller');
-const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken , verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
+const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken, verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
@@ -405,9 +405,20 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
         { $set: { isActive: false, updatedAt: new Date() } }
       )
     }
+
+    // Generate agentKey with actual agent ID (no encryption needed - it's already a hash)
+    const plainAgentKey = Agent.generateAgentKey(savedAgent._id);
+    savedAgent.agentKey = plainAgentKey;
+    await savedAgent.save();
+    console.log('🔑 Generated agentKey:', plainAgentKey);
+
     
     const responseAgent = savedAgent.toObject();
     delete responseAgent.audioBytes;
+
+     // Include the plain agentKey in response (only returned once during creation)
+     responseAgent.agentKey = plainAgentKey;
+
     res.status(201).json(responseAgent);
   } catch (error) {
     console.error('❌ Error creating agent:', error);
@@ -7058,6 +7069,53 @@ router.get('/payments/status/:orderId', verifyClientOrAdminAndExtractClientId, a
     });
   }
 });
+
+// Include the plain agentKey in response (only returned once during creation)
+responseAgent.agentKey = plainAgentKey;
+
+last // Get agent by agentKey
+router.get('/agent-by-key/:agentKey', verifyClientToken, async (req, res) => {
+  try {
+    const { agentKey } = req.params;
+    
+    if (!agentKey) {
+      return res.status(400).json({
+        success: false,
+        message: 'AgentKey is required'
+      });
+    }
+    
+    const result = await Agent.findByAgentKey(agentKey);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        data: {
+          agentId: result.agentId,
+          agentName: result.agent.agentName,
+          agentKey: result.agent.agentKey,
+          // Include other fields you might need
+          category: result.agent.category,
+          personality: result.agent.personality,
+          isActive: result.agent.isActive
+        }
+      });
+    } else {
+      res.status(404).json({
+        success: false,
+        message: result.message
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Get agent by key error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error finding agent: ' + error.message
+    });
+  }
+});
+
 
 module.exports = router;
 

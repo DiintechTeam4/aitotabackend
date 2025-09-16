@@ -503,6 +503,25 @@ const copyAgent = async (req, res) => {
       });
     }
 
+     // Helper to generate a unique 8-char hex agentKey
+     const generateUniqueAgentKey = async () => {
+      const hex = () => Math.random().toString(16).slice(2, 10).padEnd(8, '0').slice(0,8);
+      let key;
+      let exists = true;
+      // Try a few times to avoid rare collisions
+      for (let i = 0; i < 10; i++) {
+        key = hex();
+        const found = await Agent.findOne({ agentKey: key }).lean();
+        if (!found) { exists = false; break; }
+      }
+      if (exists) {
+        // Fallback: include time-based entropy
+        key = (Date.now().toString(16) + Math.random().toString(16).slice(2)).slice(0,8);
+      }
+      return key;
+    };
+
+
     // Create a copy of the agent with new client ID
     const agentCopy = {
       ...sourceAgent.toObject(),
@@ -517,6 +536,9 @@ const copyAgent = async (req, res) => {
     // Remove any fields that shouldn't be copied
     delete agentCopy._id;
     delete agentCopy.__v;
+
+     // Ensure a new unique agentKey
+     agentCopy.agentKey = await generateUniqueAgentKey();
 
     // Create the new agent
     const newAgent = await Agent.create(agentCopy);
