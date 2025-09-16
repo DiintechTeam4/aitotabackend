@@ -7070,10 +7070,7 @@ router.get('/payments/status/:orderId', verifyClientOrAdminAndExtractClientId, a
   }
 });
 
-// Include the plain agentKey in response (only returned once during creation)
-responseAgent.agentKey = plainAgentKey;
-
-last // Get agent by agentKey
+// Get agent by agentKey
 router.get('/agent-by-key/:agentKey', verifyClientToken, async (req, res) => {
   try {
     const { agentKey } = req.params;
