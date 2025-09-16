@@ -340,7 +340,8 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       custom_param: {
         uniqueid: uniqueId,
         name: safeName,
-        contact_name: safeName
+        contact_name: safeName,
+        clientUserId: contact?.clientUserId || null
       },
       resFormat: 3,
     };
@@ -373,6 +374,9 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId) {
       success: false,
       uniqueId, // Return uniqueId even for failed calls
       error: error.message,
+      status: error?.response?.status || null,
+      responseData: error?.response?.data || null,
+      provider: 'czentrix',
       contact,
       timestamp: new Date()
     };
