@@ -380,6 +380,10 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
     }
 
     const agent = new Agent(agentData);
+    // Generate agentKey using pre-assigned _id (Mongoose assigns _id on instantiation)
+    const plainAgentKey = Agent.generateAgentKey(agent._id);
+    agent.agentKey = plainAgentKey;
+
     const savedAgent = await agent.save();
 
     // If this agent is active and has accountSid, deactivate others with same (clientId, accountSid)
@@ -406,10 +410,6 @@ router.post('/agents', verifyClientOrAdminAndExtractClientId, async (req, res) =
       )
     }
 
-    // Generate agentKey with actual agent ID (no encryption needed - it's already a hash)
-    const plainAgentKey = Agent.generateAgentKey(savedAgent._id);
-    savedAgent.agentKey = plainAgentKey;
-    await savedAgent.save();
     console.log('🔑 Generated agentKey:', plainAgentKey);
 
     
@@ -2492,6 +2492,111 @@ router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
   } catch (error) {
     console.error('Error adding groups to campaign:', error);
     res.status(500).json({ error: 'Failed to add groups to campaign' });
+  }
+});
+
+// Add subset of a group's contacts to a campaign by index range
+router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, async (req, res) => {
+  try {
+    const { id, groupId } = req.params;
+    let { startIndex, endIndex, replace, selectedIndices } = req.body;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const group = await Group.findOne({ _id: groupId, clientId: req.clientId });
+    if (!group) {
+      return res.status(404).json({ success: false, error: 'Group not found' });
+    }
+
+    const total = Array.isArray(group.contacts) ? group.contacts.length : 0;
+    if (total === 0) {
+      return res.json({ success: true, data: { added: 0, totalCampaignContacts: campaign.contacts?.length || 0 }, message: 'No contacts in group' });
+    }
+
+    // Normalize range
+    startIndex = Number.isInteger(startIndex) ? startIndex : 0;
+    endIndex = Number.isInteger(endIndex) ? endIndex : total; // exclusive
+    if (startIndex < 0) startIndex = 0;
+    if (endIndex > total) endIndex = total;
+    if (endIndex < startIndex) [startIndex, endIndex] = [startIndex, startIndex];
+
+    let slice;
+    if (Array.isArray(selectedIndices) && selectedIndices.length > 0) {
+      // Use explicit indices (within 0..total-1)
+      const validSet = new Set();
+      for (const idx of selectedIndices) {
+        const i = Number(idx);
+        if (Number.isInteger(i) && i >= 0 && i < total) validSet.add(i);
+      }
+      slice = Array.from(validSet).sort((a,b)=>a-b).map(i => group.contacts[i]);
+    } else {
+      // Fallback to range selection
+      slice = group.contacts.slice(startIndex, endIndex);
+    }
+
+    // Helper to normalize phone
+    const normalizePhoneNumber = (phoneNumber) => {
+      if (!phoneNumber) return '';
+      let normalized = phoneNumber.toString().trim();
+      normalized = normalized.replace(/[\s\-\.\(\)]/g, '');
+      normalized = normalized.replace(/^\+\d{1,3}/, '');
+      normalized = normalized.replace(/^0+/, '');
+      if (normalized.startsWith('91') && normalized.length > 10) normalized = normalized.substring(2);
+      if (normalized.startsWith('1') && normalized.length > 10) normalized = normalized.substring(1);
+      return normalized;
+    };
+
+    // For replace mode, do not block by existing campaign contacts
+    const existingPhones = new Set(
+      replace
+        ? []
+        : (campaign.contacts || []).map((c) => normalizePhoneNumber(c.phone))
+    );
+
+    let added = 0;
+    const newContacts = [];
+    for (const contact of slice) {
+      const phoneNorm = normalizePhoneNumber(contact.phone);
+      if (!phoneNorm || existingPhones.has(phoneNorm)) continue;
+      existingPhones.add(phoneNorm);
+      newContacts.push({
+        _id: new mongoose.Types.ObjectId(),
+        name: contact.name && String(contact.name).trim() ? contact.name : (contact.phone || 'Contact'),
+        phone: contact.phone,
+        email: contact.email || '',
+        addedAt: new Date()
+      });
+      added += 1;
+    }
+
+    // If replace is true, overwrite campaign.contacts; otherwise append
+    if (replace) {
+      // If no contacts were added because of dedupe inside the slice, still allow overwriting
+      campaign.contacts = newContacts;
+    } else {
+      campaign.contacts = Array.isArray(campaign.contacts) ? campaign.contacts : [];
+      campaign.contacts.push(...newContacts);
+    }
+
+    await campaign.save();
+
+    return res.json({
+      success: true,
+      data: {
+        added,
+        totalSelected: slice.length,
+        range: { startIndex, endIndex },
+        usedSelectedIndices: Array.isArray(selectedIndices) ? selectedIndices : undefined,
+        totalCampaignContacts: campaign.contacts.length
+      },
+      message: `Added ${added} contacts to campaign from range ${startIndex}-${endIndex}${replace ? ' (replaced existing contacts)' : ''}`
+    });
+  } catch (error) {
+    console.error('Error adding contacts by range:', error);
+    res.status(500).json({ success: false, error: 'Failed to add contacts by range' });
   }
 });
 
