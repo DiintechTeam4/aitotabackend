@@ -2922,11 +2922,16 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
         const i = Number(idx);
         if (Number.isInteger(i) && i >= 0 && i < total) validSet.add(i);
       }
-      slice = Array.from(validSet).sort((a,b)=>a-b).map(i => group.contacts[i]);
+      slice = Array.from(validSet)
+        .sort((a,b)=>a-b)
+        .map(i => group.contacts[i]);
     } else {
       // Fallback to range selection
       slice = group.contacts.slice(startIndex, endIndex);
     }
+
+    // Guard against sparse/null entries producing undefined contacts
+    slice = (Array.isArray(slice) ? slice : []).filter(c => c && c.phone);
 
     // Helper to normalize phone
     const normalizePhoneNumber = (phoneNumber) => {
@@ -2966,6 +2971,7 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
     let added = 0;
     const newContacts = [];
     for (const contact of slice) {
+      if (!contact || !contact.phone) continue;
       const phoneNorm = normalizePhoneNumber(contact.phone);
       if (!phoneNorm || existingPhones.has(phoneNorm)) continue;
       existingPhones.add(phoneNorm);
@@ -3921,28 +3927,22 @@ router.get('/campaigns/:id/logs/:documentId', extractClientId, async (req, res) 
       return res.status(400).json({ success: false, error: 'documentId query parameter is required' });
     }
 
-    // Try to find the campaign, but don't hard-fail transcript lookup if missing
-    let campaign = null;
-    try {
-      campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
-    } catch (_) {}
-
-    // If campaign exists but detail is absent, continue anyway (logs may still exist)
-
-    // Step 1: Strict lookup (by clientId + uniqueid)
+    // Step 1: Strict lookup (by clientId + uniqueid) using the compound index
     let latest = await CallLog.findOne({
       clientId: req.clientId,
       'metadata.customParams.uniqueid': documentId
     })
+      .hint({ 'metadata.customParams.uniqueid': 1, clientId: 1, createdAt: -1 })
       .sort({ createdAt: -1 })
       .select('transcript createdAt')
       .lean();
 
-    // Step 2: Fallback lookup (by uniqueid only) in case clientId wasn't set on the log
+    // Step 2: Fallback lookup (by uniqueid only) using the fallback index
     if (!latest) {
       latest = await CallLog.findOne({
         'metadata.customParams.uniqueid': documentId
       })
+        .hint({ 'metadata.customParams.uniqueid': 1, createdAt: -1 })
         .sort({ createdAt: -1 })
         .select('transcript createdAt')
         .lean();
@@ -4542,22 +4542,24 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
     let latestRunId = null;
     let runStartTime = null;
     if (initiatedCount > 0) {
-      // Pick the most recent detail by time/lastStatusUpdate
-      const sorted = [...details].sort((a, b) => {
-        const at = new Date(a.lastStatusUpdate || a.time || 0).getTime();
-        const bt = new Date(b.lastStatusUpdate || b.time || 0).getTime();
-        return bt - at;
-      });
-      const mostRecent = sorted[0];
+      // Pick the most recent detail by time/lastStatusUpdate (guard against nulls)
+      const sorted = [...details]
+        .filter((d) => d && (d.lastStatusUpdate || d.time))
+        .sort((a, b) => {
+          const at = new Date((a && (a.lastStatusUpdate || a.time)) || 0).getTime();
+          const bt = new Date((b && (b.lastStatusUpdate || b.time)) || 0).getTime();
+          return bt - at;
+        });
+      const mostRecent = sorted[0] || null;
       latestRunId = mostRecent && mostRecent.runId ? mostRecent.runId : null;
       if (latestRunId) {
         const sameRun = details.filter(d => d && d.runId === latestRunId);
         // Earliest time in that run
         const earliest = sameRun.reduce((min, d) => {
-          const t = new Date(d.time || d.lastStatusUpdate || Date.now()).getTime();
+          const t = new Date((d && (d.time || d.lastStatusUpdate)) || 0).getTime();
           return Math.min(min, t);
         }, Number.POSITIVE_INFINITY);
-        if (isFinite(earliest)) {
+        if (isFinite(earliest) && earliest !== Number.POSITIVE_INFINITY) {
           runStartTime = new Date(earliest);
         }
       }

@@ -96,6 +96,12 @@ CallLogSchema.index({ clientId: 1, 'metadata.isActive': 1 }); // For client's ac
 CallLogSchema.index({ streamSid: 1 }); // For active call lookup by streamSid
 CallLogSchema.index({ callSid: 1 });   // For call lookup by callSid
 
+// Indexes to speed up transcript lookup by unique call id
+// Supports queries filtering by uniqueid and clientId and sorting by createdAt
+CallLogSchema.index({ 'metadata.customParams.uniqueid': 1, clientId: 1, createdAt: -1 });
+// Fallback index when clientId is missing on some logs
+CallLogSchema.index({ 'metadata.customParams.uniqueid': 1, createdAt: -1 });
+
 // Pre-save middleware to update metadata
 CallLogSchema.pre('save', function(next) {
   if (this.metadata) {
