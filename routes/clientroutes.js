@@ -2940,11 +2940,27 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
       return normalized;
     };
 
-    // For replace mode, do not block by existing campaign contacts
+    // Build a set of this group's phone numbers to support group-specific replace behavior
+    const groupPhoneSet = new Set(
+      (group.contacts || [])
+        .map((gc) => normalizePhoneNumber(gc && gc.phone))
+        .filter(Boolean)
+    );
+
+    // Ensure campaign.contacts is an array before manipulating
+    campaign.contacts = Array.isArray(campaign.contacts) ? campaign.contacts : [];
+
+    // If replace mode is enabled, remove only contacts that belong to THIS group (by matching phone numbers)
+    if (replace && groupPhoneSet.size > 0) {
+      campaign.contacts = campaign.contacts.filter((c) => {
+        const normalized = normalizePhoneNumber(c && c.phone);
+        return !normalized || !groupPhoneSet.has(normalized);
+      });
+    }
+
+    // Prepare existingPhones for dedupe: use remaining campaign contacts after potential group-specific removal
     const existingPhones = new Set(
-      replace
-        ? []
-        : (campaign.contacts || []).map((c) => normalizePhoneNumber(c.phone))
+      (campaign.contacts || []).map((c) => normalizePhoneNumber(c && c.phone)).filter(Boolean)
     );
 
     let added = 0;
@@ -2966,14 +2982,9 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
       added += 1;
     }
 
-    // If replace is true, overwrite campaign.contacts; otherwise append
-    if (replace) {
-      // If no contacts were added because of dedupe inside the slice, still allow overwriting
-      campaign.contacts = newContacts;
-    } else {
-      campaign.contacts = Array.isArray(campaign.contacts) ? campaign.contacts : [];
-      campaign.contacts.push(...newContacts);
-    }
+    // Always append newContacts; if replace was requested, we already removed this group's previous contacts above
+    campaign.contacts = Array.isArray(campaign.contacts) ? campaign.contacts : [];
+    campaign.contacts.push(...newContacts);
 
     await campaign.save();
 
