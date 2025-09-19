@@ -44,6 +44,7 @@ const getobject = async (key) => {
       Bucket: process.env.AWS_BUCKET_NAME,
       Key: key,
       ResponseContentDisposition: 'inline',
+      ResponseContentType: key.endsWith('.txt') ? 'text/plain; charset=utf-8' : undefined,
     });
 
     const signedUrl = await getSignedUrl(s3Client, command,{expiresIn:604800});

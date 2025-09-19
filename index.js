@@ -13,6 +13,7 @@ const chatRoutes = require('./routes/chatroutes')
 const templateRoutes = require('./routes/templateroutes')
 const agentAccessRoutes = require('./routes/agentAccessRoutes')
 const makecallRoutes = require('./routes/makecallRoutes')
+const sttRoutes = require('./routes/sttRoutes')
 const Business = require('./models/MyBussiness');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 const jwt = require('jsonwebtoken');
@@ -1191,6 +1192,7 @@ app.use('/api/v1/chat', chatRoutes);
 app.use('/api/v1/templates', templateRoutes);
 app.use('/api/v1/agent-access', agentAccessRoutes);
 app.use('/makecall', makecallRoutes);
+app.use('/api/v1/stt', sttRoutes);
 
 // Public API endpoint for business details (no authentication required)
 app.get('/api/v1/public/business/:identifier', async (req, res) => {
