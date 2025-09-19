@@ -1055,22 +1055,28 @@ router.get('/agents/:id/audio', verifyClientOrAdminAndExtractClientId, async (re
 // Generate audio from text endpoint - returns both buffer and base64
 router.post('/voice/synthesize', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
-    const { text, language = "en", speaker } = req.body;
+    const { text, language = "en", speaker, serviceProvider = "sarvam" } = req.body;
     if (!text || !text.trim()) {
       return res.status(400).json({ error: "Text is required" });
     }
+
+    // Generate audio using the voice service
+    const audioResult = await voiceService.textToSpeech(text, language, speaker, serviceProvider);
+
     // Return both for frontend: buffer for playback, base64 for DB
     res.set({
       "Content-Type": "application/json",
     });
     res.json({
       audioBuffer: audioResult.audioBuffer.toString('base64'), // for compatibility
+      audioBase64: audioResult.audioBase64, // for database storage
       format: audioResult.format,
-      size: audioResult.size,
+      size: audioResult.audioBuffer.length,
       sampleRate: audioResult.sampleRate,
       channels: audioResult.channels,
       usedSpeaker: audioResult.usedSpeaker,
-      targetLanguage: audioResult.targetLanguage
+      targetLanguage: audioResult.targetLanguage,
+      serviceProvider: audioResult.serviceProvider || serviceProvider
     });
   } catch (error) {
     console.error("❌ Voice synthesis error:", error);

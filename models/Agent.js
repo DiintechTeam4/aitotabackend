@@ -41,6 +41,12 @@ const agentSchema = new mongoose.Schema({
     enum: ["sarvam", "elevenlabs", "openai", "google", "azure", "aws"],
     default: "sarvam",
   },
+  voiceServiceProvider: {
+    type: String,
+    enum: ["sarvam", "elevenlabs"],
+    default: "sarvam",
+  },
+  voiceId: { type: String }, // Store the actual voice ID for the selected service
   llmSelection: {
     type: String,
     enum: ["openai", "anthropic", "google", "azure"],
@@ -67,6 +73,10 @@ const agentSchema = new mongoose.Schema({
       "vian",
       "arjun",
       "maya",
+      "kumaran",
+      "monika",
+      "aahir",
+      "kanika",
     ],
     default: "meera",
   },
