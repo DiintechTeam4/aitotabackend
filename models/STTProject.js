@@ -28,6 +28,8 @@ const STTItemSchema = new mongoose.Schema(
 const STTProjectSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
+    description: { type: String },
+    category: { type: String },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
     items: [STTItemSchema],
   },

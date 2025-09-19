@@ -5,9 +5,9 @@ const { putobject, getobject, s3Client } = require('../utils/s3');
 // Create project
 exports.createProject = async (req, res) => {
   try {
-    const { name } = req.body || {};
+    const { name, description, category } = req.body || {};
     if (!name) return res.status(400).json({ success: false, message: 'Project name is required' });
-    const project = await STTProject.create({ name, createdBy: req.user?.id });
+    const project = await STTProject.create({ name, description, category, createdBy: req.user?.id });
     res.json({ success: true, data: project });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
@@ -206,7 +206,7 @@ async function processItem(projectIdOrNull, itemId) {
     await uploadTextToS3(transcriptKey, transcriptText);
     item.logs.push({ level: 'info', message: 'Transcript uploaded to S3', meta: { key: transcriptKey } });
     // 4) Generate Q&A with OpenAI
-    const qaText = await generateQA(transcriptText);
+    const qaText = await generateQA(transcriptText, detectedLang);
     const qaKey = `stt/${project._id}/${item._id}-qa.txt`;
     await uploadTextToS3(qaKey, qaText);
     item.logs.push({ level: 'info', message: 'Q&A uploaded to S3', meta: { key: qaKey } });
@@ -233,27 +233,55 @@ async function uploadTextToS3(key, content) {
   await axios.put(url, body, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
 }
 
-async function generateQA(transcript) {
+async function generateQA(transcript, languageCode) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return 'OpenAI not configured. Provide OPENAI_API_KEY to enable Q&A.';
-  try {
-    const resp = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini',
+
+  // Split very long transcripts into manageable chunks for the model
+  const chunks = [];
+  const maxChunkSize = 6000; // characters per chunk (approximate for token safety)
+  for (let i = 0; i < transcript.length; i += maxChunkSize) {
+    chunks.push(transcript.slice(i, i + maxChunkSize));
+  }
+
+  const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+  const model = 'gpt-4o-mini';
+  const systemPrompt = [
+    'You are an expert note-taker. Extract as many high-quality Q&A pairs as possible from the transcript.',
+    'Rules:',
+    '- Cover all distinct topics and details; aim for breadth and completeness.',
+    '- Keep questions short and specific. Keep answers concise (1-3 sentences).',
+    '- Use plain text only. Output format strictly as multiple lines of "Q: ..." then "A: ..." pairs.',
+    '- Do not invent facts not present in the transcript.',
+    languageCode ? `- IMPORTANT: Write all questions and answers in this language: ${languageCode}.` : '',
+  ].join('\n');
+
+  const results = [];
+  for (let idx = 0; idx < chunks.length; idx++) {
+    const section = chunks[idx];
+    try {
+      const body = {
+        model,
         messages: [
-          { role: 'system', content: 'You are a helpful assistant that extracts Q&A from transcripts.' },
-          { role: 'user', content: `Create a concise Q&A from the transcript. Format as questions and answers.\n\nTranscript:\n${transcript}` },
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `From the following transcript section ${idx + 1}/${chunks.length}, extract as many Q&A pairs as possible. If the transcript language is not English, write Q&A in the same language (${languageCode || 'unknown'}).\n\nTranscript Section:\n${section}` },
         ],
         temperature: 0.2,
-      },
-      { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } }
-    );
-    const text = resp.data?.choices?.[0]?.message?.content?.trim();
-    return text || 'No Q&A generated.';
-  } catch (e) {
-    return `Q&A generation failed: ${e.message}`;
+        max_tokens: 2000,
+      };
+      const resp = await axios.post('https://api.openai.com/v1/chat/completions', body, { headers });
+      const text = resp.data?.choices?.[0]?.message?.content?.trim();
+      if (text) {
+        const header = chunks.length > 1 ? `Section ${idx + 1} Q&A\n` : '';
+        results.push(`${header}${text}`);
+      }
+    } catch (e) {
+      results.push(`Q&A generation failed for section ${idx + 1}: ${e.message}`);
+    }
   }
+
+  const combined = results.join('\n\n');
+  return combined || 'No Q&A generated.';
 }
 
 
