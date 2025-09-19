@@ -247,12 +247,25 @@ async function generateQA(transcript, languageCode) {
   const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
   const model = 'gpt-4o-mini';
   const systemPrompt = [
-    'You are an expert note-taker. Extract as many high-quality Q&A pairs as possible from the transcript.',
-    'Rules:',
-    '- Cover all distinct topics and details; aim for breadth and completeness.',
-    '- Keep questions short and specific. Keep answers concise (1-3 sentences).',
+    'You are an expert call analyst and training data creator.',
+    'Your job is to carefully study the given transcript of a human caller talking with a customer.',
     '- Use plain text only. Output format strictly as multiple lines of "Q: ..." then "A: ..." pairs.',
-    '- Do not invent facts not present in the transcript.',
+    '',
+    'Objective:',
+    '- Convert the transcript into *high-quality conversational Q&A pairs* for training an AI calling agent.',
+    '- Focus on extracting the essence of the dialogue: customer queries, objections, hesitations, interests, and caller’s responses.',
+    '- General chit-chat (hello, how are you, etc.) should be skipped unless it shows useful patterns for building rapport.',
+    '',
+    'Rules:',
+    '1. Cover all important intents/topics discussed (product details, pricing, objections, interest signals, closing, follow-ups).',
+    '2. Rewrite questions in a clear and generalised form (not word-for-word copy).',
+    '3. Rewrite answers in short, professional, polite, and convincing sentences (1–3 sentences max).',
+    '4. Ensure that every Q&A is useful for *training a sales/marketing AI agent*.',
+    '5. Do NOT invent new topics — only use what is present in the transcript, but you may *rephrase/standardise* for clarity.',
+    '6. Output format strictly as multiple lines of:',
+    '   Q: [customer style question/objection]',
+    '   A: [caller style helpful response]',
+    '',
     languageCode ? `- IMPORTANT: Write all questions and answers in this language: ${languageCode}.` : '',
   ].join('\n');
 
