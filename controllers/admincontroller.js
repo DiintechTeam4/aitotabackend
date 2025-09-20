@@ -377,6 +377,66 @@ const createDidNumber = async (req, res) => {
   }
 };
 
+// New function for adding DID numbers with enhanced caller ID logic
+const addDidNumber = async (req, res) => {
+  try {
+    const { did, provider, callerId, notes } = req.body;
+    
+    // Validate required fields
+    if (!did || !provider) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'DID number and provider are required' 
+      });
+    }
+
+    // Check if DID already exists
+    const exists = await DidNumber.findOne({ did });
+    if (exists) {
+      return res.status(409).json({ 
+        success: false, 
+        message: 'DID number already exists' 
+      });
+    }
+
+    // Determine caller ID: use provided one or derive from DID (last 6 digits)
+    let finalCallerId;
+    if (callerId && String(callerId).trim() !== '') {
+      // Use provided caller ID
+      finalCallerId = String(callerId).trim();
+    } else {
+        // Auto-generate caller ID from last 7 digits of DID
+      finalCallerId = DidNumber.deriveCallerIdFromDid(did);
+    }
+
+    // Create the DID number record
+    const created = await DidNumber.create({ 
+      did, 
+      provider, 
+      callerId: finalCallerId, 
+      status: 'available', 
+      assignedAgent: null, 
+      assignedClient: null, 
+      notes: notes || '' 
+    });
+
+    res.status(201).json({ 
+      success: true, 
+      message: 'DID number added successfully',
+      data: {
+        ...created.toObject(),
+        callerIdSource: callerId && String(callerId).trim() !== '' ? 'provided' : 'auto-generated'
+      }
+    });
+  } catch (error) {
+    console.error('Error adding DID number:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || 'Failed to add DID number' 
+    });
+  }
+};
+
 const assignDidToAgent = async (req, res) => {
   try {
     const { did } = req.params;
@@ -747,7 +807,7 @@ const updateAgent = async (req, res) => {
   }
 };
 
-module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, listDidNumbers, createDidNumber, assignDidToAgent, unassignDid };
+module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, listDidNumbers, createDidNumber, addDidNumber, assignDidToAgent, unassignDid };
 // System Prompt Handlers
 module.exports.createSystemPrompt = async (req, res) => {
   try {

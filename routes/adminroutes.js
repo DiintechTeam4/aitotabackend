@@ -66,6 +66,7 @@ router.post('/coupons/validate', verifyAdminToken, couponController.validateCoup
 // DID Numbers Management
 router.get('/did-numbers', verifyAdminToken, adminCtrl.listDidNumbers);
 router.post('/did-numbers', verifyAdminToken, adminCtrl.createDidNumber);
+router.post('/did-numbers/add', verifyAdminToken, adminCtrl.addDidNumber);
 router.post('/did-numbers/:did/assign', verifyAdminToken, adminCtrl.assignDidToAgent);
 router.post('/did-numbers/:did/unassign', verifyAdminToken, adminCtrl.unassignDid);
 
