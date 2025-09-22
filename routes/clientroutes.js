@@ -467,137 +467,106 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
     const existingCount = await CampaignHistory.countDocuments({ campaignId: id });
     const instanceNumber = existingCount + 1;
 
-    const historyDoc = new CampaignHistory({
-      campaignId: id,
-      runId: runId || `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      instanceNumber,
-      startTime: startTime || '00:00:00',
-      endTime: endTime || '00:00:00',
-      runTime: {
-        hours: toNum(runTime && runTime.hours),
-        minutes: toNum(runTime && runTime.minutes),
-        seconds: toNum(runTime && runTime.seconds)
+    // Upsert a single CampaignHistory document per runId. If it exists, finalize it; otherwise, create it.
+    const existingHistory = await CampaignHistory.findOne({ runId }).lean();
+    let finalInstanceNumber = instanceNumber;
+    if (existingHistory && typeof existingHistory.instanceNumber === 'number') {
+      finalInstanceNumber = existingHistory.instanceNumber;
+    }
+
+    const historyDoc = await CampaignHistory.findOneAndUpdate(
+      { runId },
+      {
+        $setOnInsert: {
+          campaignId: id,
+          runId: runId || `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          instanceNumber: finalInstanceNumber,
+          startTime: startTime || '00:00:00',
+          contacts: [],
+          stats: {
+            totalContacts: 0,
+            successfulCalls: 0,
+            failedCalls: 0,
+            totalCallDuration: 0,
+            averageCallDuration: 0
+          }
+        },
+        $set: {
+          endTime: endTime || '00:00:00',
+          runTime: {
+            hours: toNum(runTime && runTime.hours),
+            minutes: toNum(runTime && runTime.minutes),
+            seconds: toNum(runTime && runTime.seconds)
+          },
+          status: 'completed'
+        }
       },
-      status: 'completed',
-      contacts: [], // Start with empty contacts array - will be populated by batch fetching
-      stats: {
-        totalContacts: 0,
-        successfulCalls: 0,
-        failedCalls: 0,
-        totalCallDuration: 0,
-        averageCallDuration: 0
-      }
-    });
+      { upsert: true, new: true }
+    );
 
-    await historyDoc.save();
-
-    // After completion: fetch all merged calls for this run in batches of 50 and save into CampaignHistory (contacts array)
+    // After completion: snapshot merged calls for this run and REPLACE contacts (avoid duplicates)
     try {
       const finalRunId = historyDoc.runId;
-      // Take a snapshot of uniqueIds for this run from the in-memory campaign we already loaded
       let runDetails = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
-      if (finalRunId) {
-        runDetails = runDetails.filter((d) => d && d.runId === finalRunId);
-      }
-      const allUniqueIds = runDetails.map((d) => d && d.uniqueId).filter(Boolean);
+      if (finalRunId) runDetails = runDetails.filter(d => d && d.runId === finalRunId);
+      const allUniqueIds = runDetails.map(d => d && d.uniqueId).filter(Boolean);
 
-      // Helper to compute a robust duration like merged-calls
-      const getDurationByUniqueId = async (uid) => {
-        try {
-          if (!uid) return 0;
-          let logsForUid = await CallLog.find({
-            'metadata.customParams.uniqueid': uid,
-            ...(req.clientId ? { clientId: req.clientId } : {})
-          }).sort({ createdAt: 1 }).lean();
-          if (!logsForUid || logsForUid.length === 0) {
-            logsForUid = await CallLog.find({ 'metadata.customParams.uniqueid': uid }).sort({ createdAt: 1 }).lean();
-          }
-          if (!logsForUid || logsForUid.length === 0) return 0;
-          const maxExplicit = logsForUid.reduce((m, l) => {
-            const d = typeof l.duration === 'number' ? l.duration : 0;
-            return Math.max(m, d);
-          }, 0);
-          const first = logsForUid[0];
-          const last = logsForUid[logsForUid.length - 1];
-          const startMs = first?.createdAt ? new Date(first.createdAt).getTime() : 0;
-          const endCandidate = last?.metadata?.callEndTime || last?.updatedAt || last?.time || last?.createdAt;
-          const endMs = endCandidate ? new Date(endCandidate).getTime() : 0;
-          const derived = Math.max(0, Math.round((endMs - startMs) / 1000));
-          const best = Math.max(maxExplicit, derived);
-          return Number.isFinite(best) ? best : 0;
-        } catch {
-          return 0;
-        }
-      };
+      // If the history doc already has the same count, skip to avoid double-save
+      const existingHistory = await CampaignHistory.findById(historyDoc._id).lean();
+      if (existingHistory?.contacts?.length && existingHistory.contacts.length >= allUniqueIds.length) {
+        // Still update status and runtime but do not duplicate contacts
+      } else {
+        const getDurationByUniqueId = async (uid) => {
+          try {
+            if (!uid) return 0;
+            let logsForUid = await CallLog.find({ 'metadata.customParams.uniqueid': uid, ...(req.clientId ? { clientId: req.clientId } : {}) }).sort({ createdAt: 1 }).lean();
+            if (!logsForUid || logsForUid.length === 0) logsForUid = await CallLog.find({ 'metadata.customParams.uniqueid': uid }).sort({ createdAt: 1 }).lean();
+            if (!logsForUid || logsForUid.length === 0) return 0;
+            const maxExplicit = logsForUid.reduce((m, l) => Math.max(m, typeof l.duration === 'number' ? l.duration : 0), 0);
+            const first = logsForUid[0];
+            const last = logsForUid[logsForUid.length - 1];
+            const startMs = first?.createdAt ? new Date(first.createdAt).getTime() : 0;
+            const endCandidate = last?.metadata?.callEndTime || last?.updatedAt || last?.time || last?.createdAt;
+            const endMs = endCandidate ? new Date(endCandidate).getTime() : 0;
+            const derived = Math.max(0, Math.round((endMs - startMs) / 1000));
+            const best = Math.max(maxExplicit, derived);
+            return Number.isFinite(best) ? best : 0;
+          } catch { return 0; }
+        };
 
-      // Page through 50 at a time
-      for (let i = 0; i < allUniqueIds.length; i += 50) {
-        const slice = allUniqueIds.slice(i, i + 50);
-        if (slice.length === 0) break;
-
-        // Load logs for slice (most recent first)
-        let logs = await CallLog.find({
-          clientId: req.clientId,
-          'metadata.customParams.uniqueid': { $in: slice }
-        }).sort({ createdAt: -1 }).lean();
-        if (!logs || logs.length === 0) {
-          logs = await CallLog.find({ 'metadata.customParams.uniqueid': { $in: slice } }).sort({ createdAt: -1 }).lean();
-        }
-
-        // Map by uniqueId latest log
+        // Load all logs needed in one go for faster mapping
+        let logs = await CallLog.find({ clientId: req.clientId, 'metadata.customParams.uniqueid': { $in: allUniqueIds } }).sort({ createdAt: -1 }).lean();
+        if (!logs || logs.length === 0) logs = await CallLog.find({ 'metadata.customParams.uniqueid': { $in: allUniqueIds } }).sort({ createdAt: -1 }).lean();
         const latestByUid = new Map();
         for (const log of logs) {
-          const uid = log?.metadata?.customParams?.uniqueid;
-          if (!uid) continue;
+          const uid = log?.metadata?.customParams?.uniqueid; if (!uid) continue;
           if (!latestByUid.has(uid)) latestByUid.set(uid, log);
         }
 
-        // Build contacts for this page preserving the order of runDetails slice
-        const pageContacts = [];
-        for (const detail of runDetails.filter(d => slice.includes(d.uniqueId))) {
-          const uid = detail.uniqueId;
+        // Build full contacts array preserving original order in details
+        const contacts = [];
+        for (const detail of runDetails) {
+          const uid = detail.uniqueId; if (!uid) continue;
           const log = latestByUid.get(uid) || null;
-          
-          // Get contact details from campaign contacts first
           let contactName = '';
           let contactNumber = '';
           let contactLeadStatus = '';
-          
           if (detail.contactId) {
-            // Find the contact in campaign contacts
-            const campaignContact = campaign.contacts.find(c => {
-              const contactIdStr = c._id ? c._id.toString() : '';
-              const detailIdStr = detail.contactId ? detail.contactId.toString() : '';
-              return contactIdStr === detailIdStr;
-            });
-            
+            const campaignContact = campaign.contacts.find(c => (c._id ? c._id.toString() : '') === (detail.contactId ? detail.contactId.toString() : ''));
             if (campaignContact) {
               contactName = campaignContact.name || '';
               contactNumber = campaignContact.phone || campaignContact.mobile || '';
             }
           }
-          
-          // Use log data if available, otherwise use campaign contact data
           const number = log?.mobile || contactNumber;
           const name = log?.metadata?.customParams?.name || contactName;
           const leadStatus = log?.leadStatus || contactLeadStatus;
           const duration = await getDurationByUniqueId(uid);
-          
-          // Determine status based on call data
           let status;
-          if (log?.metadata?.isActive === true) {
-            status = 'ongoing';
-          } else if (log?.metadata?.isActive === false) {
-            status = 'completed';
-          } else {
-            // No call logs found
-            status = 'missed';
-            // For missed calls, set leadStatus to not_connected
-            contactLeadStatus = 'not_connected';
-          }
-
-          // Create contact object
-          const contact = {
+          if (log?.metadata?.isActive === true) status = 'ongoing';
+          else if (log?.metadata?.isActive === false) status = 'completed';
+          else { status = 'missed'; contactLeadStatus = 'not_connected'; }
+          contacts.push({
             documentId: uid,
             number,
             name,
@@ -606,43 +575,28 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
             time: detail.time || '',
             status,
             duration
-          };
-
-          pageContacts.push(contact);
+          });
         }
 
-        if (pageContacts.length > 0) {
-          await CampaignHistory.updateOne(
-            { _id: historyDoc._id },
-            { $push: { contacts: { $each: pageContacts } } }
-          );
-        }
+        // Replace contacts in one go (dedup by documentId before set)
+        const deduped = Array.from(new Map(contacts.map(c => [c.documentId, c])).values());
+        await CampaignHistory.updateOne(
+          { _id: historyDoc._id },
+          { $set: { contacts: deduped } }
+        );
       }
 
-      // After all contacts are fetched, calculate final stats
+      // Recompute stats from final contacts
       const finalHistory = await CampaignHistory.findById(historyDoc._id).lean();
       const allContacts = finalHistory?.contacts || [];
-      
       const totalContacts = allContacts.length;
       const successfulCalls = allContacts.reduce((acc, c) => acc + (isSuccess(c) ? 1 : 0), 0);
       const failedCalls = allContacts.reduce((acc, c) => acc + (isFailed(c) ? 1 : 0), 0);
       const totalCallDuration = allContacts.reduce((acc, c) => acc + toNum(c.duration), 0);
       const averageCallDuration = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
-
-      // Update the stats
       await CampaignHistory.updateOne(
         { _id: historyDoc._id },
-        { 
-          $set: { 
-            stats: {
-              totalContacts,
-              successfulCalls,
-              failedCalls,
-              totalCallDuration,
-              averageCallDuration
-            }
-          } 
-        }
+        { $set: { stats: { totalContacts, successfulCalls, failedCalls, totalCallDuration, averageCallDuration } } }
       );
 
       // Update CallLog entries to match the campaign history data
@@ -5907,6 +5861,115 @@ router.post('/campaigns/:id/trigger-status-update', extractClientId, async (req,
   } catch (error) {
     console.error('Error triggering manual status update:', error);
     res.status(500).json({ success: false, error: 'Failed to trigger status update' });
+  }
+});
+
+// FORCE: Save current run to CampaignHistory immediately
+router.post('/campaigns/:id/force-save-history', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { runId: providedRunId, startTime, endTime } = req.body || {};
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const details = Array.isArray(campaign.details) ? campaign.details.filter(Boolean) : [];
+    if (details.length === 0) {
+      return res.status(400).json({ success: false, error: 'No call details to save' });
+    }
+
+    // Infer runId if not provided: pick the most frequent runId in details
+    let runId = providedRunId;
+    if (!runId) {
+      const freq = new Map();
+      for (const d of details) {
+        if (d && d.runId) freq.set(d.runId, (freq.get(d.runId) || 0) + 1);
+      }
+      runId = [...freq.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    }
+    if (!runId) {
+      return res.status(400).json({ success: false, error: 'runId not found in details and not provided' });
+    }
+
+    // Filter to this run's details
+    const runDetails = details.filter(d => d && d.runId === runId);
+    if (runDetails.length === 0) {
+      return res.status(400).json({ success: false, error: 'No details found for given runId' });
+    }
+
+    // Build contacts array for history
+    const contactsById = new Map((campaign.contacts || []).map(c => [String(c._id || ''), c]));
+    const contacts = runDetails.map(d => {
+      const contact = d.contactId ? contactsById.get(String(d.contactId)) : undefined;
+      return {
+        documentId: d.uniqueId,
+        number: contact?.phone || contact?.number || '',
+        name: contact?.name || '',
+        leadStatus: (d.leadStatus || (d.status === 'completed' ? 'connected' : 'not_connected')),
+        contactId: String(d.contactId || ''),
+        time: (d.time instanceof Date ? d.time.toISOString() : (d.time || new Date()).toString()),
+        status: d.status || 'completed',
+        duration: typeof d.callDuration === 'number' ? d.callDuration : 0,
+        transcriptCount: 0,
+        whatsappMessageSent: false,
+        whatsappRequested: false
+      };
+    });
+
+    // Compute stats
+    const totalContacts = contacts.length;
+    const successfulCalls = contacts.filter(c => String(c.leadStatus || '').toLowerCase() === 'connected').length;
+    const failedCalls = totalContacts - successfulCalls;
+    const totalCallDuration = contacts.reduce((s, c) => s + (c.duration || 0), 0);
+    const averageCallDuration = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
+
+    const CampaignHistory = require('../models/CampaignHistory');
+    const existing = await CampaignHistory.findOne({ runId }).lean();
+    let instanceNumber = existing?.instanceNumber;
+    if (typeof instanceNumber !== 'number') {
+      const count = await CampaignHistory.countDocuments({ campaignId: id });
+      instanceNumber = count + 1;
+    }
+
+    const end = endTime ? new Date(endTime) : new Date();
+    let start = startTime ? new Date(startTime) : (runDetails[0]?.time ? new Date(runDetails[0].time) : new Date(end.getTime() - 1000));
+    if (!(start instanceof Date) || isNaN(start)) start = new Date(end.getTime() - 1000);
+    const elapsedSec = Math.max(0, Math.floor((end - start) / 1000));
+    const toHms = (secs) => ({ hours: Math.floor(secs / 3600), minutes: Math.floor((secs % 3600) / 60), seconds: secs % 60 });
+
+    const doc = await CampaignHistory.findOneAndUpdate(
+      { runId },
+      {
+        $setOnInsert: {
+          campaignId: campaign._id,
+          runId,
+          instanceNumber,
+          startTime: start.toISOString(),
+        },
+        $set: {
+          endTime: end.toISOString(),
+          runTime: toHms(elapsedSec),
+          status: 'completed',
+          contacts,
+          stats: { totalContacts, successfulCalls, failedCalls, totalCallDuration, averageCallDuration },
+          batchInfo: { isIntermediate: false }
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    // Also ensure campaign is not running anymore
+    if (campaign.isRunning) {
+      campaign.isRunning = false;
+      await campaign.save();
+    }
+
+    return res.json({ success: true, message: 'Campaign history saved', data: { runId: doc.runId, instanceNumber: doc.instanceNumber, totals: doc.stats } });
+  } catch (error) {
+    console.error('❌ [FORCE-SAVE-HISTORY] Error:', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

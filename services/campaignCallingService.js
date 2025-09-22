@@ -410,7 +410,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
       const accessKey = agent?.accessKey;
       const callerId = agent?.callerId;
       if (!accessToken || !accessKey || !callerId) {
-        throw new Error('SANPBX_MISSING_FIELDS');
+        throw new Error('Telephony_MISSING_FIELDS');
       }
 
       // Normalize phone and ensure it starts with '0'
@@ -762,71 +762,110 @@ async function saveBatchProgress(campaign, progress, runId, batchNumber, totalBa
     const campaignId = campaign._id.toString();
     const CampaignHistory = require('../models/CampaignHistory');
     
-    console.log(`💾 SAVING BATCH ${batchNumber}/${totalBatches} PROGRESS...`);
+    console.log(`💾 SAVING BATCH ${batchNumber}/${totalBatches} PROGRESS (appending to run ${runId})...`);
     
-    // Create batch-specific runId
-    const batchRunId = `${runId}_batch_${batchNumber}`;
-    
-    // Get call logs for this batch from campaign details (more reliable)
-    const batchStartIndex = (batchNumber - 1) * 100; // Assuming 100 per batch
+    // Determine the slice of contacts for this batch (100 per batch)
+    const batchStartIndex = (batchNumber - 1) * 100;
     const batchEndIndex = Math.min(batchStartIndex + 100, campaign.contacts.length);
     
-    // Get call details from campaign that belong to this batch
-    // We need to reload the campaign to get the latest details
+    // Reload the latest campaign to get up-to-date details
     const Campaign = require('../models/Campaign');
     const updatedCampaign = await Campaign.findById(campaign._id);
-    const campaignDetails = updatedCampaign.details || [];
+    const campaignDetails = Array.isArray(updatedCampaign.details) ? updatedCampaign.details : [];
     
-    // Get details that were added during this batch (approximate)
-    const batchCallDetails = campaignDetails.filter(detail => {
-      return detail.uniqueId && detail.runId === runId;
-    }).slice(batchStartIndex, batchEndIndex);
+    // Filter details for this runId and take the slice for this batch
+    const runDetails = campaignDetails.filter(d => d && d.uniqueId && d.runId === runId);
+    const batchCallDetails = runDetails.slice(batchStartIndex, batchEndIndex);
     
-    // Create intermediate campaign history entry
-    const batchHistoryEntry = {
-      campaignId: campaign._id,
-      runId: batchRunId,
-      instanceNumber: batchNumber,
-      startTime: progress.startTime,
-      endTime: new Date(),
-      runTime: Math.floor((new Date() - progress.startTime) / 1000),
-      contacts: batchCallDetails.map((detail, index) => {
-        const contactIndex = batchStartIndex + index;
-        const contact = updatedCampaign.contacts[contactIndex] || {};
-        return {
-          documentId: detail.uniqueId,
-          number: contact.phone || contact.number || '',
-          name: contact.name || '',
-          leadStatus: detail.leadStatus || 'not_connected',
-          contactId: detail.contactId || contact._id || '',
-          time: detail.time || new Date().toISOString(),
-          status: detail.status || 'completed',
-          duration: detail.callDuration || 0,
-          transcriptCount: 0,
-          whatsappMessageSent: false,
-          whatsappRequested: false
-        };
-      }),
-      stats: {
-        totalContacts: batchCallDetails.length,
-        successfulCalls: batchCallDetails.filter(d => d.leadStatus === 'connected').length,
-        failedCalls: batchCallDetails.filter(d => d.leadStatus !== 'connected').length,
-        totalCallDuration: batchCallDetails.reduce((sum, d) => sum + (d.callDuration || 0), 0),
-        averageCallDuration: batchCallDetails.length > 0 ? 
-          Math.round(batchCallDetails.reduce((sum, d) => sum + (d.callDuration || 0), 0) / batchCallDetails.length) : 0
+    // Map contacts for this batch
+    const contactsForBatch = batchCallDetails.map((detail, index) => {
+      const contactIndex = batchStartIndex + index;
+      const contact = (updatedCampaign.contacts || [])[contactIndex] || {};
+      return {
+        documentId: detail.uniqueId,
+        number: contact.phone || contact.number || '',
+        name: contact.name || '',
+        leadStatus: detail.leadStatus || 'not_connected',
+        contactId: detail.contactId || contact._id || '',
+        time: detail.time || new Date().toISOString(),
+        status: detail.status || 'completed',
+        duration: detail.callDuration || 0,
+        transcriptCount: 0,
+        whatsappMessageSent: false,
+        whatsappRequested: false
+      };
+    });
+    
+    const successfulInBatch = batchCallDetails.filter(d => (d.leadStatus || '').toLowerCase() === 'connected').length;
+    const totalDurationInBatch = batchCallDetails.reduce((sum, d) => sum + (d.callDuration || 0), 0);
+    const totalInBatch = contactsForBatch.length;
+    const failedInBatch = totalInBatch - successfulInBatch;
+    
+    const now = new Date();
+    const startDate = progress && progress.startTime instanceof Date ? progress.startTime : new Date(progress && progress.startTime || now);
+    const elapsedSeconds = Math.max(0, Math.floor((now - startDate) / 1000));
+    const toHms = (secs) => ({
+      hours: Math.floor(secs / 3600),
+      minutes: Math.floor((secs % 3600) / 60),
+      seconds: secs % 60
+    });
+    
+    // Ensure a single CampaignHistory per runId. Upsert and append contacts + stats.
+    const existingHistory = await CampaignHistory.findOne({ runId }).lean();
+    let instanceNumber = 1;
+    if (!existingHistory) {
+      const existingCount = await CampaignHistory.countDocuments({ campaignId });
+      instanceNumber = existingCount + 1;
+    }
+    
+    await CampaignHistory.findOneAndUpdate(
+      { runId },
+      {
+        $setOnInsert: {
+          campaignId: campaign._id,
+          runId,
+          instanceNumber,
+          startTime: (startDate && startDate.toISOString) ? startDate.toISOString() : String(startDate),
+          status: 'running',
+          stats: {
+            totalContacts: 0,
+            successfulCalls: 0,
+            failedCalls: 0,
+            totalCallDuration: 0,
+            averageCallDuration: 0
+          },
+          contacts: []
+        },
+        $set: {
+          endTime: now.toISOString(),
+          runTime: toHms(elapsedSeconds),
+          updatedAt: now
+        },
+        $push: {
+          contacts: { $each: contactsForBatch }
+        },
+        $inc: {
+          'stats.totalContacts': totalInBatch,
+          'stats.successfulCalls': successfulInBatch,
+          'stats.failedCalls': failedInBatch,
+          'stats.totalCallDuration': totalDurationInBatch
+        }
       },
-      batchInfo: {
-        batchNumber,
-        totalBatches,
-        isIntermediate: true
-      }
-    };
+      { upsert: true, new: true }
+    );
     
-    // Save to database
-    const historyDoc = new CampaignHistory(batchHistoryEntry);
-    await historyDoc.save();
+    // Optionally recompute averageCallDuration based on current totals
+    const updatedHistory = await CampaignHistory.findOne({ runId }, { 'stats.totalContacts': 1, 'stats.totalCallDuration': 1 }).lean();
+    if (updatedHistory && updatedHistory.stats) {
+      const { totalContacts, totalCallDuration } = updatedHistory.stats;
+      const avg = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
+      await CampaignHistory.updateOne(
+        { runId },
+        { $set: { 'stats.averageCallDuration': avg } }
+      );
+    }
     
-    console.log(`✅ BATCH ${batchNumber}/${totalBatches} SAVED: ${progress.completedCalls} calls processed`);
+    console.log(`✅ BATCH ${batchNumber}/${totalBatches} APPENDED: ${progress.completedCalls} calls processed (run ${runId})`);
     
     // Update progress in memory
     campaignCallingProgress.set(campaignId, progress);
