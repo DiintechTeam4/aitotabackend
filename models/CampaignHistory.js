@@ -53,6 +53,11 @@ const CampaignHistorySchema = new mongoose.Schema({
         totalCallDuration: { type: Number, default: 0 },
         averageCallDuration: { type: Number, default: 0 }
     },
+    batchInfo: {
+        batchNumber: { type: Number },
+        totalBatches: { type: Number },
+        isIntermediate: { type: Boolean, default: false }
+    },
     createdAt: {
         type: Date,
         default: Date.now

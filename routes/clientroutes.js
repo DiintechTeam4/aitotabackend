@@ -686,26 +686,34 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
                 }
               );
             } else {
-              // Create a new CallLog entry if it doesn't exist
-              const newCallLog = new CallLog({
-                clientId: req.clientId,
-                campaignId: id,
-                mobile: contactNumber,
-                time: new Date(contact.time || new Date()),
-                duration: contact.duration,
-                leadStatus: contact.leadStatus || 'not_connected',
-                callType: 'outbound',
-                statusText: contact.status === 'missed' ? 'Not Accepted / Busy / Disconnected' : 'Completed',
-                metadata: {
-                  customParams: {
-                    uniqueid: uniqueId,
-                    name: contactName
-                  },
-                  isActive: false,
-                  callEndTime: new Date()
-                }
-              });
-              await newCallLog.save();
+              // Only create CallLog entries for connected calls (not missed/not_connected)
+              const isConnected = contact.leadStatus && 
+                !['not_connected', 'missed'].includes(contact.leadStatus.toLowerCase()) &&
+                contact.status !== 'missed';
+              
+              if (isConnected) {
+                // Create a new CallLog entry only for connected calls
+                const newCallLog = new CallLog({
+                  clientId: req.clientId,
+                  campaignId: id,
+                  mobile: contactNumber,
+                  time: new Date(contact.time || new Date()),
+                  duration: contact.duration,
+                  leadStatus: contact.leadStatus || 'maybe',
+                  callType: 'outbound',
+                  statusText: 'Completed',
+                  metadata: {
+                    customParams: {
+                      uniqueid: uniqueId,
+                      name: contactName
+                    },
+                    isActive: false,
+                    callEndTime: new Date()
+                  }
+                });
+                await newCallLog.save();
+              }
+              // Skip creating CallLog for missed/not_connected calls
             }
           }
         } catch (error) {
@@ -734,6 +742,50 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
   }
 });
 
+// MANUAL: Force recovery of stuck campaigns
+router.post('/campaigns/force-recovery', extractClientId, async (req, res) => {
+  try {
+    const { forceRecoverStuckCampaigns } = require('../services/campaignCallingService');
+    
+    console.log('🔧 MANUAL RECOVERY: Force recovery requested by client', req.clientId);
+    await forceRecoverStuckCampaigns();
+    
+    res.json({
+      success: true,
+      message: 'Stuck campaigns recovery completed successfully'
+    });
+  } catch (error) {
+    console.error('❌ MANUAL RECOVERY: Error during force recovery:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to recover stuck campaigns',
+      message: error.message
+    });
+  }
+});
+
+// MANUAL: Cleanup completed campaigns with details
+router.post('/campaigns/cleanup-completed', extractClientId, async (req, res) => {
+  try {
+    const { cleanupCompletedCampaignsWithDetails } = require('../services/campaignCallingService');
+    
+    console.log('🧹 MANUAL CLEANUP: Cleanup completed campaigns requested by client', req.clientId);
+    await cleanupCompletedCampaignsWithDetails();
+    
+    res.json({
+      success: true,
+      message: 'Completed campaigns cleanup completed successfully'
+    });
+  } catch (error) {
+    console.error('❌ MANUAL CLEANUP: Error during cleanup:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cleanup completed campaigns',
+      message: error.message
+    });
+  }
+});
+
 // Fetch campaign run history
 router.get('/campaigns/:id/history', extractClientId, async (req, res) => {
   try {
@@ -743,8 +795,25 @@ router.get('/campaigns/:id/history', extractClientId, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    const history = await CampaignHistory.find({ campaignId: id }).sort({ createdAt: -1 }).lean();
-    return res.json({ success: true, data: history });
+    // Exclude intermediate batch snapshots for clean, contiguous history
+    const rows = await CampaignHistory.find({
+      campaignId: id,
+      $or: [
+        { batchInfo: { $exists: false } },
+        { 'batchInfo.isIntermediate': { $ne: true } }
+      ]
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Normalize instance numbers in descending order without changing stored data
+    let nextNumber = rows.length;
+    const normalized = rows.map((r) => ({
+      ...r,
+      instanceNumber: nextNumber--
+    }));
+
+    return res.json({ success: true, data: normalized });
   } catch (error) {
     console.error('Error fetching campaign history:', error);
     return res.status(500).json({ success: false, error: 'Failed to fetch campaign history' });
@@ -3553,7 +3622,6 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
 });
 
 // Get merged call logs (completed + missed calls) with deduplication
-// Get merged call logs (completed + missed calls) with deduplication
 router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
   try {
     const { id } = req.params;
@@ -3590,76 +3658,74 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     // 2. Get all uniqueIds
     const allUniqueIds = details.map(d => d.uniqueId).filter(Boolean);
 
-    // 3. Find CallLogs for these uniqueIds
-    let logs = await CallLog.find({
-      clientId: req.clientId,
-      'metadata.customParams.uniqueid': { $in: allUniqueIds }
-    }).sort({ createdAt: -1 }).lean();
-    // Fallback: if none found under this clientId, try without client constraint
-    if (!logs || logs.length === 0) {
-      logs = await CallLog.find({
-        'metadata.customParams.uniqueid': { $in: allUniqueIds }
-      }).sort({ createdAt: -1 }).lean();
-    }
+    // Build a contacts map for O(1) lookups
+    const contactsMap = new Map((campaign.contacts || []).map(c => [String(c._id), c]));
 
-
-    // 4. Also check for ongoing calls (calls that started but haven't completed)
-    let ongoingCalls = await CallLog.find({
-      clientId: req.clientId,
-      'metadata.customParams.uniqueid': { $in: allUniqueIds },
-      $or: [
-        { isActive: true },
-        { leadStatus: 'maybe' },
-        { status: 'ongoing' },
-        { status: 'ringing' }
-      ]
-    }).sort({ createdAt: -1 }).lean();
-    if (!ongoingCalls || ongoingCalls.length === 0) {
-      ongoingCalls = await CallLog.find({
-        'metadata.customParams.uniqueid': { $in: allUniqueIds },
-        $or: [
-          { isActive: true },
-          { leadStatus: 'maybe' },
-          { status: 'ongoing' },
-          { status: 'ringing' }
-        ]
-      }).sort({ createdAt: -1 }).lean();
-    }
-
-
-    // Helper: compute robust duration by querying all logs for a uniqueId
-    async function getDurationByUniqueId(uid) {
-      try {
-        if (!uid) return 0;
-        let logsForUid = await CallLog.find({
-          'metadata.customParams.uniqueid': uid,
-          ...(req.clientId ? { clientId: req.clientId } : {})
-        }).sort({ createdAt: 1 }).lean();
-        if (!logsForUid || logsForUid.length === 0) {
-          // Fallback without client filter
-          logsForUid = await CallLog.find({
-            'metadata.customParams.uniqueid': uid
-          }).sort({ createdAt: 1 }).lean();
+    // 3. Single aggregation to fetch latest log per uniqueId and compute duration and isOngoing
+    const agg = await CallLog.aggregate([
+      { $match: { clientId: req.clientId, 'metadata.customParams.uniqueid': { $in: allUniqueIds } } },
+      { $sort: { createdAt: -1 } },
+      { $group: {
+          _id: '$metadata.customParams.uniqueid',
+          latest: { $first: '$$ROOT' },
+          maxExplicitDuration: { $max: { $ifNull: ['$duration', 0] } },
+          earliestCreatedAt: { $last: '$createdAt' },
+          lastTimestamp: { $first: { $ifNull: ['$metadata.callEndTime', { $ifNull: ['$updatedAt', { $ifNull: ['$time', '$createdAt'] }] }] } }
         }
-        if (!logsForUid || logsForUid.length === 0) return 0;
-        // Max of explicit durations
-        const maxExplicit = logsForUid.reduce((m, l) => {
-          const d = typeof l.duration === 'number' ? l.duration : 0;
-          return Math.max(m, d);
-        }, 0);
-        // Derive from timestamps
-        const first = logsForUid[0];
-        const last = logsForUid[logsForUid.length - 1];
-        const startMs = (first?.createdAt ? new Date(first.createdAt).getTime() : 0);
-        const endCandidate = last?.metadata?.callEndTime || last?.updatedAt || last?.time || last?.createdAt;
-        const endMs = endCandidate ? new Date(endCandidate).getTime() : 0;
-        const derived = Math.max(0, Math.round((endMs - startMs) / 1000));
-        const best = Math.max(maxExplicit, derived);
-        return Number.isFinite(best) ? best : 0;
-      } catch (_) {
-        return 0;
+      },
+      { $project: {
+          _id: 0,
+          uniqueid: '$_id',
+          latest: {
+            _id: '$latest._id',
+            createdAt: '$latest.createdAt',
+            updatedAt: '$latest.updatedAt',
+            time: '$latest.time',
+            duration: '$latest.duration',
+            status: '$latest.status',
+            leadStatus: '$latest.leadStatus',
+            mobile: '$latest.mobile',
+            metadata: {
+              isActive: '$latest.metadata.isActive',
+              callerId: '$latest.metadata.callerId',
+              userTranscriptCount: { $ifNull: ['$latest.metadata.userTranscriptCount', 0] },
+              aiResponseCount: { $ifNull: ['$latest.metadata.aiResponseCount', 0] },
+              customParams: {
+                uniqueid: '$_id',
+                contact_name: '$latest.metadata.customParams.contact_name',
+                name: '$latest.metadata.customParams.name',
+                whatsappMessageSent: '$latest.metadata.customParams.whatsappMessageSent',
+                whatsappRequested: '$latest.metadata.customParams.whatsappRequested'
+              }
+            },
+            contactName: '$latest.contactName'
+          },
+          computedDerivedDuration: {
+            $toInt: {
+              $max: [
+                0,
+                { $divide: [ { $subtract: [ { $toDate: '$lastTimestamp' }, { $toDate: '$earliestCreatedAt' } ] }, 1000 ] }
+              ]
+            }
+          },
+          maxExplicitDuration: 1
+        }
+      },
+      { $addFields: {
+          duration: { $max: ['$maxExplicitDuration', '$computedDerivedDuration'] },
+          isOngoing: {
+            $or: [
+              { $eq: ['$latest.metadata.isActive', true] },
+              { $in: ['$latest.status', ['ongoing', 'ringing']] },
+              { $eq: ['$latest.leadStatus', 'maybe'] }
+            ]
+          },
+          transcriptCount: { $add: ['$latest.metadata.userTranscriptCount', '$latest.metadata.aiResponseCount'] }
+        }
       }
-    }
+    ], { allowDiskUse: true });
+
+    const uniqueIdToAgg = new Map(agg.map(a => [a.uniqueid, a]));
 
     // Helper: sanitize display name to avoid numbers posing as names
     const sanitizeName = (raw, fallbackNumber) => {
@@ -3676,28 +3742,8 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       }
     };
 
-    // 5. Create a map of uniqueId to latest log (prioritizing ongoing calls)
-    const uniqueIdToLog = new Map();
-    
-    // First add ongoing calls (they take priority)
-    for (const log of ongoingCalls) {
-      const uid = log?.metadata?.customParams?.uniqueid;
-      if (uid && !uniqueIdToLog.has(uid)) {
-        // Mark this as an ongoing call
-        const ongoingLog = { ...log, isOngoing: true };
-        uniqueIdToLog.set(uid, ongoingLog);
-      }
-    }
-    
-    // Then add completed calls (only if not already added as ongoing)
-    for (const log of logs) {
-      const uid = log?.metadata?.customParams?.uniqueid;
-      if (uid && !uniqueIdToLog.has(uid)) {
-        uniqueIdToLog.set(uid, log);
-      }
-    }
-
     // 5. Build merged list with deduplication
+
     const mergedCalls = [];
     const processedUniqueIds = new Set();
 
@@ -3706,36 +3752,18 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       const uniqueId = detail.uniqueId;
       if (!uniqueId || processedUniqueIds.has(uniqueId)) continue;
 
-      const log = uniqueIdToLog.get(uniqueId);
-      if (log) {
+      const aggEntry = uniqueIdToAgg.get(uniqueId);
+      if (aggEntry && aggEntry.latest) {
+        const log = aggEntry.latest;
         // SIMPLE RULES:
         // - If there is a CallLog: status from metadata.isActive (true -> ongoing, else completed)
         // - Missed is only decided in the no-logs branch below
-        const isActiveFlag = log?.metadata?.isActive;
-        const isOngoingFlag = isActiveFlag === true;
+        const isOngoingFlag = !!aggEntry.isOngoing;
         // Show 'ongoin' while the call is actively in progress
         let callStatus = isOngoingFlag ? 'ongoing' : 'completed';
         
-        // Compute a robust duration: prefer numeric duration; else derive from timestamps
-        let computedDuration = (typeof log.duration === 'number' && log.duration > 0)
-          ? log.duration
-          : (() => {
-              try {
-                const endTs = log?.metadata?.callEndTime || log?.updatedAt || log?.time;
-                const startTs = log?.createdAt || log?.time;
-                const endMs = endTs ? new Date(endTs).getTime() : 0;
-                const startMs = startTs ? new Date(startTs).getTime() : 0;
-                const diffSec = Math.max(0, Math.round((endMs - startMs) / 1000));
-                return Number.isFinite(diffSec) ? diffSec : 0;
-              } catch (_) {
-                return 0;
-              }
-            })();
-
-        // If still zero, fetch from DB using uniqueId
-        if (!computedDuration || computedDuration === 0) {
-          computedDuration = await getDurationByUniqueId(uniqueId);
-        }
+        // Use precomputed duration from aggregation
+        const computedDuration = typeof aggEntry.duration === 'number' ? aggEntry.duration : (typeof log.duration === 'number' ? log.duration : 0);
 
         // Build a clean display name
         const fallbackNumber = log.mobile || log.metadata?.callerId || null;
@@ -3747,15 +3775,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         ) || null;
 
         // Compute transcript count from metadata if available
-        const transcriptCount = (() => {
-          try {
-            const userCnt = Number(log?.metadata?.userTranscriptCount) || 0;
-            const aiCnt = Number(log?.metadata?.aiResponseCount) || 0;
-            return userCnt + aiCnt;
-          } catch (_) {
-            return 0;
-          }
-        })();
+        const transcriptCount = typeof aggEntry.transcriptCount === 'number' ? aggEntry.transcriptCount : 0;
 
         // This is either a completed call or an ongoing call
         mergedCalls.push({
@@ -3770,12 +3790,12 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           isMissed: false,
           isOngoing: isOngoingFlag,
           transcriptCount,
-          whatsappMessageSent: log.metadata?.customParams?.whatsappMessageSent || 
-                            log.metadata?.whatsappMessageSent || 
+          whatsappMessageSent: log.metadata?.customParams?.whatsappMessageSent ||
+                            log.metadata?.whatsappMessageSent ||
                             detail.whatsappMessageSent || 
                             false ,
-          whatsappRequested: log.metadata?.customParams?.whatsappRequested || 
-                            log.metadata?.whatsappRequested || 
+          whatsappRequested: log.metadata?.customParams?.whatsappRequested ||
+                            log.metadata?.whatsappRequested ||
                             detail.whatsappRequested || 
                             false 
         });
@@ -3791,7 +3811,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       if (!uniqueId || processedUniqueIds.has(uniqueId)) continue;
 
       // No CallLog found for this uniqueId yet – fall back to campaign.details status
-      const contact = campaign.contacts?.find(c => String(c._id) === String(detail.contactId));
+      const contact = contactsMap.get(String(detail.contactId));
       // Default: ringing immediately after initiation until timeout threshold
       let fallbackStatus = 'ringing';
 
@@ -3821,9 +3841,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           return 0;
         }
       })();
-      if (!computedDetailDuration || computedDetailDuration === 0) {
-        computedDetailDuration = await getDurationByUniqueId(uniqueId);
-      }
+      // No extra DB lookup here; keep computedDetailDuration as-is to avoid N+1 queries
       // Build a clean display name from contact when logs are absent
       const fallbackNumber2 = contact?.phone || null;
       const displayName2 = sanitizeName(contact?.name || '', fallbackNumber2) || null;
@@ -3885,12 +3903,22 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       else if (call.status === 'missed' || call.isMissed) {
         acc.totalMissed += 1;
       }
+
+      // Count ongoing and ringing totals
+      if (call.isOngoing === true || call.status === 'ongoing') {
+        acc.totalOngoing += 1;
+      }
+      if (call.status === 'ringing') {
+        acc.totalRinging += 1;
+      }
       
       return acc;
     }, {
       totalConnected: 0,
       totalMissed: 0,
-      totalDuration: 0
+      totalDuration: 0,
+      totalOngoing: 0,
+      totalRinging: 0
     });
 
 
@@ -3906,7 +3934,9 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
         totalItems: totalDetails,
         totalConnected: totals.totalConnected,
         totalMissed: totals.totalMissed,
-        totalDuration: totals.totalDuration
+        totalDuration: totals.totalDuration,
+        totalOngoing: totals.totalOngoing,
+        totalRinging: totals.totalRinging
       },
       pagination: {
         currentPage: page,
@@ -4574,26 +4604,30 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
       runStartTime = new Date(callingProgress.startTime);
     }
 
-    // Compute UI isActive: true if there are active calls, or in-memory says running;
-    // false if nothing initiated or all finalized
-    let isActive = false;
-    if (callingProgress && callingProgress.isRunning === true) {
-      isActive = true;
-    } else if (hasActive) {
-      isActive = true;
-    } else if (initiatedCount === 0) {
-      isActive = false;
-    } else {
-      isActive = !allCallsFinalized;
+    // Auto-update isRunning based on actual call status to prevent stuck campaigns
+    // BUT respect manual stops - don't auto-start if campaign was manually stopped
+    let shouldUpdateIsRunning = false;
+    let newIsRunning = campaign.isRunning;
+    
+    if (campaign.isRunning && allCallsFinalized) {
+      // Campaign is marked as running but all calls are finalized - should be stopped
+      newIsRunning = false;
+      shouldUpdateIsRunning = true;
+    }
+    // REMOVED: Auto-start logic that was overriding manual stops
+    // Only auto-stop when all calls are finalized, don't auto-start
+    
+    // Update database if needed
+    if (shouldUpdateIsRunning) {
+      campaign.isRunning = newIsRunning;
+      await campaign.save();
     }
 
     res.json({
       success: true,
       data: {
         campaignId: campaign._id,
-        // Keep legacy isRunning; expose computed isActive for the UI
-        isRunning: campaign.isRunning,
-        isActive,
+        isRunning: newIsRunning,
         totalContacts: campaign.contacts.length,
         progress: callingProgress,
         allCallsFinalized,

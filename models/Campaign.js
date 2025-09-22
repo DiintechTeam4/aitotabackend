@@ -56,6 +56,32 @@ const campaignSchema = new mongoose.Schema({
       type: String,
       required: false
     },
+    leadStatus: {
+      type: String,
+      enum: [
+        // Connected - Interested
+        'vvi',                    // very very interested
+        'maybe',                  // maybe
+        'enrolled',               // enrolled
+        
+        // Connected - Not Interested
+        'junk_lead',              // junk lead
+        'not_required',           // not required
+        'enrolled_other',         // enrolled other
+        'decline',                // decline
+        'not_eligible',           // not eligible
+        'wrong_number',           // wrong number
+        
+        // Connected - Followup
+        'hot_followup',           // hot followup
+        'cold_followup',          // cold followup
+        'schedule',               // schedule
+        
+        // Not Connected
+        'not_connected'           // not connected
+      ],
+      default: 'not_connected'
+    },
   }],
   // Array to store campaign contacts (copied from groups but can be manipulated independently)
   contacts: [{
