@@ -745,6 +745,8 @@ const updateAgent = async (req, res) => {
       'voiceSelection',
       'contextMemory',
       'brandInfo',
+      // Q&A
+      'qa',
       'startingMessages',
       'knowledgeBase',
       'depositions',

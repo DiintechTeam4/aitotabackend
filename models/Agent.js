@@ -83,6 +83,16 @@ const agentSchema = new mongoose.Schema({
   contextMemory: { type: String },
   brandInfo: { type: String },
 
+  // Q&A items for agent (managed via dashboard System Configuration)
+  qa: [
+    {
+      question: { type: String, required: true },
+      answer: { type: String, required: true },
+      createdAt: { type: Date, default: Date.now },
+      updatedAt: { type: Date },
+    }
+  ],
+
 
   // Multiple starting messages
   startingMessages: [
