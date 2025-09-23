@@ -98,7 +98,7 @@ const agentSchema = new mongoose.Schema({
   callerId: { type: String, index: true }, // For outbound call matching
   serviceProvider: {
     type: String,
-    enum: ["twilio", "vonage", "plivo", "bandwidth", "other", "c-zentrix", "tata", "sanpbx"],
+    enum: ["twilio", "vonage", "plivo", "bandwidth", "other", "c-zentrix", "tata", "sanpbx", "snapbx"],
   },
   X_API_KEY: { type: String }, // Add missing X_API_KEY field
 
