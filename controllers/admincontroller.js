@@ -467,7 +467,8 @@ const assignDidToAgent = async (req, res) => {
       { $unset: { didNumber: '', callerId: '' } }
     );
 
-    agent.serviceProvider = agent.serviceProvider || didDoc.provider;
+    // Always align the agent's provider with the DID's provider on assignment
+    agent.serviceProvider = didDoc.provider;
     agent.didNumber = didDoc.did;
     agent.callerId = derivedCallerId;
     
