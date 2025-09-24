@@ -3023,6 +3023,30 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
 
     await campaign.save();
 
+    // Also persist the human-friendly range into CampaignHistory.selectedRanges for this run if possible
+    try {
+      const runId = req.body.runId || (campaign.details && campaign.details[0] && campaign.details[0].runId) || null;
+      if (runId) {
+        const CampaignHistory = require('../models/CampaignHistory');
+        const Group = require('../models/Group');
+        const grp = await Group.findOne({ _id: groupId }).lean();
+        const friendly = {
+          groupId: String(groupId),
+          groupName: grp?.name || '',
+          start: startIndex + 1, // store 1-based inclusive
+          end: endIndex,         // endIndex is exclusive → already human inclusive when used as label
+          selectedAt: new Date()
+        };
+        await CampaignHistory.updateOne(
+          { runId },
+          { $push: { selectedRanges: friendly } },
+          { upsert: true }
+        );
+      }
+    } catch (e) {
+      console.warn('Warning: failed to persist selected range to history:', e?.message);
+    }
+
     return res.json({
       success: true,
       data: {
@@ -4186,7 +4210,7 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
         const accessKey = agent?.accessKey;
         const callerId = agent?.callerId;
         if (!accessToken || !accessKey || !callerId) {
-          return res.status(400).json({ success: false, error: 'SANPBX_MISSING_FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
+          return res.status(400).json({ success: false, error: 'TELEPHONY MISSING FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
         }
         const axios = require('axios');
         await axios.post(
@@ -4364,7 +4388,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
         const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
 
         if (!accessToken || !accessKey || !callerId) {
-          return res.status(400).json({ success: false, error: 'SANPBX_MISSING_FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
+          return res.status(400).json({ success: false, error: 'TELEPHONY MISSING FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
         }
 
         // 1) Generate API token (send access token in header)
@@ -5130,8 +5154,8 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
     const leads = {
       // Connected - Interested
       veryInterested: {
-        data: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'Very Interested'),
-        count: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'Very Interested').length
+        data: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'very interested'),
+        count: logs.filter(l => l.leadStatus === 'vvi' || l.leadStatus === 'very interested').length
       },
       maybe: {
         data: logs.filter(l => l.leadStatus === 'maybe' || l.leadStatus === 'medium'),
@@ -5192,7 +5216,7 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
       other: {
         data: logs.filter(l => {
           const predefinedStatuses = [
-            'vvi', 'Very Interested', 'maybe', 'medium', 'enrolled', 
+            'vvi', 'very interested', 'maybe', 'medium', 'enrolled', 
             'junk lead', 'not required', 'enrolled other', 'decline', 
             'not eligible', 'wrong number', 'hot followup', 'cold followup', 
             'schedule', 'not connected'
@@ -5201,7 +5225,7 @@ router.get('/dials/leads', extractClientId, async(req,res)=>{
         }),
         count: logs.filter(l => {
           const predefinedStatuses = [
-            'vvi', 'Very Interested', 'maybe', 'medium', 'enrolled', 
+            'vvi', 'very interested', 'maybe', 'medium', 'enrolled', 
             'junk lead', 'not required', 'enrolled other', 'decline', 
             'not eligible', 'wrong number', 'hot followup', 'cold followup', 
             'schedule', 'not connected'
