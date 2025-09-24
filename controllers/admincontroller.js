@@ -470,7 +470,14 @@ const assignDidToAgent = async (req, res) => {
     agent.serviceProvider = agent.serviceProvider || didDoc.provider;
     agent.didNumber = didDoc.did;
     agent.callerId = derivedCallerId;
-    // Preserve existing accessToken/accessKey; they may be configured elsewhere
+    
+    // Set SANPBX credentials if provider is snapbx/sanpbx
+    if (didDoc.provider === 'snapbx' || didDoc.provider === 'sanpbx') {
+      agent.accessToken = agent.accessToken || '265b2d7e5d1a5d9c33fc22b01e5d0f19';
+      agent.accessKey = agent.accessKey || 'mob';
+      agent.appId = agent.appId || '3';
+    }
+    
     await agent.save();
 
     // Update DID assignment
@@ -768,7 +775,8 @@ const updateAgent = async (req, res) => {
       // SnapBX fields
       'didNumber',
       'accessToken',
-      'accessKey'
+      'accessKey',
+      'appId'
     ];
 
     const filteredUpdateData = {};

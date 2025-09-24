@@ -116,6 +116,7 @@ const agentSchema = new mongoose.Schema({
   didNumber: { type: String },
   accessToken: { type: String },
   accessKey: { type: String },
+  appId: { type: String },
 
   // UI customization
   uiImage: { type: String }, // base64 image for agent avatar/logo
