@@ -753,6 +753,7 @@ const updateAgent = async (req, res) => {
       'voiceSelection',
       'contextMemory',
       'brandInfo',
+      'details',
       // Q&A
       'qa',
       'startingMessages',
