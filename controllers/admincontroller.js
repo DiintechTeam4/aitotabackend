@@ -294,7 +294,7 @@ const getClients = async (req, res) => {
 const getClientToken = async (req, res) => {
   try {
     const { clientId } = req.params;
-    const adminId = req.user.id;
+    const adminId = req.user.id;    
 
     console.log('getClientToken called with:', {
       clientId,
