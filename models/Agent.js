@@ -82,6 +82,8 @@ const agentSchema = new mongoose.Schema({
   },
   contextMemory: { type: String },
   brandInfo: { type: String },
+  // Dynamic configuration details (separate from brandInfo)
+  details: { type: String },
 
   // Q&A items for agent (managed via dashboard System Configuration)
   qa: [

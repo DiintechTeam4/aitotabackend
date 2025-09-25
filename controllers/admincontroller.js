@@ -6,6 +6,7 @@ const Client = require("../models/Client");
 const Agent = require("../models/Agent");
 const { getobject } = require("../utils/s3");
 const DidNumber = require("../models/DidNumber");
+const Campaign = require("../models/Campaign");
 
 
 // Generate JWT Token for admin
@@ -449,6 +450,23 @@ const assignDidToAgent = async (req, res) => {
     const agent = await Agent.findById(agentId);
     if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' });
 
+    // Lock checks: prevent changing a locked agent's DID, and prevent taking a DID from a locked agent
+    const isAgentLocked = async (id) => !!(await Campaign.exists({ isRunning: true, agent: { $in: [String(id), id] } }));
+    const targetLocked = await isAgentLocked(agent._id);
+
+    // If target agent is locked and trying to change to a different DID, block
+    if (targetLocked && agent.didNumber && String(agent.didNumber) !== String(didDoc.did)) {
+      return res.status(403).json({ success: false, message: 'Agent is in a running campaign. DID cannot be changed now.' });
+    }
+
+    // If DID is assigned to another agent who is locked, block reassignment
+    if (didDoc.assignedAgent && String(didDoc.assignedAgent) !== String(agent._id)) {
+      const currentOwnerLocked = await isAgentLocked(didDoc.assignedAgent);
+      if (currentOwnerLocked) {
+        return res.status(403).json({ success: false, message: 'DID is in use by an agent with a running campaign.' });
+      }
+    }
+
     // Update agent telephony fields for SANPBX/SNAPBX
     const derivedCallerId = didDoc.callerId && didDoc.callerId.trim() !== ''
       ? didDoc.callerId
@@ -467,10 +485,11 @@ const assignDidToAgent = async (req, res) => {
       { $unset: { didNumber: '', callerId: '' } }
     );
 
-    agent.serviceProvider = agent.serviceProvider || didDoc.provider;
+    // Always align the agent's provider with the DID's provider on assignment
+    agent.serviceProvider = didDoc.provider;
     agent.didNumber = didDoc.did;
     agent.callerId = derivedCallerId;
-    
+  
     // Set SANPBX credentials if provider is snapbx/sanpbx
     if (didDoc.provider === 'snapbx' || didDoc.provider === 'sanpbx') {
       agent.accessToken = agent.accessToken || '265b2d7e5d1a5d9c33fc22b01e5d0f19';
@@ -752,6 +771,7 @@ const updateAgent = async (req, res) => {
       'voiceSelection',
       'contextMemory',
       'brandInfo',
+      'details',
       // Q&A
       'qa',
       'startingMessages',
@@ -778,6 +798,12 @@ const updateAgent = async (req, res) => {
       'accessKey',
       'appId'
     ];
+
+    // Enforce lock logic: prevent changing DID for a locked agent
+    const isRunningLocked = await Campaign.exists({ isRunning: true, agent: { $in: [String(agentId), agentId] } });
+    if (isRunningLocked && Object.prototype.hasOwnProperty.call(updateData, 'didNumber')) {
+      return res.status(403).json({ success: false, message: 'Agent has a running campaign. DID cannot be changed now.' });
+    }
 
     const filteredUpdateData = {};
     Object.keys(updateData).forEach(key => {
@@ -818,6 +844,28 @@ const updateAgent = async (req, res) => {
 };
 
 module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, listDidNumbers, createDidNumber, addDidNumber, assignDidToAgent, unassignDid };
+
+// Return agents locked due to running campaigns
+module.exports.getCampaignLocks = async (_req, res) => {
+  try {
+    const running = await Campaign.find({ isRunning: true }).lean();
+    const lockedAgentIds = new Set();
+    for (const camp of running) {
+      const agentIds = Array.isArray(camp.agent) ? camp.agent : [];
+      agentIds.forEach((a) => { if (a) lockedAgentIds.add(String(a)); });
+    }
+
+    const ids = Array.from(lockedAgentIds);
+    const lockedAgents = ids.length
+      ? await Agent.find({ _id: { $in: ids } }).select('_id agentName clientId didNumber serviceProvider').lean()
+      : [];
+
+    return res.json({ success: true, data: { lockedAgentIds: ids, lockedAgents } });
+  } catch (error) {
+    console.error('[getCampaignLocks] error:', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
 // System Prompt Handlers
 module.exports.createSystemPrompt = async (req, res) => {
   try {

@@ -70,4 +70,7 @@ router.post('/did-numbers/add', verifyAdminToken, adminCtrl.addDidNumber);
 router.post('/did-numbers/:did/assign', verifyAdminToken, adminCtrl.assignDidToAgent);
 router.post('/did-numbers/:did/unassign', verifyAdminToken, adminCtrl.unassignDid);
 
+// Campaign locks: which agents are locked due to running campaigns
+router.get('/campaign-locks', verifyAdminToken, adminCtrl.getCampaignLocks);
+
 module.exports = router;
