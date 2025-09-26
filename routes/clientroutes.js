@@ -4051,7 +4051,7 @@ router.get('/campaigns/:id/missed-calls', extractClientId, async (req, res) => {
 router.post('/campaigns/:id/call-missed', extractClientId, async (req, res) => {
   try {
     const { id } = req.params;
-    const { agentId, delayBetweenCalls = 2000 } = req.body || {};
+     const { agentId, delayBetweenCalls = 2000, runId } = req.body || {};
 
     if (!agentId) {
       return res.status(400).json({ success: false, error: 'AGENT_REQUIRED', message: 'agentId is required' });
@@ -4067,35 +4067,123 @@ router.post('/campaigns/:id/call-missed', extractClientId, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Campaign not found' });
     }
 
-    // Build missed uniqueIds (no CallLog yet)
-    const detailEntries = Array.isArray(campaign.details) ? campaign.details : [];
-    const allUniqueIds = detailEntries.map(d => d && d.uniqueId).filter(u => typeof u === 'string' && u.trim().length > 0);
+    // Build retry list: only numbers missed in THIS runId (or overall if runId not provided)
+    const details = Array.isArray(campaign.details) ? campaign.details : [];
 
-    let missingUniqueIds = [];
-    if (allUniqueIds.length > 0) {
-      const logs = await CallLog.find({
-        clientId: req.clientId,
-        'metadata.customParams.uniqueid': { $in: allUniqueIds }
-      }, { 'metadata.customParams.uniqueid': 1 }).lean();
-
-      const uniqueIdsWithLogs = new Set((logs || []).map(l => l?.metadata?.customParams?.uniqueid).filter(Boolean));
-      missingUniqueIds = allUniqueIds.filter(u => !uniqueIdsWithLogs.has(u));
+    // Build allowlist of uniqueIds from CallLog for this runId (covers older details without runId)
+    let uniqueIdsForRun = new Set();
+    if (runId) {
+      try {
+        const runLogs = await CallLog.find({ 'metadata.customParams.runId': runId }, { 'metadata.customParams.uniqueid': 1, mobile: 1 }).lean();
+        uniqueIdsForRun = new Set((runLogs || []).map(l => l?.metadata?.customParams?.uniqueid).filter(Boolean));
+      } catch (_) {}
     }
 
-    // Map to contacts for retry (dedupe by phone)
-    const contacts = Array.isArray(campaign.contacts) ? campaign.contacts : [];
-    const seenPhones = new Set();
-    const retryContacts = contacts.filter(c => {
-      if (!c || !c.phone) return false;
-      const key = String(c.phone).replace(/[^\d]/g, '');
-      if (seenPhones.has(key)) return false;
-      seenPhones.add(key);
-      return true;
+    const missedDetails = details.filter(d => {
+      if (!d) return false;
+      if (runId && d.runId !== runId && !uniqueIdsForRun.has(d.uniqueId)) return false;
+      const status = String(d.status || '').toLowerCase();
+      const lead = String(d.leadStatus || '').toLowerCase();
+      // Consider missed if not completed OR completed with not_connected
+      return status !== 'completed' || lead === 'not_connected';
     });
+
+    // Resolve phone for each missed detail; prefer campaign.contacts by contactId, fallback to CallLog
+    const idToContact = new Map((campaign.contacts || []).map(c => [String(c._id || ''), c]));
+    const seenPhones = new Set();
+    let retryContacts = [];
+    for (const d of missedDetails) {
+      let phone = null, name = '';
+      const byId = d.contactId && idToContact.get(String(d.contactId));
+      if (byId && byId.phone) {
+        phone = byId.phone; name = byId.name || '';
+      } else if (d.uniqueId) {
+        const log = await CallLog.findOne({ 'metadata.customParams.uniqueid': d.uniqueId }, { mobile: 1 }).lean();
+        phone = log?.mobile || null;
+      }
+      if (!phone) continue;
+      const key = String(phone).replace(/[^\d]/g, '');
+      if (seenPhones.has(key)) continue;
+      seenPhones.add(key);
+      retryContacts.push({ phone, name, _id: d.contactId || null });
+    }
+
+    // Fallback: if nothing found in details (e.g., after history save cleared details), use CampaignHistory for this runId
+    if (retryContacts.length === 0 && runId) {
+      try {
+        const CampaignHistory = require('../models/CampaignHistory');
+        const hist = await CampaignHistory.findOne({ runId }).lean();
+        const contactsFromHistory = Array.isArray(hist?.contacts) ? hist.contacts : [];
+        for (const c of contactsFromHistory) {
+          const isMissed = String(c.status || '').toLowerCase() !== 'completed' || String(c.leadStatus || '').toLowerCase() === 'not_connected';
+          if (!isMissed) continue;
+          const phone = c.number || null;
+          if (!phone) continue;
+          const key = String(phone).replace(/[^\d]/g, '');
+          if (seenPhones.has(key)) continue;
+          seenPhones.add(key);
+          retryContacts.push({ phone, name: c.name || '', _id: c.contactId || null });
+        }
+      } catch (_) {}
+    }
 
     if (retryContacts.length === 0) {
       return res.json({ success: true, started: false, count: 0 });
     }
+
+    // Ensure retry contacts are reflected in campaign.contacts by REPLACING prior entries
+    try {
+      const contactsArr = Array.isArray(campaign.contacts) ? campaign.contacts : [];
+      const digits = (v) => String(v || '').replace(/[^\d]/g, '');
+
+      // Index existing contacts by contactId and by phone
+      const byId = new Map();
+      const byPhone = new Map();
+      for (let i = 0; i < contactsArr.length; i++) {
+        const c = contactsArr[i];
+        const cid = String(c._id || '').trim();
+        const ph = digits(c.phone);
+        if (cid) byId.set(cid, i);
+        if (ph) byPhone.set(ph, i);
+      }
+
+      // Apply replacements/upserts
+      for (const rc of retryContacts) {
+        const ph = digits(rc.phone);
+        const cid = String(rc._id || '').trim();
+        if (!ph) continue;
+
+        if (cid && byId.has(cid)) {
+          // Replace phone/name on the existing record for this contactId
+          const idx = byId.get(cid);
+          contactsArr[idx].phone = rc.phone;
+          if (rc.name) contactsArr[idx].name = rc.name;
+          byPhone.set(ph, idx);
+        } else if (byPhone.has(ph)) {
+          // Update name on the existing phone record
+          const idx = byPhone.get(ph);
+          if (rc.name) contactsArr[idx].name = rc.name;
+        } else {
+          // Insert a single new entry (no duplicates)
+          contactsArr.push({ phone: rc.phone, name: rc.name || '' });
+          const newIdx = contactsArr.length - 1;
+          if (cid) byId.set(cid, newIdx);
+          byPhone.set(ph, newIdx);
+        }
+      }
+
+      // De-duplicate: keep only one record per phone (last write wins)
+      const seen = new Set();
+      const deduped = [];
+      for (let i = contactsArr.length - 1; i >= 0; i--) {
+        const ph = digits(contactsArr[i].phone);
+        if (!ph || seen.has(ph)) continue;
+        seen.add(ph);
+        deduped.push(contactsArr[i]);
+      }
+      campaign.contacts = deduped.reverse();
+      await campaign.save();
+    } catch (_) {}
 
     // Resolve API key from Agent (same approach as start-calling)
     const agent = await Agent.findById(agentId).lean();
@@ -4116,7 +4204,7 @@ router.post('/campaigns/:id/call-missed', extractClientId, async (req, res) => {
       try {
         for (let i = 0; i < retryContacts.length; i++) {
           const contact = retryContacts[i];
-          const result = await makeSingleCall(contact, agentId, apiKey, campaign._id, req.clientId);
+          const result = await makeSingleCall({ phone: contact.phone, name: contact.name }, agentId, apiKey, campaign._id, req.clientId, runId);
           if (result && result.uniqueId) {
             const initiatedAt = new Date();
             const callDetail = {
@@ -4126,6 +4214,7 @@ router.post('/campaigns/:id/call-missed', extractClientId, async (req, res) => {
               status: 'ringing',
               lastStatusUpdate: initiatedAt,
               callDuration: 0,
+              ...(runId ? { runId } : {})
             };
             const exists = campaign.details.find(d => d.uniqueId === result.uniqueId);
             if (!exists) {
@@ -4377,55 +4466,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid phone' });
     }
 
-    // Branch: SANPBX provider flow
-    if (String(agent.serviceProvider).toLowerCase() === 'snapbx' || String(agent.serviceProvider).toLowerCase() === 'sanpbx') {
-      try {
-        const axios = require('axios');
-        const accessToken = agent.accessToken;
-        const accessKey = agent.accessKey;
-        const callerId = agent.callerId;
-        // Ensure leading '0' if provider expects local dialing
-        const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
-
-        if (!accessToken || !accessKey || !callerId) {
-          return res.status(400).json({ success: false, error: 'TELEPHONY MISSING FIELDS', message: 'accessToken, accessKey and callerId are required on agent for SANPBX' });
-        }
-
-        // 1) Generate API token (send access token in header)
-        const tokenUrl = `https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken`;
-        const tokenResp = await axios.post(
-          tokenUrl,
-          { access_key: accessKey },
-          { headers: { Accesstoken: accessToken } }
-        );
-        const sanToken = tokenResp?.data?.Apitoken;
-        if (!sanToken) {
-          return res.status(502).json({ success: false, error: 'SANPBX_TOKEN_FAILED', data: tokenResp?.data || null });
-        }
-
-        // 2) Dial call (send API token in header)
-        const dialUrl = `https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall`;
-        const dialBody = {
-          appid: 2,
-          call_to: callTo,
-          caller_id: callerId,
-          custom_field
-        };
-        const dialResp = await axios.post(
-          dialUrl,
-          dialBody,
-          { headers: { Apitoken: sanToken } }
-        );
-
-        return res.status(200).json({ success: true, provider: 'sanpbx', data: dialResp?.data || {} });
-      } catch (e) {
-        const status = e?.response?.status;
-        const data = e?.response?.data;
-        return res.status(502).json({ success: false, error: 'SANPBX_DIAL_FAILED', status, data, message: e.message });
-      }
-    }
-
-    // Default: fall back to existing C-Zentrax flow via makeSingleCall
+    // Use makeSingleCall service for all providers (including SANPBX)
     // Resolve API key: prefer agent's X_API_KEY like start-calling; fallback to client key
     let resolvedApiKey = apiKey;
     if (!resolvedApiKey) {
@@ -4450,46 +4491,49 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       req.clientId
     );
 
-    // If tied to a campaign and call successfully initiated, mirror bulk workflow
+    // If tied to a campaign and call successfully initiated, update campaign asynchronously (non-blocking)
     if (result.success && campaignId && result.uniqueId) {
-      try {
-        const Campaign = require('../models/Campaign');
-        const campaign = await Campaign.findById(campaignId);
-        if (campaign) {
-          const initiatedAt = new Date();
-          // Prefer contactId from request; otherwise best-effort resolve by phone
-          let resolvedContactId = contact.contactId || null;
-          if (!resolvedContactId) {
-            try {
-              const matched = (campaign.contacts || []).find((c) => {
-                const p1 = (c.phone || c.number || '').replace(/\D/g, '');
-                const p2 = (contact.phone || '').replace(/\D/g, '');
-                return p1.endsWith(p2) || p2.endsWith(p1);
-              });
-              if (matched && matched._id) resolvedContactId = matched._id;
-            } catch (_) {}
-          }
+      // Run campaign update in background to avoid blocking the response
+      setImmediate(async () => {
+        try {
+          const Campaign = require('../models/Campaign');
+          const campaign = await Campaign.findById(campaignId);
+          if (campaign) {
+            const initiatedAt = new Date();
+            // Prefer contactId from request; otherwise best-effort resolve by phone
+            let resolvedContactId = contact.contactId || null;
+            if (!resolvedContactId) {
+              try {
+                const matched = (campaign.contacts || []).find((c) => {
+                  const p1 = (c.phone || c.number || '').replace(/\D/g, '');
+                  const p2 = (contact.phone || '').replace(/\D/g, '');
+                  return p1.endsWith(p2) || p2.endsWith(p1);
+                });
+                if (matched && matched._id) resolvedContactId = matched._id;
+              } catch (_) {}
+            }
 
-          const callDetail = {
-            uniqueId: result.uniqueId,
-            contactId: resolvedContactId,
-            time: initiatedAt,
-            status: 'ringing',
-            lastStatusUpdate: initiatedAt,
-            callDuration: 0,
-          };
-          const exists = campaign.details.find((d) => d.uniqueId === result.uniqueId);
-          if (!exists) {
-            campaign.details.push(callDetail);
-            await campaign.save();
+            const callDetail = {
+              uniqueId: result.uniqueId,
+              contactId: resolvedContactId,
+              time: initiatedAt,
+              status: 'ringing',
+              lastStatusUpdate: initiatedAt,
+              callDuration: 0,
+            };
+            const exists = campaign.details.find((d) => d.uniqueId === result.uniqueId);
+            if (!exists) {
+              campaign.details.push(callDetail);
+              await campaign.save();
+            }
+            setTimeout(() => {
+              updateCallStatusFromLogs(campaign._id, result.uniqueId).catch(() => {});
+            }, 40000);
           }
-          setTimeout(() => {
-            updateCallStatusFromLogs(campaign._id, result.uniqueId).catch(() => {});
-          }, 40000);
+        } catch (e) {
+          console.error('Failed to append single-call detail to campaign:', e);
         }
-      } catch (e) {
-        console.error('Failed to append single-call detail to campaign:', e);
-      }
+      });
     }
 
     return res.status(200).json({ success: true, data: result });
