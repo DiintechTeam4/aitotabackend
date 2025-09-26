@@ -3454,7 +3454,7 @@ router.post('/campaigns/:id/sync-contacts', extractClientId, async (req, res) =>
           if (!existingContact) {
             const safeName = (groupContact && typeof groupContact.name === 'string' && groupContact.name.trim())
               ? groupContact.name.trim()
-              : (groupContact && groupContact.phone) || 'Unknown';
+              : (groupContact && groupContact.phone) || '';
             newContacts.push({
               _id: new mongoose.Types.ObjectId(),
               name: safeName,
@@ -4447,6 +4447,11 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     const contactPhoneRaw =
       typeof contact === 'string' ? contact : (contact && (contact.phone || contact.number));
     const contactNameRaw = typeof contact === 'object' && contact ? (contact.name || contact.fullName || '') : '';
+    // Also accept name when contact is a plain string: from top-level body or custom_field
+    const topLevelName = (typeof contact !== 'object')
+      ? ((req.body && req.body.name) || (custom_field && (custom_field.name || custom_field.contact_name)) || '')
+      : '';
+    const resolvedName = contactNameRaw || topLevelName || '';
     if (!contactPhoneRaw) {
       log('validation.failed', { reason: 'Missing contact (phone)' });
       return res.status(400).json({ success: false, error: 'Missing contact (phone)' });
@@ -4524,7 +4529,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     log('call.initiating', { agentId, campaignId: campaignId || null });
     const result = await makeSingleCall(
       {
-        name: contactNameRaw || 'Unknown',
+        name: resolvedName,
         phone: normalizedDigits,
       },
       agentId,

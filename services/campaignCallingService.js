@@ -427,7 +427,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
 
       // 2) Dial call (apitoken in header)
       const dialUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall';
-      const dialBody = { appid: 2, call_to: callTo, caller_id: callerId, custom_field: { uniqueid: uniqueId, name: contact.name , contact_name: contact.name, sanToken, runId } };
+      const dialBody = { appid: 2, call_to: callTo, caller_id: callerId, custom_field: { uniqueid: uniqueId, name: contact.name , sanToken, runId } };
       const response = await axios.post(dialUrl, dialBody, { headers: { Apitoken: sanToken }, timeout: 10000 });
 
       return {
