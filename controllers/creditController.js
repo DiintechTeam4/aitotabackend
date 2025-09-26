@@ -47,22 +47,62 @@ const getAllCreditRecords = async (req, res) => {
 
     // Build filter
     const filter = {};
-    if (search) {
-      filter.$or = [
-        { "client.name": { $regex: search, $options: "i" } },
-        { "client.email": { $regex: search, $options: "i" } }
-      ];
+    // Efficient server-side search via Client lookup
+    if (search && typeof search === 'string' && search.trim().length > 0) {
+      const term = search.trim();
+      try {
+        const clients = await Client.find({
+          $or: [
+            { name: { $regex: term, $options: 'i' } },
+            { email: { $regex: term, $options: 'i' } },
+            { businessName: { $regex: term, $options: 'i' } },
+          ]
+        }).select('_id').limit(200).lean();
+        const ids = clients.map(c => c._id);
+        if (ids.length === 0) {
+          return res.status(200).json({
+            success: true,
+            data: [],
+            pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, pages: 0 }
+          });
+        }
+        filter.clientId = { $in: ids };
+      } catch (e) {
+        // If client lookup fails, fall back to no results rather than scanning all credits
+        return res.status(200).json({
+          success: true,
+          data: [],
+          pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, pages: 0 }
+        });
+      }
     }
 
     // Build sort
     const sort = {};
-    sort[sortBy] = sortOrder === "desc" ? -1 : 1;
+    const allowedSortFields = new Set([
+      'updatedAt',
+      'currentBalance',
+      'totalPurchased',
+      'totalUsed'
+    ]);
+    const sortField = allowedSortFields.has(String(sortBy)) ? String(sortBy) : 'updatedAt';
+    sort[sortField] = sortOrder === "desc" ? -1 : 1;
 
     // Pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const [creditRecords, total] = await Promise.all([
       Credit.find(filter)
+        .select({
+          currentBalance: 1,
+          totalPurchased: 1,
+          totalUsed: 1,
+          clientId: 1,
+          updatedAt: 1,
+          'currentPlan.planId': 1,
+          'currentPlan.endDate': 1,
+          'settings.lowBalanceAlert': 1,
+        })
         .populate("clientId", "name email businessName")
         .populate("currentPlan.planId", "name price")
         .sort(sort)
