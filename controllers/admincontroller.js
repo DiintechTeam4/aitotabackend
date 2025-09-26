@@ -557,6 +557,46 @@ const unassignDid = async (req, res) => {
   }
 };
 
+// Assign C-Zentrix provider details to agent (from backend only)
+const assignCzentrixToAgent = async (req, res) => {
+  try {
+    const { agentId, accountSid, callerId, xApiKey, didNumber } = req.body || {};
+    if (!agentId) return res.status(400).json({ success: false, message: 'agentId is required' });
+    if (!accountSid || !callerId || !xApiKey) {
+      return res.status(400).json({ success: false, message: 'accountSid, callerId and xApiKey are required' });
+    }
+
+    const agent = await Agent.findById(agentId);
+    if (!agent) return res.status(404).json({ success: false, message: 'Agent not found' });
+
+    // Prevent provider change while locked by running campaign
+    const isLocked = await Campaign.exists({ isRunning: true, agent: { $in: [String(agentId), agentId] } });
+    if (isLocked) {
+      return res.status(403).json({ success: false, message: 'Agent has a running campaign. Provider cannot be changed now.' });
+    }
+
+    // Update DID if provided; otherwise keep existing or clear if previously SANPBX-only flow requires
+    if (typeof didNumber !== 'undefined') {
+      agent.didNumber = String(didNumber || '').trim() || undefined;
+    }
+    agent.accessToken = undefined;
+    agent.accessKey = undefined;
+    agent.appId = undefined;
+
+    agent.serviceProvider = 'c-zentrix';
+    agent.accountSid = String(accountSid);
+    agent.callerId = String(callerId);
+    agent.X_API_KEY = String(xApiKey);
+    agent.updatedAt = new Date();
+    await agent.save();
+
+    return res.json({ success: true, data: agent });
+  } catch (error) {
+    console.error('[assignCzentrixToAgent] error:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to assign C-Zentrix' });
+  }
+};
+
 // Approve client (set isApproved to true)
 const approveClient = async (req, res) => {
   try {
@@ -806,18 +846,8 @@ const updateAgent = async (req, res) => {
       'whatsapp',
       'telegram',
       'email',
-      'sms',
-      // Telephony/provider fields
-      'serviceProvider',
-      'accountSid',
-      'callingNumber',
-      'callerId',
-      'X_API_KEY',
-      // SnapBX fields
-      'didNumber',
-      'accessToken',
-      'accessKey',
-      'appId'
+      'sms'
+      // NOTE: All telephony/provider fields are managed by backend flows (assignment/services)
     ];
 
     // Enforce lock logic: prevent changing DID for a locked agent
@@ -830,6 +860,24 @@ const updateAgent = async (req, res) => {
     Object.keys(updateData).forEach(key => {
       if (allowedFields.includes(key)) {
         filteredUpdateData[key] = updateData[key];
+      }
+    });
+
+    // Enforce: Do not allow updating telephony/provider fields from generic update endpoint
+    const forbiddenTelephonyFields = [
+      'didNumber',
+      'serviceProvider',
+      'accountSid',
+      'callingNumber',
+      'callerId',
+      'X_API_KEY',
+      'accessToken',
+      'accessKey',
+      'appId'
+    ];
+    forbiddenTelephonyFields.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(filteredUpdateData, key)) {
+        delete filteredUpdateData[key];
       }
     });
 
@@ -864,7 +912,7 @@ const updateAgent = async (req, res) => {
   }
 };
 
-module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, listDidNumbers, createDidNumber, addDidNumber, assignDidToAgent, unassignDid };
+module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, listDidNumbers, createDidNumber, addDidNumber, assignDidToAgent, unassignDid, assignCzentrixToAgent };
 
 // Return agents locked due to running campaigns
 module.exports.getCampaignLocks = async (_req, res) => {

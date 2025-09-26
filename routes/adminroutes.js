@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, createSystemPrompt, getSystemPrompts, setDefaultSystemPrompt, deleteSystemPrompt, updateSystemPrompt } = require("../controllers/admincontroller");
+const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, createSystemPrompt, getSystemPrompts, setDefaultSystemPrompt, deleteSystemPrompt, updateSystemPrompt, assignCzentrixToAgent } = require("../controllers/admincontroller");
 const adminCtrl = require("../controllers/admincontroller");
 const { verifyAdminToken } = require("../middlewares/authmiddleware");
 const planController = require("../controllers/planController");
@@ -69,6 +69,9 @@ router.post('/did-numbers', verifyAdminToken, adminCtrl.createDidNumber);
 router.post('/did-numbers/add', verifyAdminToken, adminCtrl.addDidNumber);
 router.post('/did-numbers/:did/assign', verifyAdminToken, adminCtrl.assignDidToAgent);
 router.post('/did-numbers/:did/unassign', verifyAdminToken, adminCtrl.unassignDid);
+
+// Assign C-Zentrix provider details (no DID) to agent
+router.post('/assign-czentrix', verifyAdminToken, assignCzentrixToAgent);
 
 // Campaign locks: which agents are locked due to running campaigns
 router.get('/campaign-locks', verifyAdminToken, adminCtrl.getCampaignLocks);
