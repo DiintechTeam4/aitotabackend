@@ -120,9 +120,7 @@ const registerAdmin = async (req, res) => {
 }
 const getClients = async (req, res) => {
     try {
-      const clients = await Client.find()
-        .select('name businessName websiteUrl businessLogoKey isApproved')
-        .sort({createdAt:-1});
+      const clients = await Client.find().select('-password').sort({createdAt:-1});
 
       const clientsWithLogos = await Promise.all(
         clients.map(async (c) => {
@@ -135,16 +133,7 @@ const getClients = async (req, res) => {
             // If URL generation fails, fall back to existing or null
             clientObj.businessLogoUrl = clientObj.businessLogoUrl || null;
           }
-          // Return only requested fields
-          return {
-            _id: clientObj._id,
-            businessLogoKey: clientObj.businessLogoKey || null,
-            businessLogoUrl: clientObj.businessLogoUrl || null,
-            name: clientObj.name || '',
-            businessName: clientObj.businessName || '',
-            websiteUrl: clientObj.websiteUrl || '',
-            isApproved: !!clientObj.isApproved
-          };
+          return clientObj;
         })
       );
 
@@ -567,26 +556,14 @@ const approveClient = async (req, res) => {
 // Get all agents from all clients
 const getAllAgents = async (req, res) => {
   try {
+    
     const agents = await Agent.find()
-      .select('agentName category serviceProvider personality didNumber isActive createdAt clientId')
-      .sort({ createdAt: -1 })
-      .lean();
-
-    const data = agents.map(a => ({
-      _id: a._id,
-      agentName: a.agentName || '',
-      category: a.category || '',
-      service: a.serviceProvider || '',
-      personality: a.personality || '',
-      didNumber: a.didNumber || '',
-      isActive: !!a.isActive,
-      createdAt: a.createdAt,
-      clientId: a.clientId || null
-    }));
+      .populate('clientId', 'name businessName')
+      .sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
-      data
+      data: agents
     });
   } catch (error) {
     console.error('Error fetching all agents:', error);
