@@ -120,17 +120,38 @@ const registerAdmin = async (req, res) => {
 }
 const getClients = async (req, res) => {
     try {
-      const clients = await Client.find().select('-password').sort({createdAt:-1});
+      const minimal = String(req.query.minimal || '').toLowerCase() === '1' || String(req.query.minimal || '').toLowerCase() === 'true';
+      const clients = await Client.find()
+        .select(minimal
+          ? '_id name businessName websiteUrl isApproved businessLogoUrl businessLogoKey'
+          : '-password')
+        .sort({createdAt:-1})
+        .lean();
+
+      if (minimal) {
+        // Best-effort: ensure businessLogoUrl is present if businessLogoKey exists
+        const withLogos = await Promise.all(
+          clients.map(async (c) => {
+            try {
+              if (!c.businessLogoUrl && c.businessLogoKey) {
+                c.businessLogoUrl = await getobject(c.businessLogoKey);
+              }
+            } catch (_) {}
+            // Do not expose key in minimal response
+            delete c.businessLogoKey;
+            return c;
+          })
+        );
+        return res.status(200).json({ success: true, count: withLogos.length, data: withLogos });
+      }
 
       const clientsWithLogos = await Promise.all(
-        clients.map(async (c) => {
-          const clientObj = c.toObject();
+        clients.map(async (clientObj) => {
           try {
             if (clientObj.businessLogoKey) {
               clientObj.businessLogoUrl = await getobject(clientObj.businessLogoKey);
             }
           } catch (e) {
-            // If URL generation fails, fall back to existing or null
             clientObj.businessLogoUrl = clientObj.businessLogoUrl || null;
           }
           return clientObj;
@@ -556,10 +577,10 @@ const approveClient = async (req, res) => {
 // Get all agents from all clients
 const getAllAgents = async (req, res) => {
   try {
-    
-    const agents = await Agent.find()
-      .populate('clientId', 'name businessName')
-      .sort({ createdAt: -1 });
+    const projection = '_id agentName description category personality serviceProvider didNumber isActive clientId createdAt updatedAt callerId';
+    const agents = await Agent.find({}, projection)
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.status(200).json({
       success: true,

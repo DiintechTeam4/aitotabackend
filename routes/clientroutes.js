@@ -4413,25 +4413,59 @@ router.post('/wa/chat/save', extractClientId, async (req, res) => {
 
 // Make single call
 router.post('/calls/single', extractClientId, async (req, res) => {
+  const _startTs = Date.now();
+  const reqId = `SINGLE_${_startTs}_${Math.random().toString(36).slice(2, 8)}`;
+  const log = (stage, details = {}) => {
+    try {
+      console.log('[CALLS/SINGLE]', JSON.stringify({
+        reqId,
+        stage,
+        clientId: req.clientId,
+        ts: new Date().toISOString(),
+        ...details
+      }));
+    } catch (_) {}
+  };
+  const maskPhone = (p) => {
+    try {
+      const s = String(p || '');
+      if (s.length <= 4) return '****';
+      return `${'*'.repeat(Math.max(0, s.length - 4))}${s.slice(-4)}`;
+    } catch { return '****'; }
+  };
   try {
     const { contact, agentId, apiKey, campaignId, custom_field } = req.body || {};
+    log('request.received', {
+      hasContact: !!contact,
+      hasAgentId: !!agentId,
+      hasApiKey: !!apiKey,
+      hasCampaignId: !!campaignId,
+      hasCustomField: !!custom_field
+    });
+    console.log(req.body)
     // Allow either a plain phone string or a contact object { phone, name }
     const contactPhoneRaw =
       typeof contact === 'string' ? contact : (contact && (contact.phone || contact.number));
     const contactNameRaw = typeof contact === 'object' && contact ? (contact.name || contact.fullName || '') : '';
     if (!contactPhoneRaw) {
+      log('validation.failed', { reason: 'Missing contact (phone)' });
       return res.status(400).json({ success: false, error: 'Missing contact (phone)' });
     }
     if (!agentId) {
+      log('validation.failed', { reason: 'Missing agentId' });
       return res.status(400).json({ success: false, error: 'Missing agentId' });
     }
 
-    // Credit check (same as start-calling)
+    // Credit check (lightweight: fetch only currentBalance)
     try {
       const Credit = require('../models/Credit');
-      const creditRecord = await Credit.getOrCreateCreditRecord(req.clientId);
-      const currentBalance = Number(creditRecord?.currentBalance || 0);
+      const creditSlim = await Credit.findOne({ clientId: req.clientId })
+        .select({ clientId: 1, currentBalance: 1 })
+        .lean();
+      const currentBalance = Number(creditSlim?.currentBalance || 0);
+      log('credit.checked', { currentBalance });
       if (currentBalance <= 0) {
+        log('credit.insufficient', { currentBalance });
         return res.status(402).json({
           success: false,
           error: 'INSUFFICIENT_CREDITS',
@@ -4440,14 +4474,17 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       }
     } catch (e) {
       console.error('Credit check failed:', e);
+      log('credit.error', { error: e?.message });
       return res.status(500).json({ success: false, error: 'Credit check failed' });
     }
 
     // Load agent for provider-specific dialing
     const agent = await Agent.findById(agentId).lean();
     if (!agent) {
+      log('agent.missing', { agentId });
       return res.status(404).json({ success: false, error: 'Agent not found' });
     }
+    log('agent.loaded', { agentId, provider: agent?.provider, hasXApiKey: !!agent?.X_API_KEY });
 
     // Helper: normalize phone to digits only, trim common prefixes
     const normalizePhone = (raw) => {
@@ -4463,8 +4500,10 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     };
     const normalizedDigits = normalizePhone(contactPhoneRaw);
     if (!normalizedDigits) {
+      log('phone.invalid', { provided: maskPhone(contactPhoneRaw), normalized: normalizedDigits });
       return res.status(400).json({ success: false, error: 'Invalid phone' });
     }
+    log('phone.normalized', { provided: maskPhone(contactPhoneRaw), normalizedMasked: maskPhone(normalizedDigits) });
 
     // Use makeSingleCall service for all providers (including SANPBX)
     // Resolve API key: prefer agent's X_API_KEY like start-calling; fallback to client key
@@ -4476,10 +4515,13 @@ router.post('/calls/single', extractClientId, async (req, res) => {
         resolvedApiKey = await getClientApiKey(req.clientId);
       }
       if (!resolvedApiKey) {
+        log('apikey.missing', { agentId, clientId: req.clientId });
         return res.status(400).json({ success: false, error: 'No API key found for agent or client' });
       }
     }
+    log('apikey.resolved', { via: apiKey ? 'request' : (agent?.X_API_KEY ? 'agent' : 'client') });
 
+    log('call.initiating', { agentId, campaignId: campaignId || null });
     const result = await makeSingleCall(
       {
         name: contactNameRaw || 'Unknown',
@@ -4490,6 +4532,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       campaignId || null,
       req.clientId
     );
+    log('call.initiated', { success: !!result?.success, uniqueId: result?.uniqueId || null });
 
     // If tied to a campaign and call successfully initiated, update campaign asynchronously (non-blocking)
     if (result.success && campaignId && result.uniqueId) {
@@ -4525,20 +4568,27 @@ router.post('/calls/single', extractClientId, async (req, res) => {
             if (!exists) {
               campaign.details.push(callDetail);
               await campaign.save();
+              log('campaign.detail.appended', { campaignId, uniqueId: result.uniqueId });
             }
             setTimeout(() => {
+              log('campaign.status.scheduleUpdate', { campaignId, uniqueId: result.uniqueId, delayMs: 40000 });
               updateCallStatusFromLogs(campaign._id, result.uniqueId).catch(() => {});
             }, 40000);
           }
         } catch (e) {
           console.error('Failed to append single-call detail to campaign:', e);
+          log('campaign.detail.error', { campaignId, error: e?.message });
         }
       });
     }
 
+    const durationMs = Date.now() - _startTs;
+    log('response.success', { durationMs });
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
     console.error('Single call error:', error);
+    const durationMs = Date.now() - _startTs;
+    log('response.error', { error: error?.message, durationMs });
     return res.status(500).json({ success: false, error: 'Failed to initiate single call' });
   }
 });
