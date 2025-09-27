@@ -6805,6 +6805,21 @@ router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req
   }
 });
 
+// New dedicated payment history API
+router.get('/credits/payment-history', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { getPaymentHistory } = require('../controllers/creditController');
+    req.params.clientId = req.clientId;
+    return getPaymentHistory(req, res);
+  } catch (error) {
+    console.error('Error fetching payment history:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch payment history'
+    });
+  }
+});
+
 // GET /api/v1/client/call-logs/transcript/:uniqueId
 router.get('/call-logs/transcript/:uniqueId', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {

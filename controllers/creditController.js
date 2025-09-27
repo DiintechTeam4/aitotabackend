@@ -482,6 +482,8 @@ const getCreditHistoryOptimized = async (req, res) => {
     console.log("🔍 [BACKEND DEBUG] Filtered history length:", filteredHistory.length);
     console.log("🔍 [BACKEND DEBUG] Paginated history length:", history.length);
     console.log("🔍 [BACKEND DEBUG] First few items:", history.slice(0, 2));
+    console.log("🔍 [BACKEND DEBUG] All item types:", [...new Set(history.map(item => item.type))]);
+    console.log("🔍 [BACKEND DEBUG] All descriptions:", history.map(item => item.description));
 
     res.status(200).json({
       success: true,
@@ -667,6 +669,90 @@ const validateCoupon = async (req, res) => {
   }
 };
 
+// Get payment history with filtering for faster loading
+const getPaymentHistory = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { page = 1, limit = 5, type, startDate, endDate } = req.query;
+
+    console.log("🔍 [PAYMENT HISTORY API] Called with:", { clientId, page, limit, type, startDate, endDate });
+
+    // Get the credit document
+    const creditDoc = await Credit.findOne({ clientId }).lean();
+    
+    if (!creditDoc || !creditDoc.history || creditDoc.history.length === 0) {
+      console.log("🔍 [PAYMENT HISTORY API] No history found");
+      return res.status(200).json({
+        success: true,
+        data: {
+          history: [],
+          pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total: 0,
+            pages: 0
+          }
+        }
+      });
+    }
+
+    // Filter by type if specified
+    let filteredHistory = creditDoc.history;
+    if (type) {
+      filteredHistory = creditDoc.history.filter(item => item.type === type);
+    }
+
+    // Apply date filtering if provided
+    if (startDate || endDate) {
+      const start = startDate ? new Date(startDate) : null;
+      const end = endDate ? new Date(endDate) : null;
+      
+      filteredHistory = filteredHistory.filter(item => {
+        const itemDate = new Date(item.timestamp);
+        if (start && itemDate < start) return false;
+        if (end && itemDate > end) return false;
+        return true;
+      });
+    }
+
+    // Sort by timestamp (newest first)
+    filteredHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    // Apply pagination
+    const total = filteredHistory.length;
+    const startIndex = (parseInt(page) - 1) * parseInt(limit);
+    const endIndex = startIndex + parseInt(limit);
+    const history = filteredHistory.slice(startIndex, endIndex);
+    
+    console.log("🔍 [PAYMENT HISTORY API] Returning:", {
+      total,
+      returned: history.length,
+      types: [...new Set(history.map(item => item.type))],
+      descriptions: history.map(item => item.description)
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        history,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching payment history:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch payment history",
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getClientBalance,
   getAllCreditRecords,
@@ -675,6 +761,7 @@ module.exports = {
   useCredits,
   getCreditHistory,
   getCreditHistoryOptimized,
+  getPaymentHistory,
   getCreditStats,
   updateCreditSettings,
   validateCoupon
