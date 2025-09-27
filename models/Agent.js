@@ -60,7 +60,6 @@ const agentSchema = new mongoose.Schema({
       "male-friendly",
       "female-friendly",
       "neutral",
-      "anushka",
       "meera",
       "pavithra",
       "maitreyi",
