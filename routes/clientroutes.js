@@ -4204,7 +4204,7 @@ router.post('/campaigns/:id/call-missed', extractClientId, async (req, res) => {
       try {
         for (let i = 0; i < retryContacts.length; i++) {
           const contact = retryContacts[i];
-          const result = await makeSingleCall({ phone: contact.phone, name: contact.name }, agentId, apiKey, campaign._id, req.clientId, runId);
+          const result = await makeSingleCall({ phone: contact.phone, name: contact.name }, agentId, apiKey, campaign._id, req.clientId, runId, null);
           if (result && result.uniqueId) {
             const initiatedAt = new Date();
             const callDetail = {
@@ -4434,7 +4434,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     } catch { return '****'; }
   };
   try {
-    const { contact, agentId, apiKey, campaignId, custom_field } = req.body || {};
+    const { contact, agentId, apiKey, campaignId, custom_field, uniqueid } = req.body || {};
     log('request.received', {
       hasContact: !!contact,
       hasAgentId: !!agentId,
@@ -4511,20 +4511,28 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     log('phone.normalized', { provided: maskPhone(contactPhoneRaw), normalizedMasked: maskPhone(normalizedDigits) });
 
     // Use makeSingleCall service for all providers (including SANPBX)
-    // Resolve API key: prefer agent's X_API_KEY like start-calling; fallback to client key
+    // Resolve API key: only required for C-Zentrix, not for SANPBX
+    const provider = String(agent?.serviceProvider || '').toLowerCase();
     let resolvedApiKey = apiKey;
-    if (!resolvedApiKey) {
-      resolvedApiKey = agent.X_API_KEY || '';
+    
+    if (provider === 'snapbx' || provider === 'sanpbx') {
+      // SANPBX doesn't require API key
+      log('apikey.skipped', { reason: 'SANPBX provider does not require API key', agentId });
+    } else {
+      // C-Zentrix and other providers require API key
       if (!resolvedApiKey) {
-        // fallback to client-level key if agent key missing
-        resolvedApiKey = await getClientApiKey(req.clientId);
+        resolvedApiKey = agent.X_API_KEY || '';
+        if (!resolvedApiKey) {
+          // fallback to client-level key if agent key missing
+          resolvedApiKey = await getClientApiKey(req.clientId);
+        }
+        if (!resolvedApiKey) {
+          log('apikey.missing', { agentId, clientId: req.clientId });
+          return res.status(400).json({ success: false, error: 'No API key found for agent or client' });
+        }
       }
-      if (!resolvedApiKey) {
-        log('apikey.missing', { agentId, clientId: req.clientId });
-        return res.status(400).json({ success: false, error: 'No API key found for agent or client' });
-      }
+      log('apikey.resolved', { via: apiKey ? 'request' : (agent?.X_API_KEY ? 'agent' : 'client') });
     }
-    log('apikey.resolved', { via: apiKey ? 'request' : (agent?.X_API_KEY ? 'agent' : 'client') });
 
     log('call.initiating', { agentId, campaignId: campaignId || null });
     const result = await makeSingleCall(
@@ -4535,7 +4543,9 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       agentId,
       resolvedApiKey,
       campaignId || null,
-      req.clientId
+      req.clientId,
+      null, // runId
+      uniqueid // providedUniqueId
     );
     log('call.initiated', { success: !!result?.success, uniqueId: result?.uniqueId || null });
 
