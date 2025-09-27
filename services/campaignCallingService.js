@@ -394,8 +394,8 @@ function generateUniqueId() {
 /**
  * Make a single call to a contact
  */
-async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, runId = null) {
-  const uniqueId = generateUniqueId(); // Generate uniqueId at the start for both success and failure cases
+async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, runId = null, providedUniqueId = null) {
+  const uniqueId = providedUniqueId || generateUniqueId(); // Use provided uniqueId or generate new one
   
   console.log(`📞 MAKING CALL: Contact=${contact?.phone}, AgentId=${agentId}, ApiKey=${!!apiKey}, ClientId=${clientId}`);
   
@@ -677,7 +677,7 @@ async function processBatch(campaign, agentId, apiKey, delayBetweenCalls, client
 
       // Make the call
       console.log(`🔄 MAKING CALL ${i + 1}/${campaign.contacts.length}: ${contact.phone}`);
-      const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, clientId, runId);
+      const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, clientId, runId, null);
       
       // Update progress
       progress.completedCalls++;
