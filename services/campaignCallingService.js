@@ -503,35 +503,8 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
   } catch (error) {
     console.error('❌ CALL FAILED:', error?.response?.status, error?.response?.data || error?.message);
     
-    // Create a CallLog entry for failed calls so they don't stay in "ringing" forever
-    try {
-      const CallLog = require('../models/CallLog');
-      await CallLog.create({
-        clientId: clientId,
-        campaignId: campaignId,
-        agentId: agentId,
-        mobile: contact?.phone,
-        time: new Date(),
-        duration: 0,
-        leadStatus: 'not_connected',
-        callType: 'outbound',
-        statusText: 'Failed',
-        metadata: {
-          customParams: {
-            uniqueid: uniqueId,
-            name: contact?.name || '',
-            contact_name: contact?.name || '',
-            runId: runId
-          },
-          isActive: false,
-          callEndTime: new Date(),
-          error: error.message
-        }
-      });
-      console.log(`📝 CREATED FAILED CALL LOG for ${uniqueId}`);
-    } catch (logError) {
-      console.error('❌ Failed to create CallLog for failed call:', logError);
-    }
+    // Note: CallLog entries are now handled by external system
+    // No longer creating CallLog entries for failed calls
     
     return {
       success: false,

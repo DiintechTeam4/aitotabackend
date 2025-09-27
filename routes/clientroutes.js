@@ -640,34 +640,8 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
                 }
               );
             } else {
-              // Only create CallLog entries for connected calls (not missed/not_connected)
-              const isConnected = contact.leadStatus && 
-                !['not_connected', 'missed'].includes(contact.leadStatus.toLowerCase()) &&
-                contact.status !== 'missed';
-              
-              if (isConnected) {
-                // Create a new CallLog entry only for connected calls
-                const newCallLog = new CallLog({
-                  clientId: req.clientId,
-                  campaignId: id,
-                  mobile: contactNumber,
-                  time: new Date(contact.time || new Date()),
-                  duration: contact.duration,
-                  leadStatus: contact.leadStatus || 'maybe',
-                  callType: 'outbound',
-                  statusText: 'Completed',
-                  metadata: {
-                    customParams: {
-                      uniqueid: uniqueId,
-                      name: contactName
-                    },
-                    isActive: false,
-                    callEndTime: new Date()
-                  }
-                });
-                await newCallLog.save();
-              }
-              // Skip creating CallLog for missed/not_connected calls
+              // Note: CallLog entries are now handled by external system
+              // No longer creating CallLog entries for campaign calls
             }
           }
         } catch (error) {
