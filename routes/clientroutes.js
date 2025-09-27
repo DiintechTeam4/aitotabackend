@@ -6769,15 +6769,9 @@ router.get('/plans/popular',  async (req, res) => {
 
 router.get('/credits/balance', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
-    const Credit = require('../models/Credit');
-    const clientId = req.clientId;
-    
-    const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
-    
-    res.json({
-      success: true,
-      data: creditRecord
-    });
+    const { getClientBalance } = require('../controllers/creditController');
+    req.params.clientId = req.clientId;
+    return getClientBalance(req, res);
   } catch (error) {
     console.error('Error fetching credit balance:', error);
     res.status(500).json({
@@ -6789,38 +6783,9 @@ router.get('/credits/balance', verifyClientOrAdminAndExtractClientId, async (req
 
 router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
-    const Credit = require('../models/Credit');
-    const clientId = req.clientId;
-    const { type } = req.query;
-    
-    const creditRecord = await Credit.findOne({ clientId })
-      .populate('history.planId', 'name')
-      .lean();
-    
-    if (!creditRecord) {
-      return res.status(404).json({
-        success: false,
-        message: 'Credit record not found'
-      });
-    }
-    
-    // Filter history (no pagination)
-    let history = creditRecord.history;
-    if (type) {
-      history = history.filter(h => h.type === type);
-    }
-    
-    // Sort by timestamp (newest first) and return all records
-    const sortedHistory = history
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    
-    res.json({
-      success: true,
-      data: {
-        history: sortedHistory,
-        total: sortedHistory.length
-      }
-    });
+    const { getCreditHistoryOptimized } = require('../controllers/creditController');
+    req.params.clientId = req.clientId;
+    return getCreditHistoryOptimized(req, res);
   } catch (error) {
     console.error('Error fetching credit history:', error);
     res.status(500).json({

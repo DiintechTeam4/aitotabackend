@@ -3,12 +3,39 @@ const Plan = require("../models/Plan");
 const Coupon = require("../models/Coupon");
 const Client = require("../models/Client");
 
-// Get client credit balance
+// Get client credit balance (optimized - excludes heavy data)
 const getClientBalance = async (req, res) => {
   try {
     const { clientId } = req.params;
+    const { includeHistory = false, includeCallBilling = false } = req.query;
     
-    const creditRecord = await Credit.findOne({ clientId })
+    // Build projection to exclude heavy data by default
+    let projection = {
+      clientId: 1,
+      currentBalance: 1,
+      totalPurchased: 1,
+      totalUsed: 1,
+      currentPlan: 1,
+      usageStats: 1,
+      monthlyUsage: 1,
+      settings: 1,
+      rolloverSeconds: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      __v: 1
+    };
+
+    // Only include history if explicitly requested
+    if (includeHistory === 'true') {
+      projection.history = 1;
+    }
+
+    // Only include call billing details if explicitly requested
+    if (includeCallBilling === 'true') {
+      projection.callBillingDetails = 1;
+    }
+
+    const creditRecord = await Credit.findOne({ clientId }, projection)
       .populate("currentPlan.planId")
       .populate("history.planId", "name")
       .lean();
@@ -18,6 +45,20 @@ const getClientBalance = async (req, res) => {
         success: false,
         message: "Credit record not found"
       });
+    }
+
+    // If history is included, limit it to recent entries for performance
+    if (creditRecord.history && creditRecord.history.length > 0) {
+      creditRecord.history = creditRecord.history
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+        .slice(0, 50); // Limit to 50 most recent entries
+    }
+
+    // If call billing details are included, limit them for performance
+    if (creditRecord.callBillingDetails && creditRecord.callBillingDetails.length > 0) {
+      creditRecord.callBillingDetails = creditRecord.callBillingDetails
+        .sort((a, b) => new Date(b.timestamp || b.createdAt) - new Date(a.timestamp || a.createdAt))
+        .slice(0, 100); // Limit to 100 most recent entries
     }
 
     res.status(200).json({
@@ -383,6 +424,87 @@ const getCreditHistory = async (req, res) => {
   }
 };
 
+// Optimized credit history endpoint with aggregation for better performance
+const getCreditHistoryOptimized = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { page = 1, limit = 50, type, startDate, endDate } = req.query;
+
+    const matchStage = { clientId };
+    if (type) matchStage["history.type"] = type;
+
+    // Build date filter if provided
+    if (startDate || endDate) {
+      const dateFilter = {};
+      if (startDate) dateFilter.$gte = new Date(startDate);
+      if (endDate) dateFilter.$lte = new Date(endDate);
+      matchStage["history.timestamp"] = dateFilter;
+    }
+
+    // Use a simpler approach - get the credit document and paginate in memory
+    // This is more reliable than complex aggregation for this use case
+    const creditDoc = await Credit.findOne({ clientId }).lean();
+    
+    console.log("🔍 [BACKEND DEBUG] Credit doc found:", !!creditDoc);
+    console.log("🔍 [BACKEND DEBUG] History length:", creditDoc?.history?.length || 0);
+    
+    if (!creditDoc || !creditDoc.history || creditDoc.history.length === 0) {
+      console.log("🔍 [BACKEND DEBUG] No history found, returning empty");
+      return res.status(200).json({
+        success: true,
+        data: {
+          history: [],
+          pagination: {
+            page: parseInt(page),
+            limit: parseInt(limit),
+            total: 0,
+            pages: 0
+          }
+        }
+      });
+    }
+
+    // Filter by type if specified
+    let filteredHistory = creditDoc.history;
+    if (type) {
+      filteredHistory = creditDoc.history.filter(item => item.type === type);
+    }
+
+    // Sort by timestamp (newest first)
+    filteredHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    // Apply pagination
+    const total = filteredHistory.length;
+    const startIndex = (parseInt(page) - 1) * parseInt(limit);
+    const endIndex = startIndex + parseInt(limit);
+    const history = filteredHistory.slice(startIndex, endIndex);
+    
+    console.log("🔍 [BACKEND DEBUG] Filtered history length:", filteredHistory.length);
+    console.log("🔍 [BACKEND DEBUG] Paginated history length:", history.length);
+    console.log("🔍 [BACKEND DEBUG] First few items:", history.slice(0, 2));
+
+    res.status(200).json({
+      success: true,
+      data: {
+        history,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          pages: Math.ceil(total / parseInt(limit))
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching optimized credit history:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch credit history",
+      error: error.message
+    });
+  }
+};
+
 // Get credit statistics
 const getCreditStats = async (req, res) => {
   try {
@@ -552,6 +674,7 @@ module.exports = {
   addCredits,
   useCredits,
   getCreditHistory,
+  getCreditHistoryOptimized,
   getCreditStats,
   updateCreditSettings,
   validateCoupon
