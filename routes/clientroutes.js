@@ -4423,23 +4423,6 @@ router.post('/agents/:agentId/validate-credentials', extractClientId, async (req
       if (!agent.X_API_KEY) missingFields.push('API Key');
       if (!agent.callerId) missingFields.push('Caller ID');
       if (!agent.didNumber) missingFields.push('DID Number');
-    } else if (provider === 'twilio') {
-      // Twilio validation
-      if (!agent.accountSid) missingFields.push('Account SID');
-      if (!agent.X_API_KEY) missingFields.push('Auth Token');
-      if (!agent.callingNumber) missingFields.push('Calling Number');
-    } else if (provider === 'vonage') {
-      // Vonage validation
-      if (!agent.X_API_KEY) missingFields.push('API Key');
-      if (!agent.callingNumber) missingFields.push('Calling Number');
-    } else if (provider === 'plivo') {
-      // Plivo validation
-      if (!agent.X_API_KEY) missingFields.push('Auth ID');
-      if (!agent.callingNumber) missingFields.push('Calling Number');
-    } else if (provider === 'bandwidth') {
-      // Bandwidth validation
-      if (!agent.X_API_KEY) missingFields.push('API Key');
-      if (!agent.callingNumber) missingFields.push('Calling Number');
     } else if (provider === 'tata') {
       // Tata validation
       if (!agent.X_API_KEY) missingFields.push('API Key');
@@ -4458,8 +4441,11 @@ router.post('/agents/:agentId/validate-credentials', extractClientId, async (req
     // Check client credits
     try {
       const Credit = require('../models/Credit');
-      const creditRecord = await Credit.getOrCreateCreditRecord(req.clientId);
-      const currentBalance = Number(creditRecord?.currentBalance || 0);
+      // Lightweight read: only fetch currentBalance, do not load large arrays
+      const creditDoc = await Credit.findOne({ clientId: req.clientId })
+        .select('currentBalance')
+        .lean();
+      const currentBalance = Number(creditDoc?.currentBalance || 0);
       if (currentBalance <= 0) {
         validationErrors.push('Insufficient credits - Please recharge your account');
       }
