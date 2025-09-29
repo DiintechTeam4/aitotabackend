@@ -853,8 +853,15 @@ async function startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls
 
   
 
-  // Process calls in background
-  processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress, runId);
+  // Process calls in background (non-blocking)
+  processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress, runId).catch(error => {
+    console.error(`❌ Background campaign processing failed:`, error);
+    // Mark campaign as failed
+    progress.isRunning = false;
+    progress.endTime = new Date();
+    progress.error = error.message;
+    campaignCallingProgress.set(campaignId, progress);
+  });
 }
 
 /**
@@ -903,14 +910,17 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
         break;
       }
       
-      // CRITICAL: Check if campaign is still running in database
+      // CRITICAL: Check if campaign is still running in database (cached check)
       const Campaign = require('../models/Campaign');
-      const currentCampaign = await Campaign.findById(campaignId).lean();
-      if (!currentCampaign || !currentCampaign.isRunning) {
-        console.log(`🛑 DATABASE STOP: Campaign ${campaignId} is not running in database, stopping batch processing`);
-        // Remove from active campaigns
-        activeCampaigns.delete(campaignId);
-        break;
+      // Only check database every 5 batches to reduce delay
+      if (batchNumber % 5 === 1) {
+        const currentCampaign = await Campaign.findById(campaignId).lean();
+        if (!currentCampaign || !currentCampaign.isRunning) {
+          console.log(`🛑 DATABASE STOP: Campaign ${campaignId} is not running in database, stopping batch processing`);
+          // Remove from active campaigns
+          activeCampaigns.delete(campaignId);
+          break;
+        }
       }
       
       try {
@@ -1013,6 +1023,9 @@ async function processBatch(campaign, agentId, apiKey, delayBetweenCalls, client
       
       // Make the call with individual error handling
       console.log(`🔄 MAKING CALL ${i + 1}/${campaign.contacts.length}: ${contact.phone}`);
+      if (i === batchStart) {
+        console.log(`🚀 FIRST CALL IN BATCH: Starting immediately without delay`);
+      }
       let callResult;
       try {
         callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, clientId, runId, null);
