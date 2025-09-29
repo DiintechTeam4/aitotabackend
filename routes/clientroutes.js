@@ -37,7 +37,10 @@ const {
   migrateMissedToCompleted,
   makeSingleCall,
   updateCallStatusFromLogs,
-  getClientApiKey
+  getClientApiKey,
+  getSystemHealth,
+  resetCircuitBreakers,
+  getSafeLimits
 } = require('../services/campaignCallingService');
 
 
@@ -4178,7 +4181,7 @@ router.post('/campaigns/:id/call-missed', extractClientId, async (req, res) => {
       try {
         for (let i = 0; i < retryContacts.length; i++) {
           const contact = retryContacts[i];
-          const result = await makeSingleCall({ phone: contact.phone, name: contact.name }, agentId, apiKey, campaign._id, req.clientId, runId);
+          const result = await makeSingleCall({ phone: contact.phone, name: contact.name }, agentId, apiKey, campaign._id, req.clientId, runId, null);
           if (result && result.uniqueId) {
             const initiatedAt = new Date();
             const callDetail = {
@@ -4408,7 +4411,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     } catch { return '****'; }
   };
   try {
-    const { contact, agentId, apiKey, campaignId, custom_field } = req.body || {};
+    const { contact, agentId, apiKey, campaignId, custom_field, uniqueid } = req.body || {};
     log('request.received', {
       hasContact: !!contact,
       hasAgentId: !!agentId,
@@ -4463,24 +4466,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       log('agent.missing', { agentId });
       return res.status(404).json({ success: false, error: 'Agent not found' });
     }
-    
-    // Check if agent is active
-    if (!agent.isActive) {
-      log('agent.inactive', { agentId });
-      return res.status(400).json({ success: false, error: 'Agent is inactive. Please activate the agent first.' });
-    }
-    
-    log('agent.loaded', { 
-      agentId, 
-      provider: agent?.serviceProvider, 
-      hasXApiKey: !!agent?.X_API_KEY,
-      hasDidNumber: !!agent?.didNumber,
-      hasCallerId: !!agent?.callerId,
-      hasAccountSid: !!agent?.accountSid,
-      hasAccessToken: !!agent?.accessToken,
-      hasAccessKey: !!agent?.accessKey,
-      isActive: agent?.isActive
-    });
+    log('agent.loaded', { agentId, provider: agent?.provider, hasXApiKey: !!agent?.X_API_KEY });
 
     // Helper: normalize phone to digits only, trim common prefixes
     const normalizePhone = (raw) => {
@@ -4501,71 +4487,31 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     }
     log('phone.normalized', { provided: maskPhone(contactPhoneRaw), normalizedMasked: maskPhone(normalizedDigits) });
 
-    // Validate agent telephony configuration based on provider
-    const provider = String(agent?.serviceProvider || "").toLowerCase();
-    if (!provider) {
-      log('provider.missing', { agentId });
-      return res.status(400).json({ success: false, error: 'No telephony provider configured. Please configure a service provider (SANPBX, C-Zentrix, etc.) for this agent.' });
-    }
-
-    // Provider-specific validation
-    if (provider === "snapbx" || provider === "sanpbx") {
-      if (!agent.accessToken) {
-        log('sanpbx.accesstoken.missing', { agentId });
-        return res.status(400).json({ success: false, error: 'SANPBX Access Token not configured. Please set the Access Token for this agent.' });
-      }
-      if (!agent.accessKey) {
-        log('sanpbx.accesskey.missing', { agentId });
-        return res.status(400).json({ success: false, error: 'SANPBX Access Key not configured. Please set the Access Key for this agent.' });
-      }
-      if (!agent.callerId) {
-        log('sanpbx.callerid.missing', { agentId });
-        return res.status(400).json({ success: false, error: 'SANPBX Caller ID not configured. Please set a Caller ID for this agent.' });
-      }
-    } else if (provider === "c-zentrix" || provider === "c-zentrax") {
-      if (!agent.X_API_KEY) {
-        log('czentrix.apikey.missing', { agentId });
-        return res.status(400).json({ success: false, error: 'C-Zentrix API Key not configured. Please set the X API Key for this agent.' });
-      }
-      if (!agent.accountSid) {
-        log('czentrix.accountsid.missing', { agentId });
-        return res.status(400).json({ success: false, error: 'C-Zentrix Account SID not configured. Please set the Account SID for this agent.' });
-      }
-      if (!agent.callerId) {
-        log('czentrix.callerid.missing', { agentId });
-        return res.status(400).json({ success: false, error: 'C-Zentrix Caller ID not configured. Please set a Caller ID for this agent.' });
-      }
-    }
-
     // Use makeSingleCall service for all providers (including SANPBX)
-    // Resolve API key: prefer agent's X_API_KEY like start-calling; fallback to client key
+    // Resolve API key: only required for C-Zentrix, not for SANPBX
+    const provider = String(agent?.serviceProvider || '').toLowerCase();
     let resolvedApiKey = apiKey;
-    if (!resolvedApiKey) {
-      resolvedApiKey = agent.X_API_KEY || '';
-      if (!resolvedApiKey) {
-        // fallback to client-level key if agent key missing
-        resolvedApiKey = await getClientApiKey(req.clientId);
-      }
-      if (!resolvedApiKey) {
-        log('apikey.missing', { agentId, clientId: req.clientId });
-        return res.status(400).json({ success: false, error: 'No API key found for agent or client' });
-      }
-    }
-    log('apikey.resolved', { via: apiKey ? 'request' : (agent?.X_API_KEY ? 'agent' : 'client') });
-
-    log('call.initiating', { 
-      agentId, 
-      campaignId: campaignId || null,
-      provider: provider,
-      hasDidNumber: !!agent.didNumber,
-      hasCallerId: !!agent.callerId,
-      hasAccountSid: !!agent.accountSid,
-      hasAccessToken: !!agent.accessToken,
-      hasAccessKey: !!agent.accessKey,
-      hasXApiKey: !!agent.X_API_KEY
-    });
     
-    // makeSingleCall will load agent configuration from database internally
+    if (provider === 'snapbx' || provider === 'sanpbx') {
+      // SANPBX doesn't require API key
+      log('apikey.skipped', { reason: 'SANPBX provider does not require API key', agentId });
+    } else {
+      // C-Zentrix and other providers require API key
+      if (!resolvedApiKey) {
+        resolvedApiKey = agent.X_API_KEY || '';
+        if (!resolvedApiKey) {
+          // fallback to client-level key if agent key missing
+          resolvedApiKey = await getClientApiKey(req.clientId);
+        }
+        if (!resolvedApiKey) {
+          log('apikey.missing', { agentId, clientId: req.clientId });
+          return res.status(400).json({ success: false, error: 'No API key found for agent or client' });
+        }
+      }
+      log('apikey.resolved', { via: apiKey ? 'request' : (agent?.X_API_KEY ? 'agent' : 'client') });
+    }
+
+    log('call.initiating', { agentId, campaignId: campaignId || null });
     const result = await makeSingleCall(
       {
         name: resolvedName,
@@ -4574,7 +4520,9 @@ router.post('/calls/single', extractClientId, async (req, res) => {
       agentId,
       resolvedApiKey,
       campaignId || null,
-      req.clientId
+      req.clientId,
+      null, // runId
+      uniqueid // providedUniqueId
     );
     log('call.initiated', { success: !!result?.success, uniqueId: result?.uniqueId || null });
 
@@ -6808,15 +6756,9 @@ router.get('/plans/popular',  async (req, res) => {
 
 router.get('/credits/balance', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
-    const Credit = require('../models/Credit');
-    const clientId = req.clientId;
-    
-    const creditRecord = await Credit.getOrCreateCreditRecord(clientId);
-    
-    res.json({
-      success: true,
-      data: creditRecord
-    });
+    const { getClientBalance } = require('../controllers/creditController');
+    req.params.clientId = req.clientId;
+    return getClientBalance(req, res);
   } catch (error) {
     console.error('Error fetching credit balance:', error);
     res.status(500).json({
@@ -6828,43 +6770,29 @@ router.get('/credits/balance', verifyClientOrAdminAndExtractClientId, async (req
 
 router.get('/credits/history', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   try {
-    const Credit = require('../models/Credit');
-    const clientId = req.clientId;
-    const { type } = req.query;
-    
-    const creditRecord = await Credit.findOne({ clientId })
-      .populate('history.planId', 'name')
-      .lean();
-    
-    if (!creditRecord) {
-      return res.status(404).json({
-        success: false,
-        message: 'Credit record not found'
-      });
-    }
-    
-    // Filter history (no pagination)
-    let history = creditRecord.history;
-    if (type) {
-      history = history.filter(h => h.type === type);
-    }
-    
-    // Sort by timestamp (newest first) and return all records
-    const sortedHistory = history
-      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    
-    res.json({
-      success: true,
-      data: {
-        history: sortedHistory,
-        total: sortedHistory.length
-      }
-    });
+    const { getCreditHistoryOptimized } = require('../controllers/creditController');
+    req.params.clientId = req.clientId;
+    return getCreditHistoryOptimized(req, res);
   } catch (error) {
     console.error('Error fetching credit history:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch credit history'
+    });
+  }
+});
+
+// New dedicated payment history API
+router.get('/credits/payment-history', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { getPaymentHistory } = require('../controllers/creditController');
+    req.params.clientId = req.clientId;
+    return getPaymentHistory(req, res);
+  } catch (error) {
+    console.error('Error fetching payment history:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch payment history'
     });
   }
 });
@@ -7890,6 +7818,56 @@ router.get('/agent-by-key/:agentKey', verifyClientToken, async (req, res) => {
   }
 });
 
+// System Health and Monitoring Endpoints
+router.get('/system/health', extractClientId, async (req, res) => {
+  try {
+    const health = getSystemHealth();
+    res.json({
+      success: true,
+      data: health
+    });
+  } catch (error) {
+    console.error('Error getting system health:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get system health'
+    });
+  }
+});
+
+router.get('/system/limits', extractClientId, async (req, res) => {
+  try {
+    const limits = getSafeLimits();
+    res.json({
+      success: true,
+      data: limits
+    });
+  } catch (error) {
+    console.error('Error getting safe limits:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get safe limits'
+    });
+  }
+});
+
+router.post('/system/reset-circuit-breakers', extractClientId, async (req, res) => {
+  try {
+    resetCircuitBreakers();
+    res.json({
+      success: true,
+      message: 'Circuit breakers reset successfully'
+    });
+  } catch (error) {
+    console.error('Error resetting circuit breakers:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reset circuit breakers'
+    });
+  }
+});
+
+
 // Call validation endpoint
 router.post('/calls/validate', authMiddleware, async (req, res) => {
   try {
@@ -8035,6 +8013,4 @@ router.post('/calls/validate', authMiddleware, async (req, res) => {
   }
 });
 
-
 module.exports = router;
-
