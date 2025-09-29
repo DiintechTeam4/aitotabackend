@@ -37,7 +37,10 @@ const {
   migrateMissedToCompleted,
   makeSingleCall,
   updateCallStatusFromLogs,
-  getClientApiKey
+  getClientApiKey,
+  getSystemHealth,
+  resetCircuitBreakers,
+  getSafeLimits
 } = require('../services/campaignCallingService');
 
 
@@ -7815,6 +7818,54 @@ router.get('/agent-by-key/:agentKey', verifyClientToken, async (req, res) => {
   }
 });
 
+// System Health and Monitoring Endpoints
+router.get('/system/health', extractClientId, async (req, res) => {
+  try {
+    const health = getSystemHealth();
+    res.json({
+      success: true,
+      data: health
+    });
+  } catch (error) {
+    console.error('Error getting system health:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get system health'
+    });
+  }
+});
+
+router.get('/system/limits', extractClientId, async (req, res) => {
+  try {
+    const limits = getSafeLimits();
+    res.json({
+      success: true,
+      data: limits
+    });
+  } catch (error) {
+    console.error('Error getting safe limits:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get safe limits'
+    });
+  }
+});
+
+router.post('/system/reset-circuit-breakers', extractClientId, async (req, res) => {
+  try {
+    resetCircuitBreakers();
+    res.json({
+      success: true,
+      message: 'Circuit breakers reset successfully'
+    });
+  } catch (error) {
+    console.error('Error resetting circuit breakers:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reset circuit breakers'
+    });
+  }
+});
 
 module.exports = router;
 

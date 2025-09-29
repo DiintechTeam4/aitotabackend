@@ -5,6 +5,63 @@ const CallLog = require('../models/CallLog');
 const mongoose = require('mongoose');
 
 /**
+ * Circuit Breaker Pattern for API calls
+ */
+class CircuitBreaker {
+  constructor(threshold = 5, timeout = 60000) {
+    this.failureCount = 0;
+    this.threshold = threshold;
+    this.timeout = timeout;
+    this.state = 'CLOSED'; // CLOSED, OPEN, HALF_OPEN
+    this.nextAttempt = Date.now();
+  }
+
+  async call(fn) {
+    if (this.state === 'OPEN') {
+      if (Date.now() < this.nextAttempt) {
+        throw new Error('Circuit breaker is OPEN - API calls temporarily disabled');
+      }
+      this.state = 'HALF_OPEN';
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  onSuccess() {
+    this.failureCount = 0;
+    this.state = 'CLOSED';
+  }
+
+  onFailure() {
+    this.failureCount++;
+    if (this.failureCount >= this.threshold) {
+      this.state = 'OPEN';
+      this.nextAttempt = Date.now() + this.timeout;
+      console.log(`🔴 CIRCUIT BREAKER OPEN: API calls disabled for ${this.timeout/1000} seconds`);
+    }
+  }
+
+  getState() {
+    return {
+      state: this.state,
+      failureCount: this.failureCount,
+      nextAttempt: this.nextAttempt
+    };
+  }
+}
+
+// Global circuit breakers for different APIs
+const apiCircuitBreaker = new CircuitBreaker(50, 60000); // 50 failures, 60s timeout
+const sanpbxCircuitBreaker = new CircuitBreaker(50, 60000); // 50 failures, 60s timeout
+
+/**
  * AUTOMATIC: Update call status in campaign based on isActive from call logs
  * This function runs automatically in the background to keep campaign status in sync
  */
@@ -242,6 +299,213 @@ async function updateCampaignRunningStatus(campaign) {
 const campaignCallingProgress = new Map();
 const activeCampaigns = new Map();
 
+/**
+ * Rate Limiter for API calls
+ */
+class RateLimiter {
+  constructor() {
+    this.rateLimits = {
+      perMinute: 50,    // Increased from 20 to 50
+      perHour: 2000,    // Increased from 1000 to 2000
+      perDay: 20000     // Increased from 10000 to 20000
+    };
+    this.callHistory = [];
+    this.errorCount = 0;
+    this.successCount = 0;
+  }
+
+  async checkRateLimit() {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    const oneHourAgo = now - 3600000;
+    const oneDayAgo = now - 86400000;
+
+    // Count calls in different time windows
+    const callsLastMinute = this.callHistory.filter(call => call.timestamp > oneMinuteAgo).length;
+    const callsLastHour = this.callHistory.filter(call => call.timestamp > oneHourAgo).length;
+    const callsLastDay = this.callHistory.filter(call => call.timestamp > oneDayAgo).length;
+
+    // IMPROVED: More intelligent rate limiting
+    // Allow burst calls if overall rate is good
+    const successRate = this.successCount / (this.successCount + this.errorCount) || 0;
+    const adjustedMinuteLimit = successRate > 0.8 ? this.rateLimits.perMinute * 1.5 : this.rateLimits.perMinute;
+    
+    // Check if any limit is exceeded
+    if (callsLastMinute >= adjustedMinuteLimit) {
+      // Calculate wait time based on oldest call in current minute
+      const oldestCallInMinute = this.callHistory
+        .filter(call => call.timestamp > oneMinuteAgo)
+        .sort((a, b) => a.timestamp - b.timestamp)[0];
+      
+      const waitTime = oldestCallInMinute ? (60000 - (now - oldestCallInMinute.timestamp)) : 60000;
+      return { allowed: false, reason: 'minute_limit', retryAfter: Math.max(waitTime, 1000) };
+    }
+    
+    if (callsLastHour >= this.rateLimits.perHour) {
+      return { allowed: false, reason: 'hour_limit', retryAfter: 3600000 };
+    }
+    
+    if (callsLastDay >= this.rateLimits.perDay) {
+      return { allowed: false, reason: 'day_limit', retryAfter: 86400000 };
+    }
+
+    return { allowed: true };
+  }
+
+  recordCall(success = true) {
+    this.callHistory.push({ timestamp: Date.now(), success });
+    
+    if (success) {
+      this.successCount++;
+    } else {
+      this.errorCount++;
+    }
+
+    // Clean old history (keep only last 24 hours)
+    const oneDayAgo = Date.now() - 86400000;
+    this.callHistory = this.callHistory.filter(call => call.timestamp > oneDayAgo);
+
+    // Adjust rate limits based on error rate
+    this.adjustRateLimits();
+  }
+
+  adjustRateLimits() {
+    const totalCalls = this.errorCount + this.successCount;
+    if (totalCalls === 0) return;
+
+    const errorRate = this.errorCount / totalCalls;
+    
+    if (errorRate > 0.1) { // More than 10% errors
+      this.rateLimits.perMinute = Math.max(10, this.rateLimits.perMinute - 2);
+      this.rateLimits.perHour = Math.max(500, this.rateLimits.perHour - 100);
+      console.log(`🔻 RATE LIMIT REDUCED: Error rate ${(errorRate * 100).toFixed(1)}%`);
+    } else if (errorRate < 0.05 && totalCalls > 100) { // Less than 5% errors
+      this.rateLimits.perMinute = Math.min(30, this.rateLimits.perMinute + 1);
+      this.rateLimits.perHour = Math.min(1500, this.rateLimits.perHour + 50);
+      console.log(`🔺 RATE LIMIT INCREASED: Error rate ${(errorRate * 100).toFixed(1)}%`);
+    }
+  }
+
+  getStats() {
+    return {
+      rateLimits: this.rateLimits,
+      errorCount: this.errorCount,
+      successCount: this.successCount,
+      errorRate: this.errorCount / (this.errorCount + this.successCount) || 0,
+      callsLastMinute: this.callHistory.filter(call => call.timestamp > Date.now() - 60000).length
+    };
+  }
+}
+
+// Global rate limiter
+const rateLimiter = new RateLimiter();
+
+/**
+ * Resource Monitor for system health
+ */
+class ResourceMonitor {
+  constructor() {
+    this.maxMemoryUsage = 90; // 90% of available memory (T3.Medium has 4GB RAM)
+    this.maxCpuUsage = 85; // 85% of available CPU (2 vCPUs available)
+    this.maxCampaigns = 5; // Max campaigns per server (T3.Medium can handle 3 safely)
+    this.maxConcurrentCalls = 50; // Max concurrent calls (T3.Medium: 2 vCPUs + 4GB RAM - proven to work)
+    this.memoryHistory = []; // Track memory usage over time
+  }
+
+  checkResources() {
+    const memoryUsage = process.memoryUsage();
+    const cpuUsage = process.cpuUsage();
+    const activeCampaignsCount = activeCampaigns.size;
+    
+    // FIXED: Count ACTIVE/RINGING calls, not completed calls
+    let totalActiveCalls = 0;
+    for (const [campaignId, progress] of campaignCallingProgress.entries()) {
+      if (progress.isRunning && progress.details) {
+        const activeCalls = progress.details.filter(detail => 
+          detail.status === 'ringing' || detail.status === 'ongoing'
+        ).length;
+        totalActiveCalls += activeCalls;
+      }
+    }
+    
+    console.log(`📊 CONCURRENT CALLS: ${totalActiveCalls} active calls out of ${this.maxConcurrentCalls} limit`);
+
+    // IMPROVED: Better memory calculation
+    const totalMemory = memoryUsage.rss; // Resident Set Size (actual memory used)
+    const heapUsed = memoryUsage.heapUsed;
+    const heapTotal = memoryUsage.heapTotal;
+    
+    // Calculate memory usage as percentage of heap vs total memory
+    const memoryUsagePercent = heapTotal > 0 ? (heapUsed / heapTotal) * 100 : (heapUsed / totalMemory) * 100;
+    
+    // Track memory history
+    this.memoryHistory.push({
+      timestamp: Date.now(),
+      heapUsed: heapUsed,
+      heapTotal: heapTotal,
+      rss: totalMemory,
+      percent: memoryUsagePercent
+    });
+    
+    // Keep only last 10 measurements
+    if (this.memoryHistory.length > 10) {
+      this.memoryHistory = this.memoryHistory.slice(-10);
+    }
+
+    const warnings = [];
+    
+    // IMPROVED: More intelligent memory checking
+    if (memoryUsagePercent > this.maxMemoryUsage) {
+      warnings.push(`High memory usage: ${memoryUsagePercent.toFixed(1)}% (${Math.round(heapUsed/1024/1024)}MB/${Math.round(heapTotal/1024/1024)}MB)`);
+    }
+    
+    if (activeCampaignsCount > this.maxCampaigns) {
+      warnings.push(`Too many campaigns: ${activeCampaignsCount}`);
+    }
+    
+    if (totalActiveCalls > this.maxConcurrentCalls) {
+      warnings.push(`Too many concurrent calls: ${totalActiveCalls}`);
+    }
+
+    if (warnings.length > 0) {
+      console.warn(`⚠️ RESOURCE WARNING: ${warnings.join(', ')}`);
+      return false;
+    }
+
+    return true;
+  }
+
+  getStats() {
+    const memoryUsage = process.memoryUsage();
+    const heapUsed = memoryUsage.heapUsed;
+    const heapTotal = memoryUsage.heapTotal;
+    const rss = memoryUsage.rss;
+    
+    return {
+      memoryUsage: {
+        heapUsed: heapUsed,
+        heapTotal: heapTotal,
+        rss: rss,
+        percent: heapTotal > 0 ? (heapUsed / heapTotal) * 100 : (heapUsed / rss) * 100,
+        heapUsedMB: Math.round(heapUsed / 1024 / 1024),
+        heapTotalMB: Math.round(heapTotal / 1024 / 1024),
+        rssMB: Math.round(rss / 1024 / 1024)
+      },
+      activeCampaigns: activeCampaigns.size,
+      totalProgress: campaignCallingProgress.size,
+      circuitBreakers: {
+        api: apiCircuitBreaker.getState(),
+        sanpbx: sanpbxCircuitBreaker.getState()
+      },
+      rateLimiter: rateLimiter.getStats(),
+      memoryHistory: this.memoryHistory.slice(-5) // Last 5 measurements
+    };
+  }
+}
+
+// Global resource monitor
+const resourceMonitor = new ResourceMonitor();
+
 // AUTOMATIC: Background service to monitor and update call statuses
 let statusUpdateInterval = null;
 
@@ -400,6 +664,11 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
   console.log(`📞 MAKING CALL: Contact=${contact?.phone}, AgentId=${agentId}, ApiKey=${!!apiKey}, ClientId=${clientId}`);
   
   try {
+    // Check resource availability
+    if (!resourceMonitor.checkResources()) {
+      console.log(`⚠️ RESOURCE LIMIT: System resources exhausted`);
+      throw new Error('System resources exhausted');
+    }
     // Load agent to branch by provider
     const agent = await Agent.findById(agentId).lean();
     const provider = String(agent?.serviceProvider || '').toLowerCase();
@@ -417,18 +686,59 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
       const normalizedDigits = String(contact?.phone || '').replace(/[^\d]/g, '');
       const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
 
-      // 1) Get API token (access token in header)
+      // 1) Get API token (access token in header) with circuit breaker and retry
       const tokenUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken';
-      const tokenResp = await axios.post(tokenUrl, { access_key: accessKey }, { headers: { Accesstoken: accessToken }, timeout: 8000 });
+      let tokenResp;
+      let retryCount = 0;
+      const maxRetries = 3;
+      
+      while (retryCount < maxRetries) {
+        try {
+          tokenResp = await sanpbxCircuitBreaker.call(async () => {
+            return await axios.post(tokenUrl, { access_key: accessKey }, { 
+              headers: { Accesstoken: accessToken }, 
+              timeout: 15000 
+            });
+          });
+          break; // Success, exit retry loop
+        } catch (error) {
+          retryCount++;
+          if (retryCount >= maxRetries) {
+            throw error; // Re-throw after max retries
+          }
+          console.log(`🔄 API Token retry ${retryCount}/${maxRetries}: ${error.message}`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+        }
+      }
       const sanToken = tokenResp?.data?.Apitoken;
       if (!sanToken) {
         throw new Error('SANPBX_TOKEN_FAILED');
       }
 
-      // 2) Dial call (apitoken in header)
+      // 2) Dial call (apitoken in header) with circuit breaker and retry
       const dialUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall';
-      const dialBody = { appid: 2, call_to: callTo, caller_id: callerId, custom_field: { uniqueid: uniqueId, name: contact.name , sanToken, runId } };
-      const response = await axios.post(dialUrl, dialBody, { headers: { Apitoken: sanToken }, timeout: 10000 });
+      const dialBody = { appid: 2, call_to: callTo, caller_id: callerId, custom_field: { uniqueid: uniqueId, name: contact.name , runId } };
+      let response;
+      retryCount = 0;
+      
+      while (retryCount < maxRetries) {
+        try {
+          response = await sanpbxCircuitBreaker.call(async () => {
+            return await axios.post(dialUrl, dialBody, { 
+              headers: { Apitoken: sanToken }, 
+              timeout: 20000 
+            });
+          });
+          break; // Success, exit retry loop
+        } catch (error) {
+          retryCount++;
+          if (retryCount >= maxRetries) {
+            throw error; // Re-throw after max retries
+          }
+          console.log(`🔄 Dial Call retry ${retryCount}/${maxRetries}: ${error.message}`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+        }
+      }
 
       return {
         success: true,
@@ -476,20 +786,22 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
       resFormat: 3,
     };
 
-    // Make call to external API
+    // Make call to external API with circuit breaker
     console.log(`📞 EXTERNAL API CALL: Sending to clicktobot API`);
-    const response = await axios.post(
-      'https://3neysomt18.execute-api.us-east-1.amazonaws.com/dev/clicktobot',
-      callPayload,
-      {
-        headers: {
-          'X-CLIENT': 'czobd',
-          'X-API-KEY': apiKey,
-          'Content-Type': 'application/json',
-        },
-        timeout: 10000 // 10 second timeout
-      }
-    );
+    const response = await apiCircuitBreaker.call(async () => {
+      return await axios.post(
+        'https://3neysomt18.execute-api.us-east-1.amazonaws.com/dev/clicktobot',
+        callPayload,
+        {
+          headers: {
+            'X-CLIENT': 'czobd',
+            'X-API-KEY': apiKey,
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000 // 10 second timeout
+        }
+      );
+    });
 
     console.log(`✅ EXTERNAL API SUCCESS: Response status=${response.status}`);
     return {
@@ -497,15 +809,12 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
       uniqueId,
       contact,
       timestamp: new Date(),
-      externalResponse: response.data
+      externalResponse: response.data,
+      provider: 'clicktobot'
     };
 
   } catch (error) {
-    console.error('❌ CALL FAILED:', error?.response?.status, error?.response?.data || error?.message);
-    
-    // Note: CallLog entries are now handled by external system
-    // No longer creating CallLog entries for failed calls
-    
+    console.error('❌ CALL FAILED:', error?.response?.status, error?.response?.data || error?.message);    
     return {
       success: false,
       uniqueId, // Return uniqueId even for failed calls
@@ -553,9 +862,20 @@ async function startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls
  */
 async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress, runId) {
   const campaignId = campaign._id.toString();
-  const BATCH_SIZE = parseInt(process.env.CAMPAIGN_BATCH_SIZE) || 100; // Process calls in batches (configurable via env)
+  const BATCH_SIZE = parseInt(process.env.CAMPAIGN_BATCH_SIZE) || 25; // Reduced from 100 to 25 for safety
+  const MAX_CONCURRENT_CAMPAIGNS = 3; // Max 3 campaigns at once
+  const SAFE_DELAY_BETWEEN_CALLS = Math.max(delayBetweenCalls, 2000); // Minimum 2 seconds
   
   try {
+    // Check campaign limits
+    if (activeCampaigns.size >= MAX_CONCURRENT_CAMPAIGNS) {
+      console.log(`⚠️ CAMPAIGN LIMIT: Maximum ${MAX_CONCURRENT_CAMPAIGNS} campaigns allowed, current: ${activeCampaigns.size}`);
+      progress.isRunning = false;
+      progress.endTime = new Date();
+      campaignCallingProgress.set(campaignId, progress);
+      return;
+    }
+
     // Resume from where we left off if this is a continuation
     let startIndex = progress.currentIndex || 0;
     
@@ -569,8 +889,40 @@ async function processCampaignCalls(campaign, agentId, apiKey, delayBetweenCalls
       
       console.log(`📦 BATCH ${batchNumber}/${totalBatches}: Processing calls ${batchStart + 1}-${batchEnd} of ${campaign.contacts.length}`);
       
-      // Process this batch
-      await processBatch(campaign, agentId, apiKey, delayBetweenCalls, clientId, progress, runId, batchStart, batchEnd);
+      // CRITICAL: Check if campaign was manually stopped or instance created
+      const batchProgress = campaignCallingProgress.get(campaignId);
+      if (batchProgress && batchProgress.manuallyStopped) {
+        console.log(`🛑 MANUAL STOP DETECTED: Campaign ${campaignId} was manually stopped, stopping batch processing`);
+        break;
+      }
+      
+      // CRITICAL: Check if campaign is still active
+      const campaignActive = activeCampaigns.get(campaignId);
+      if (!campaignActive) {
+        console.log(`🛑 CAMPAIGN STOPPED: Campaign ${campaignId} removed from active campaigns, stopping batch processing`);
+        break;
+      }
+      
+      // CRITICAL: Check if campaign is still running in database
+      const Campaign = require('../models/Campaign');
+      const currentCampaign = await Campaign.findById(campaignId).lean();
+      if (!currentCampaign || !currentCampaign.isRunning) {
+        console.log(`🛑 DATABASE STOP: Campaign ${campaignId} is not running in database, stopping batch processing`);
+        // Remove from active campaigns
+        activeCampaigns.delete(campaignId);
+        break;
+      }
+      
+      try {
+        // Process this batch with safe delay
+        await processBatch(campaign, agentId, apiKey, SAFE_DELAY_BETWEEN_CALLS, clientId, progress, runId, batchStart, batchEnd);
+      } catch (batchError) {
+        console.error(`❌ BATCH ${batchNumber} FAILED:`, batchError);
+        
+        // Continue with next batch instead of stopping entire campaign
+        console.log(`🔄 CONTINUING: Skipping batch ${batchNumber}, moving to next batch`);
+        continue;
+      }
       
       // Update progress index to end of current batch
       progress.currentIndex = batchEnd;
@@ -622,21 +974,26 @@ async function processBatch(campaign, agentId, apiKey, delayBetweenCalls, client
   const campaignId = campaign._id.toString();
   
   try {
+    // Check if campaign still exists and is valid
+    if (!campaign || !campaign.contacts || campaign.contacts.length === 0) {
+      console.log(`⚠️ BATCH SKIP: Campaign ${campaignId} is invalid or has no contacts`);
+      return;
+    }
     for (let i = batchStart; i < batchEnd; i++) {
       // Check if campaign should stop (manual stop or removed from active campaigns)
-      const isActive = activeCampaigns.get(campaignId);
-      console.log(`🔄 PROCESS CALL ${i + 1}/${campaign.contacts.length}: activeCampaigns.get(${campaignId}) = ${isActive}`);
+      const callActive = activeCampaigns.get(campaignId);
+      console.log(`🔄 PROCESS CALL ${i + 1}/${campaign.contacts.length}: activeCampaigns.get(${campaignId}) = ${callActive}`);
       
-      if (!isActive) {
+      if (!callActive) {
         console.log(`🛑 CAMPAIGN STOPPED: Campaign ${campaignId} removed from active campaigns, stopping at contact ${i + 1}/${campaign.contacts.length}`);
         break;
       }
       
       // Check if campaign was manually stopped
-      const currentProgress = campaignCallingProgress.get(campaignId);
-      console.log(`🔄 PROCESS CALL ${i + 1}/${campaign.contacts.length}: progress.manuallyStopped = ${currentProgress?.manuallyStopped}`);
+      const callProgress = campaignCallingProgress.get(campaignId);
+      console.log(`🔄 PROCESS CALL ${i + 1}/${campaign.contacts.length}: progress.manuallyStopped = ${callProgress?.manuallyStopped}`);
       
-      if (currentProgress && currentProgress.manuallyStopped) {
+      if (callProgress && callProgress.manuallyStopped) {
         console.log(`🛑 MANUAL STOP DETECTED: Campaign ${campaignId} was manually stopped, stopping at contact ${i + 1}/${campaign.contacts.length}`);
         break;
       }
@@ -648,9 +1005,27 @@ async function processBatch(campaign, agentId, apiKey, delayBetweenCalls, client
       const contact = campaign.contacts[i];
       
 
-      // Make the call
+      // CRITICAL: Add delay BEFORE making call (except first call in batch)
+      if (i > batchStart) {
+        console.log(`⏳ WAITING ${delayBetweenCalls}ms before call ${i + 1}...`);
+        await new Promise(resolve => setTimeout(resolve, delayBetweenCalls));
+      }
+      
+      // Make the call with individual error handling
       console.log(`🔄 MAKING CALL ${i + 1}/${campaign.contacts.length}: ${contact.phone}`);
-      const callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, clientId, runId, null);
+      let callResult;
+      try {
+        callResult = await makeSingleCall(contact, agentId, apiKey, campaign._id, clientId, runId, null);
+      } catch (callError) {
+        console.error(`❌ INDIVIDUAL CALL ERROR: ${callError.message}`);
+        callResult = {
+          success: false,
+          error: callError.message,
+          contact,
+          uniqueId: `error-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          timestamp: new Date()
+        };
+      }
       
       // Update progress
       progress.completedCalls++;
@@ -705,12 +1080,17 @@ async function processBatch(campaign, agentId, apiKey, delayBetweenCalls, client
           };
           
           // Atomically push if missing to avoid version conflicts
-          const Campaign = require('../models/Campaign');
-          await Campaign.updateOne(
-            { _id: campaign._id, 'details.uniqueId': { $ne: callResult.uniqueId } },
-            { $push: { details: callDetail } }
-          );
-          console.log(`📝 ADDED FAILED CALL DETAIL (atomic): ${callResult.uniqueId}`);
+          try {
+            const Campaign = require('../models/Campaign');
+            await Campaign.updateOne(
+              { _id: campaign._id, 'details.uniqueId': { $ne: callResult.uniqueId } },
+              { $push: { details: callDetail } }
+            );
+            console.log(`📝 ADDED FAILED CALL DETAIL (atomic): ${callResult.uniqueId}`);
+          } catch (dbError) {
+            console.error(`❌ DATABASE ERROR: Failed to save call detail ${callResult.uniqueId}:`, dbError.message);
+            // Continue processing even if database save fails
+          }
         }
       }
 
@@ -735,6 +1115,21 @@ async function saveBatchProgress(campaign, progress, runId, batchNumber, totalBa
     const campaignId = campaign._id.toString();
     const CampaignHistory = require('../models/CampaignHistory');
     
+    // CRITICAL: Check if campaign is still running before saving
+    const Campaign = require('../models/Campaign');
+    const currentCampaign = await Campaign.findById(campaign._id).lean();
+    if (!currentCampaign || !currentCampaign.isRunning) {
+      console.log(`🛑 SAVE SKIP: Campaign ${campaignId} is not running, skipping batch save`);
+      return;
+    }
+    
+    // CRITICAL: Check if campaign was manually stopped
+    const currentProgress = campaignCallingProgress.get(campaignId);
+    if (currentProgress && currentProgress.manuallyStopped) {
+      console.log(`🛑 SAVE SKIP: Campaign ${campaignId} was manually stopped, skipping batch save`);
+      return;
+    }
+    
     console.log(`💾 SAVING BATCH ${batchNumber}/${totalBatches} PROGRESS (appending to run ${runId})...`);
     
     // Determine the slice of contacts for this batch (100 per batch)
@@ -742,7 +1137,6 @@ async function saveBatchProgress(campaign, progress, runId, batchNumber, totalBa
     const batchEndIndex = Math.min(batchStartIndex + 100, campaign.contacts.length);
     
     // Reload the latest campaign to get up-to-date details
-    const Campaign = require('../models/Campaign');
     const updatedCampaign = await Campaign.findById(campaign._id);
     const campaignDetails = Array.isArray(updatedCampaign.details) ? updatedCampaign.details : [];
     
@@ -840,6 +1234,28 @@ async function saveBatchProgress(campaign, progress, runId, batchNumber, totalBa
     
     console.log(`✅ BATCH ${batchNumber}/${totalBatches} APPENDED: ${progress.completedCalls} calls processed (run ${runId})`);
     
+    // CRITICAL: If this is the final batch, stop the campaign
+    const isFinalBatch = batchNumber >= totalBatches;
+    if (isFinalBatch) {
+      console.log(`🏁 FINAL BATCH: Campaign ${campaignId} completed, stopping campaign`);
+      
+      // Stop campaign in database
+      await Campaign.updateOne(
+        { _id: campaign._id },
+        { $set: { isRunning: false } }
+      );
+      
+      // Remove from active campaigns
+      activeCampaigns.delete(campaignId);
+      
+      // Mark progress as completed
+      progress.isRunning = false;
+      progress.endTime = new Date();
+      campaignCallingProgress.set(campaignId, progress);
+      
+      console.log(`✅ CAMPAIGN COMPLETED: All ${campaign.contacts.length} calls processed`);
+    }
+    
     // Update progress in memory
     campaignCallingProgress.set(campaignId, progress);
     
@@ -911,6 +1327,107 @@ setInterval(cleanupCompletedCampaigns, 60 * 60 * 1000);
 
 // Clean up stale active calls every 10 minutes
 setInterval(cleanupStaleActiveCalls, 10 * 60 * 1000);
+
+// Memory cleanup every 30 minutes
+setInterval(() => {
+  try {
+    // Clean up old call history from rate limiter
+    const oneDayAgo = Date.now() - 86400000;
+    rateLimiter.callHistory = rateLimiter.callHistory.filter(call => call.timestamp > oneDayAgo);
+    
+    // Clean up old memory history
+    const oneHourAgo = Date.now() - 3600000;
+    resourceMonitor.memoryHistory = resourceMonitor.memoryHistory.filter(entry => entry.timestamp > oneHourAgo);
+    
+    // Clean up completed campaigns from memory
+    const now = new Date();
+    const oneHourAgoDate = new Date(now.getTime() - 60 * 60 * 1000);
+    
+    for (const [campaignId, progress] of campaignCallingProgress.entries()) {
+      if (!progress.isRunning && progress.endTime && progress.endTime < oneHourAgoDate) {
+        campaignCallingProgress.delete(campaignId);
+        console.log(`🧹 Cleaned up old campaign progress: ${campaignId}`);
+      }
+    }
+    
+    // Force garbage collection if available
+    if (global.gc) {
+      global.gc();
+      console.log('🧹 Memory cleanup: Garbage collection triggered');
+    }
+    
+    // Log detailed memory usage
+    const memoryUsage = process.memoryUsage();
+    console.log(`📊 MEMORY USAGE: Heap ${Math.round(memoryUsage.heapUsed/1024/1024)}MB/${Math.round(memoryUsage.heapTotal/1024/1024)}MB, RSS ${Math.round(memoryUsage.rss/1024/1024)}MB`);
+  } catch (error) {
+    console.error('❌ Memory cleanup error:', error);
+  }
+}, 30 * 60 * 1000); // Every 30 minutes
+
+// Graceful shutdown handler
+process.on('SIGTERM', async () => {
+  console.log('🛑 SIGTERM received, shutting down gracefully...');
+  
+  try {
+    // Stop all active campaigns
+    for (const [campaignId, progress] of campaignCallingProgress.entries()) {
+      if (progress.isRunning) {
+        progress.isRunning = false;
+        progress.endTime = new Date();
+        progress.manuallyStopped = true;
+        campaignCallingProgress.set(campaignId, progress);
+        console.log(`🛑 Stopped campaign ${campaignId}`);
+      }
+    }
+    
+    // Clear active campaigns
+    activeCampaigns.clear();
+    
+    // Stop status update interval
+    if (statusUpdateInterval) {
+      clearInterval(statusUpdateInterval);
+      statusUpdateInterval = null;
+    }
+    
+    console.log('✅ Graceful shutdown completed');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+});
+
+process.on('SIGINT', async () => {
+  console.log('🛑 SIGINT received, shutting down gracefully...');
+  
+  try {
+    // Stop all active campaigns
+    for (const [campaignId, progress] of campaignCallingProgress.entries()) {
+      if (progress.isRunning) {
+        progress.isRunning = false;
+        progress.endTime = new Date();
+        progress.manuallyStopped = true;
+        campaignCallingProgress.set(campaignId, progress);
+        console.log(`🛑 Stopped campaign ${campaignId}`);
+      }
+    }
+    
+    // Clear active campaigns
+    activeCampaigns.clear();
+    
+    // Stop status update interval
+    if (statusUpdateInterval) {
+      clearInterval(statusUpdateInterval);
+      statusUpdateInterval = null;
+    }
+    
+    console.log('✅ Graceful shutdown completed');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+});
 
 /**
  * DEBUG: Check current call status for a specific uniqueId
@@ -1228,6 +1745,52 @@ async function autoSaveCampaignRun(campaign, progress) {
   }
 }
 
+/**
+ * Get system health and monitoring stats
+ */
+function getSystemHealth() {
+  return {
+    resourceMonitor: resourceMonitor.getStats(),
+    activeCampaigns: activeCampaigns.size,
+    campaignProgress: campaignCallingProgress.size,
+    circuitBreakers: {
+      api: apiCircuitBreaker.getState(),
+      sanpbx: sanpbxCircuitBreaker.getState()
+    },
+    rateLimiter: rateLimiter.getStats(),
+    timestamp: new Date()
+  };
+}
+
+/**
+ * Reset circuit breakers (for debugging)
+ */
+function resetCircuitBreakers() {
+  apiCircuitBreaker.failureCount = 0;
+  apiCircuitBreaker.state = 'CLOSED';
+  sanpbxCircuitBreaker.failureCount = 0;
+  sanpbxCircuitBreaker.state = 'CLOSED';
+  console.log('🔄 Circuit breakers reset');
+}
+
+/**
+ * Get safe calling limits
+ */
+function getSafeLimits() {
+  return {
+    maxCallsPerBatch: 25,
+    maxConcurrentCampaigns: 3,
+    minDelayBetweenCalls: 3000,
+    rateLimits: rateLimiter.rateLimits,
+    resourceLimits: {
+      maxMemoryUsage: 80,
+      maxCpuUsage: 80,
+      maxCampaigns: 5,
+      maxConcurrentCalls: 10
+    }
+  };
+}
+
 module.exports = {
   getClientApiKey,
   makeSingleCall,
@@ -1249,7 +1812,10 @@ module.exports = {
   cleanupStuckCampaignsOnRestart,
   saveBatchProgress,
   autoSaveCampaignRun,
-  cleanupCompletedCampaignsWithDetails
+  cleanupCompletedCampaignsWithDetails,
+  getSystemHealth,
+  resetCircuitBreakers,
+  getSafeLimits
 };
 
 /**
