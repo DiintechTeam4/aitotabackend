@@ -4388,6 +4388,109 @@ router.post('/wa/chat/save', extractClientId, async (req, res) => {
   }
 });
 
+// Validate agent credentials before making calls
+router.post('/agents/:agentId/validate-credentials', extractClientId, async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const agent = await Agent.findById(agentId).lean();
+    
+    if (!agent) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Agent not found',
+        missingFields: ['Agent not found']
+      });
+    }
+
+    const provider = String(agent?.serviceProvider || '').toLowerCase();
+    const missingFields = [];
+    const validationErrors = [];
+
+    // Check if agent is active
+    if (!agent.isActive) {
+      validationErrors.push('Agent is inactive');
+    }
+
+    // Provider-specific validation
+    if (provider === 'snapbx' || provider === 'sanpbx') {
+      // SANPBX validation
+      if (!agent.accessToken) missingFields.push('Access Token');
+      if (!agent.accessKey) missingFields.push('Access Key');
+      if (!agent.callerId) missingFields.push('Caller ID');
+      if (!agent.didNumber) missingFields.push('DID Number');
+    } else if (provider === 'c-zentrix') {
+      // C-Zentrix validation
+      if (!agent.X_API_KEY) missingFields.push('API Key');
+      if (!agent.callerId) missingFields.push('Caller ID');
+      if (!agent.didNumber) missingFields.push('DID Number');
+    } else if (provider === 'twilio') {
+      // Twilio validation
+      if (!agent.accountSid) missingFields.push('Account SID');
+      if (!agent.X_API_KEY) missingFields.push('Auth Token');
+      if (!agent.callingNumber) missingFields.push('Calling Number');
+    } else if (provider === 'vonage') {
+      // Vonage validation
+      if (!agent.X_API_KEY) missingFields.push('API Key');
+      if (!agent.callingNumber) missingFields.push('Calling Number');
+    } else if (provider === 'plivo') {
+      // Plivo validation
+      if (!agent.X_API_KEY) missingFields.push('Auth ID');
+      if (!agent.callingNumber) missingFields.push('Calling Number');
+    } else if (provider === 'bandwidth') {
+      // Bandwidth validation
+      if (!agent.X_API_KEY) missingFields.push('API Key');
+      if (!agent.callingNumber) missingFields.push('Calling Number');
+    } else if (provider === 'tata') {
+      // Tata validation
+      if (!agent.X_API_KEY) missingFields.push('API Key');
+      if (!agent.callingNumber) missingFields.push('Calling Number');
+    } else {
+      // Generic validation for other providers
+      if (!agent.X_API_KEY) missingFields.push('API Key');
+      if (!agent.callingNumber && !agent.callerId) missingFields.push('Calling Number or Caller ID');
+    }
+
+    // Check for service provider
+    if (!agent.serviceProvider) {
+      missingFields.push('Service Provider');
+    }
+
+    // Check client credits
+    try {
+      const Credit = require('../models/Credit');
+      const creditRecord = await Credit.getOrCreateCreditRecord(req.clientId);
+      const currentBalance = Number(creditRecord?.currentBalance || 0);
+      if (currentBalance <= 0) {
+        validationErrors.push('Insufficient credits - Please recharge your account');
+      }
+    } catch (e) {
+      validationErrors.push('Unable to verify account credits');
+    }
+
+    const isValid = missingFields.length === 0 && validationErrors.length === 0;
+    
+    return res.json({
+      success: isValid,
+      isValid,
+      missingFields,
+      validationErrors,
+      provider,
+      agentName: agent.agentName,
+      message: isValid 
+        ? 'All credentials are valid' 
+        : `Missing: ${missingFields.join(', ')}${validationErrors.length > 0 ? ` | Issues: ${validationErrors.join(', ')}` : ''}`
+    });
+
+  } catch (error) {
+    console.error('Validation error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Validation failed',
+      missingFields: ['System error during validation']
+    });
+  }
+});
+
 // Make single call
 router.post('/calls/single', extractClientId, async (req, res) => {
   const _startTs = Date.now();
