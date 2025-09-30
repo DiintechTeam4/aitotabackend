@@ -665,10 +665,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
   
   try {
     // Check resource availability
-    if (!resourceMonitor.checkResources()) {
-      console.log(`⚠️ RESOURCE LIMIT: System resources exhausted`);
-      throw new Error('System resources exhausted');
-    }
+
     // Load agent to branch by provider
     const agent = await Agent.findById(agentId).lean();
     const provider = String(agent?.serviceProvider || '').toLowerCase();
@@ -1804,36 +1801,6 @@ function getSafeLimits() {
   };
 }
 
-module.exports = {
-  getClientApiKey,
-  makeSingleCall,
-  startCampaignCalling,
-  stopCampaignCalling,
-  getCampaignCallingProgress,
-  getActiveCampaigns,
-  cleanupCompletedCampaigns,
-  updateCallStatusFromLogs,
-  updateCampaignRunningStatus,
-  startAutomaticStatusUpdates,
-  stopAutomaticStatusUpdates,
-  updateAllCampaignCallStatuses,
-  triggerManualStatusUpdate,
-  debugCallStatus,
-  migrateMissedToCompleted,
-  fixStuckCalls,
-  cleanupStaleActiveCalls,
-  cleanupStuckCampaignsOnRestart,
-  saveBatchProgress,
-  autoSaveCampaignRun,
-  cleanupCompletedCampaignsWithDetails,
-  getSystemHealth,
-  resetCircuitBreakers,
-  getSafeLimits
-};
-
-/**
- * MIGRATION: Convert any existing 'missed' status to 'completed'
- */
 async function migrateMissedToCompleted() {
   try {
     const Campaign = require('../models/Campaign');
@@ -1894,3 +1861,35 @@ migrateMissedToCompleted().then(() => {
 }).then(() => {
   startAutomaticStatusUpdates();
 });
+
+
+module.exports = {
+  getClientApiKey,
+  makeSingleCall,
+  startCampaignCalling,
+  stopCampaignCalling,
+  getCampaignCallingProgress,
+  getActiveCampaigns,
+  cleanupCompletedCampaigns,
+  updateCallStatusFromLogs,
+  updateCampaignRunningStatus,
+  startAutomaticStatusUpdates,
+  stopAutomaticStatusUpdates,
+  updateAllCampaignCallStatuses,
+  triggerManualStatusUpdate,
+  debugCallStatus,
+  migrateMissedToCompleted,
+  fixStuckCalls,
+  cleanupStaleActiveCalls,
+  cleanupStuckCampaignsOnRestart,
+  saveBatchProgress,
+  autoSaveCampaignRun,
+  cleanupCompletedCampaignsWithDetails,
+  getSystemHealth,
+  resetCircuitBreakers,
+  getSafeLimits
+};
+
+/**
+ * MIGRATION: Convert any existing 'missed' status to 'completed'
+ */
