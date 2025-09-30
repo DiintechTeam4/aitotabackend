@@ -1576,18 +1576,7 @@ app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
 const PORT = process.env.PORT || 4000;
 
 connectDB().then(async () => {
-    // Always run maintenance on startup
-    try {
-        const { fixStuckCalls, cleanupStaleActiveCalls, cleanupStuckCampaignsOnRestart } = require('./services/campaignCallingService');
-        await fixStuckCalls();
-        console.log('✅ SERVER RESTART: Stuck calls check completed');
-        await cleanupStaleActiveCalls();
-        console.log('✅ SERVER RESTART: Stale calls cleanup completed');
-        await cleanupStuckCampaignsOnRestart();
-        console.log('✅ SERVER RESTART: Stuck campaigns cleanup completed');
-    } catch (error) {
-        console.error('❌ SERVER RESTART: Error during stuck call check:', error);
-    }
+ 
     server.listen(PORT, () => {
         console.log(`🚀 Server is running on http://localhost:${PORT}`);
         console.log(`🔌 WebSocket server is ready on ws://localhost:${PORT}`);
