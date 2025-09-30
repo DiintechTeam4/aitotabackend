@@ -400,7 +400,112 @@ class RateLimiter {
 // Global rate limiter
 const rateLimiter = new RateLimiter();
 
+/**
+ * Resource Monitor for system health
+ */
+/* Resource Monitor removed */
+class ResourceMonitor {
+  constructor() {
+    this.maxMemoryUsage = 90; // 90% of available memory (T3.Medium has 4GB RAM)
+    this.maxCpuUsage = 85; // 85% of available CPU (2 vCPUs available)
+    this.maxCampaigns = 5; // Max campaigns per server (T3.Medium can handle 3 safely)
+    this.maxConcurrentCalls = 50; // Max concurrent calls (T3.Medium: 2 vCPUs + 4GB RAM - proven to work)
+    this.memoryHistory = []; // Track memory usage over time
+  }
 
+  checkResources() {
+    const memoryUsage = process.memoryUsage();
+    const cpuUsage = process.cpuUsage();
+    const activeCampaignsCount = activeCampaigns.size;
+    
+    // FIXED: Count ACTIVE/RINGING calls, not completed calls
+    let totalActiveCalls = 0;
+    for (const [campaignId, progress] of campaignCallingProgress.entries()) {
+      if (progress.isRunning && progress.details) {
+        const activeCalls = progress.details.filter(detail => 
+          detail.status === 'ringing' || detail.status === 'ongoing'
+        ).length;
+        totalActiveCalls += activeCalls;
+      }
+    }
+    
+    console.log(`📊 CONCURRENT CALLS: ${totalActiveCalls} active calls out of ${this.maxConcurrentCalls} limit`);
+
+    // IMPROVED: Better memory calculation
+    const totalMemory = memoryUsage.rss; // Resident Set Size (actual memory used)
+    const heapUsed = memoryUsage.heapUsed;
+    const heapTotal = memoryUsage.heapTotal;
+    
+    // Calculate memory usage as percentage of heap vs total memory
+    const memoryUsagePercent = heapTotal > 0 ? (heapUsed / heapTotal) * 100 : (heapUsed / totalMemory) * 100;
+    
+    // Track memory history
+    this.memoryHistory.push({
+      timestamp: Date.now(),
+      heapUsed: heapUsed,
+      heapTotal: heapTotal,
+      rss: totalMemory,
+      percent: memoryUsagePercent
+    });
+    
+    // Keep only last 10 measurements
+    if (this.memoryHistory.length > 10) {
+      this.memoryHistory = this.memoryHistory.slice(-10);
+    }
+
+    const warnings = [];
+    
+    // IMPROVED: More intelligent memory checking
+    if (memoryUsagePercent > this.maxMemoryUsage) {
+      warnings.push(`High memory usage: ${memoryUsagePercent.toFixed(1)}% (${Math.round(heapUsed/1024/1024)}MB/${Math.round(heapTotal/1024/1024)}MB)`);
+    }
+    
+    if (activeCampaignsCount > this.maxCampaigns) {
+      warnings.push(`Too many campaigns: ${activeCampaignsCount}`);
+    }
+    
+    if (totalActiveCalls > this.maxConcurrentCalls) {
+      warnings.push(`Too many concurrent calls: ${totalActiveCalls}`);
+    }
+
+    if (warnings.length > 0) {
+      console.warn(`⚠️ RESOURCE WARNING: ${warnings.join(', ')}`);
+      return false;
+    }
+
+    return true;
+  }
+
+  getStats() {
+    const memoryUsage = process.memoryUsage();
+    const heapUsed = memoryUsage.heapUsed;
+    const heapTotal = memoryUsage.heapTotal;
+    const rss = memoryUsage.rss;
+    
+    return {
+      memoryUsage: {
+        heapUsed: heapUsed,
+        heapTotal: heapTotal,
+        rss: rss,
+        percent: heapTotal > 0 ? (heapUsed / heapTotal) * 100 : (heapUsed / rss) * 100,
+        heapUsedMB: Math.round(heapUsed / 1024 / 1024),
+        heapTotalMB: Math.round(heapTotal / 1024 / 1024),
+        rssMB: Math.round(rss / 1024 / 1024)
+      },
+      activeCampaigns: activeCampaigns.size,
+      totalProgress: campaignCallingProgress.size,
+      circuitBreakers: {
+        api: apiCircuitBreaker.getState(),
+        sanpbx: sanpbxCircuitBreaker.getState()
+      },
+      rateLimiter: rateLimiter.getStats(),
+      memoryHistory: this.memoryHistory.slice(-5) // Last 5 measurements
+    };
+  }
+}
+
+// Resource monitor disabled
+// const resourceMonitor = new ResourceMonitor();
 
 // AUTOMATIC: Background service to monitor and update call statuses
 let statusUpdateInterval = null;
@@ -1234,40 +1339,7 @@ setInterval(cleanupCompletedCampaigns, 60 * 60 * 1000);
 // Clean up stale active calls every 10 minutes
 setInterval(cleanupStaleActiveCalls, 10 * 60 * 1000);
 
-// Memory cleanup every 30 minutes
-setInterval(() => {
-  try {
-    // Clean up old call history from rate limiter
-    const oneDayAgo = Date.now() - 86400000;
-    rateLimiter.callHistory = rateLimiter.callHistory.filter(call => call.timestamp > oneDayAgo);
-    
-    // Clean up old memory history
-    const oneHourAgo = Date.now() - 3600000;
-    
-    // Clean up completed campaigns from memory
-    const now = new Date();
-    const oneHourAgoDate = new Date(now.getTime() - 60 * 60 * 1000);
-    
-    for (const [campaignId, progress] of campaignCallingProgress.entries()) {
-      if (!progress.isRunning && progress.endTime && progress.endTime < oneHourAgoDate) {
-        campaignCallingProgress.delete(campaignId);
-        console.log(`🧹 Cleaned up old campaign progress: ${campaignId}`);
-      }
-    }
-    
-    // Force garbage collection if available
-    if (global.gc) {
-      global.gc();
-      console.log('🧹 Memory cleanup: Garbage collection triggered');
-    }
-    
-    // Log detailed memory usage
-    const memoryUsage = process.memoryUsage();
-    console.log(`📊 MEMORY USAGE: Heap ${Math.round(memoryUsage.heapUsed/1024/1024)}MB/${Math.round(memoryUsage.heapTotal/1024/1024)}MB, RSS ${Math.round(memoryUsage.rss/1024/1024)}MB`);
-  } catch (error) {
-    console.error('❌ Memory cleanup error:', error);
-  }
-}, 30 * 60 * 1000); // Every 30 minutes
+// Memory cleanup interval removed
 
 // Graceful shutdown handler
 process.on('SIGTERM', async () => {
@@ -1649,6 +1721,7 @@ async function autoSaveCampaignRun(campaign, progress) {
     console.error(`❌ AUTO-SAVE: Error saving campaign run for ${campaign._id}:`, error);
   }
 }
+
 
 
 /**
