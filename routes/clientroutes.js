@@ -4651,10 +4651,7 @@ router.post('/calls/single', extractClientId, async (req, res) => {
               await campaign.save();
               log('campaign.detail.appended', { campaignId, uniqueId: result.uniqueId });
             }
-            setTimeout(() => {
-              log('campaign.status.scheduleUpdate', { campaignId, uniqueId: result.uniqueId, delayMs: 40000 });
-              updateCallStatusFromLogs(campaign._id, result.uniqueId).catch(() => {});
-            }, 40000);
+            
           }
         } catch (e) {
           console.error('Failed to append single-call detail to campaign:', e);
