@@ -1837,7 +1837,6 @@ module.exports = {
   saveBatchProgress,
   autoSaveCampaignRun,
   cleanupCompletedCampaignsWithDetails,
-  getSystemHealth,
   resetCircuitBreakers,
   getSafeLimits
 };
