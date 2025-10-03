@@ -1245,27 +1245,7 @@ async function saveBatchProgress(campaign, progress, runId, batchNumber, totalBa
     
     console.log(`✅ BATCH ${batchNumber}/${totalBatches} APPENDED: ${progress.completedCalls} calls processed (run ${runId})`);
     
-    // CRITICAL: If this is the final batch, stop the campaign
-    const isFinalBatch = batchNumber >= totalBatches;
-    if (isFinalBatch) {
-      console.log(`🏁 FINAL BATCH: Campaign ${campaignId} completed, stopping campaign`);
-      
-      // Stop campaign in database
-      await Campaign.updateOne(
-        { _id: campaign._id },
-        { $set: { isRunning: false } }
-      );
-      
-      // Remove from active campaigns
-      activeCampaigns.delete(campaignId);
-      
-      // Mark progress as completed
-      progress.isRunning = false;
-      progress.endTime = new Date();
-      campaignCallingProgress.set(campaignId, progress);
-      
-      console.log(`✅ CAMPAIGN COMPLETED: All ${campaign.contacts.length} calls processed`);
-    }
+    // CRITICAL: If this is the final batch, do not force stop here; let series/other flows manage isRunning
     
     // Update progress in memory
     campaignCallingProgress.set(campaignId, progress);
@@ -1735,23 +1715,6 @@ function resetCircuitBreakers() {
   console.log('🔄 Circuit breakers reset');
 }
 
-/**
- * Get safe calling limits
- */
-function getSafeLimits() {
-  return {
-    maxCallsPerBatch: 25,
-    maxConcurrentCampaigns: 3,
-    minDelayBetweenCalls: 3000,
-    rateLimits: rateLimiter.rateLimits,
-    resourceLimits: {
-      maxMemoryUsage: 80,
-      maxCpuUsage: 80,
-      maxCampaigns: 5,
-      maxConcurrentCalls: 10
-    }
-  };
-}
 
 async function migrateMissedToCompleted() {
   try {
@@ -1838,7 +1801,6 @@ module.exports = {
   autoSaveCampaignRun,
   cleanupCompletedCampaignsWithDetails,
   resetCircuitBreakers,
-  getSafeLimits
 };
 
 /**

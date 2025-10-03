@@ -575,6 +575,42 @@ const assignCzentrixToAgent = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Agent has a running campaign. Provider cannot be changed now.' });
     }
 
+    // Find and clear C-Zentrix details from any previously assigned agents
+    // This ensures only one agent can have C-Zentrix assignment at a time
+    const previouslyAssignedAgents = await Agent.find({
+      serviceProvider: { $in: ['c-zentrix', 'c-zentrax'] },
+      _id: { $ne: agentId } // Exclude the current agent being assigned
+    });
+
+    if (previouslyAssignedAgents.length > 0) {
+      console.log(`🔄 [C-ZENTRIX-REASSIGN] Clearing C-Zentrix details from ${previouslyAssignedAgents.length} previously assigned agents`);
+      
+      // Clear C-Zentrix details from all previously assigned agents
+      await Agent.updateMany(
+        { 
+          serviceProvider: { $in: ['c-zentrix', 'c-zentrax'] },
+          _id: { $ne: agentId }
+        },
+        {
+          $unset: {
+            serviceProvider: '',
+            accountSid: '',
+            callerId: '',
+            X_API_KEY: '',
+            didNumber: '',
+            accessToken: '',
+            accessKey: '',
+            appId: ''
+          },
+          $set: {
+            updatedAt: new Date()
+          }
+        }
+      );
+
+      console.log(`✅ [C-ZENTRIX-REASSIGN] Cleared C-Zentrix details from agents: ${previouslyAssignedAgents.map(a => a._id).join(', ')}`);
+    }
+
     // Update DID if provided; otherwise keep existing or clear if previously SANPBX-only flow requires
     if (typeof didNumber !== 'undefined') {
       agent.didNumber = String(didNumber || '').trim() || undefined;
@@ -590,7 +626,15 @@ const assignCzentrixToAgent = async (req, res) => {
     agent.updatedAt = new Date();
     await agent.save();
 
-    return res.json({ success: true, data: agent });
+    console.log(`✅ [C-ZENTRIX-REASSIGN] Successfully assigned C-Zentrix to agent ${agentId}`);
+
+    return res.json({ 
+      success: true, 
+      data: agent,
+      message: previouslyAssignedAgents.length > 0 
+        ? `C-Zentrix assigned successfully. Cleared details from ${previouslyAssignedAgents.length} previously assigned agents.`
+        : 'C-Zentrix assigned successfully.'
+    });
   } catch (error) {
     console.error('[assignCzentrixToAgent] error:', error);
     return res.status(500).json({ success: false, message: error.message || 'Failed to assign C-Zentrix' });
