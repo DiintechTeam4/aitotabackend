@@ -702,6 +702,10 @@ const getPaymentHistory = async (req, res) => {
       filteredHistory = creditDoc.history.filter(item => item.type === type);
     }
 
+    // Show only positive credit additions (e.g., bonus, plan purchases)
+    // This aligns the API with the UI requirement to show entries with amount > 0
+    filteredHistory = filteredHistory.filter(item => typeof item.amount === 'number' && item.amount > 0);
+
     // Apply date filtering if provided
     if (startDate || endDate) {
       const start = startDate ? new Date(startDate) : null;
