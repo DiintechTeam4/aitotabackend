@@ -11,7 +11,7 @@ const agentConfigSchema = new mongoose.Schema({
   agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent', required: true, index: true },
   agentName: { type: String },
   didNumber: { type: String },
-  mode: { type: String, enum: ['parallel', 'serial'], default: 'parallel' },
+  mode: { type: String, enum: ['parallel', 'serial'], default: 'serial' },
   items: { type: [agentConfigItemSchema], default: [] },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

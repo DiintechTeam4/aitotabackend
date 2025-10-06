@@ -513,7 +513,7 @@ const assignDidToAgent = async (req, res) => {
   
     // Set SANPBX credentials if provider is snapbx/sanpbx
     if (didDoc.provider === 'snapbx' || didDoc.provider === 'sanpbx') {
-      agent.accessToken = agent.accessToken || '265b2d7e5d1a5d9c33fc22b01e5d0f19';
+      agent.accessToken = agent.accessToken || 'e4b197411fd53012607649f23a6d28f9';
       agent.accessKey = agent.accessKey || 'mob';
       agent.appId = agent.appId || '3';
     }

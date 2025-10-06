@@ -1517,7 +1517,6 @@ router.get('/outbound/logs', extractClientId, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch logs' });
   }
 });
-
 // Inbound Leads
 router.get('/inbound/leads', extractClientId, async (req, res) => {
   try {
@@ -2312,7 +2311,6 @@ router.delete('/groups/:groupId/contacts/:contactId', extractClientId, async (re
     res.status(500).json({ error: 'Failed to delete contact' });
   }
 });
-
 // Bulk add contacts to a group in a single request
 // Body: { contacts: [{ name?: string, phone: string, email?: string }] }
 router.post('/groups/:groupId/contacts/bulk-add', extractClientId, async (req, res) => {
@@ -3090,7 +3088,6 @@ router.get('/campaigns/:id/groups', extractClientId, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch campaign groups' });
   }
 });
-
 // Add unique ID to campaign (for tracking campaign calls)
 router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
   try {
@@ -3125,6 +3122,15 @@ router.post('/campaigns/:id/unique-ids', extractClientId, async (req, res) => {
       }
       
       campaign.details.push(callDetail);
+
+      // Ensure uniqueIds array is maintained for efficient lookup
+      if (!Array.isArray(campaign.uniqueIds)) {
+        campaign.uniqueIds = [];
+      }
+      if (!campaign.uniqueIds.includes(uniqueId)) {
+        campaign.uniqueIds.push(uniqueId);
+      }
+
       await campaign.save();
       console.log(`✅ Added unique ID ${uniqueId} to campaign ${campaign._id} with contactId: ${req.body.contactId || 'null'}`);
     }
@@ -3160,7 +3166,12 @@ router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, re
     // If a specific documentId is provided, return only its logs (convenience path)
     const documentId = req.query.documentId;
     if (documentId) {
-      if (!Array.isArray(campaign.uniqueIds) || !campaign.uniqueIds.includes(documentId)) {
+      const idsFromArray = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
+      const idsFromDetails = Array.isArray(campaign.details)
+        ? campaign.details.map(d => d && d.uniqueId).filter(Boolean)
+        : [];
+      const knownIds = new Set([...idsFromArray, ...idsFromDetails]);
+      if (!knownIds.has(documentId)) {
         return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
       }
 
@@ -3182,7 +3193,11 @@ router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, re
       });
     }
 
-    const uniqueIds = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
+    const idsFromArray = Array.isArray(campaign.uniqueIds) ? campaign.uniqueIds.filter(Boolean) : [];
+    const idsFromDetails = Array.isArray(campaign.details)
+      ? campaign.details.map(d => d && d.uniqueId).filter(Boolean)
+      : [];
+    const uniqueIds = Array.from(new Set([...idsFromArray, ...idsFromDetails]));
     if (uniqueIds.length === 0) {
       return res.json({
         success: true,
@@ -3575,7 +3590,6 @@ router.get('/campaigns/:id/leads', extractClientId, async (req, res) => {
     return res.status(500).json({ success: false, error: 'Failed to fetch minimal leads list' });
   }
 });
-
 // Get merged call logs (completed + missed calls) with deduplication
 router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
   try {
@@ -4268,6 +4282,11 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
       return res.status(400).json({ success: false, error: 'No API key found on agent' });
     }
 
+    // Fetch agent configuration for NGR pattern
+    const AgentConfig = require('../models/AgentConfig');
+    const agentConfig = await AgentConfig.findOne({ agentId }).lean();
+    console.log(`🔧 CAMPAIGN START: Agent config for ${agentId}:`, agentConfig);
+
     // Preflight for SANPBX/SNAPBX provider to surface errors early
     try {
       const provider = String(agent?.serviceProvider || '').toLowerCase();
@@ -4300,7 +4319,7 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
 
     // Start calling process in background with a runId for this instance
     const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, req.clientId, runId);
+    startCampaignCalling(campaign, agentId, apiKey, delayBetweenCalls, req.clientId, runId, agentConfig);
 
     // Telegram alert for campaign start
     // try {
@@ -4326,7 +4345,6 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
     res.status(500).json({ success: false, error: 'Failed to start campaign calling' });
   }
 });
-
 // Save or update WhatsApp chat history for a phone number (upsert by clientId+phoneNumber)
 router.post('/wa/chat/save', extractClientId, async (req, res) => {
   try {
@@ -5120,7 +5138,6 @@ router.put('/business/:id', extractClientId, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to update business' });
   }
 });
-
 // DELETE: Delete a business by ID
 router.delete('/business/:id', extractClientId, async (req, res) => {
   try {
@@ -5898,7 +5915,6 @@ router.post('/register-user', async (req, res) => {
     });
   }
 });
-
 // Public route to get user by session ID
 router.get('/user/:sessionId', async (req, res) => {
   try {
@@ -6639,7 +6655,6 @@ router.get('/debug/test-failed-order', async (req, res) => {
     });
   }
 });
-
 // DEBUG: Test payment link creation with latest API
 router.get('/debug/cashfree-payment-link-test', async (req, res) => {
   try {
@@ -7283,7 +7298,6 @@ router.post('/payments/initiate', verifyClientOrAdminAndExtractClientId, async (
     res.status(500).json({ success: false, message: 'Failed to initiate payment' });
   }
 });
-
 // GET variant for browser redirects without Authorization header. Token passed as query param 't'.
 // 
 // Cashfree Direct Payment Link Flow:
@@ -7952,8 +7966,6 @@ router.post('/system/reset-circuit-breakers', extractClientId, async (req, res) 
     });
   }
 });
-
-
 // Call validation endpoint
 router.post('/calls/validate', authMiddleware, async (req, res) => {
   try {

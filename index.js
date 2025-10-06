@@ -1390,13 +1390,13 @@ app.get('/api/v1/client/agent-config/:agentId', async (req, res) => {
     console.log(`🔧 BACKEND: Found config:`, config);
     
     if (!config) {
-      // Return default parallel mode if no config exists
-      console.log(`🔧 BACKEND: No config found, returning default parallel mode`);
+      // Return default serial mode if no config exists
+      console.log(`🔧 BACKEND: No config found, returning default serial mode`);
       return res.json({ 
         success: true, 
         data: { 
           agentId, 
-          mode: 'parallel', 
+          mode: 'serial', 
           items: [],
           isDefault: true 
         } 
