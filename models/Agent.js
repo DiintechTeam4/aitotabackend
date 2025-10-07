@@ -59,7 +59,7 @@ const agentSchema = new mongoose.Schema({
   },
   voiceSelection: {
     type: String,
-    default: "meera",
+    default: "anushka",
   },
   contextMemory: { type: String },
   brandInfo: { type: String },
