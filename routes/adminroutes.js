@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, createSystemPrompt, getSystemPrompts, setDefaultSystemPrompt, deleteSystemPrompt, updateSystemPrompt, assignCzentrixToAgent } = require("../controllers/admincontroller");
+const { loginAdmin, registerAdmin, getClients, getClientById, deleteclient, getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent,updateClient, updateAgent, createSystemPrompt, getSystemPrompts, setDefaultSystemPrompt, deleteSystemPrompt, updateSystemPrompt, assignCzentrixToAgent } = require("../controllers/admincontroller");
 const adminCtrl = require("../controllers/admincontroller");
 const { verifyAdminToken } = require("../middlewares/authmiddleware");
 const planController = require("../controllers/planController");
@@ -22,6 +22,7 @@ router.put("/toggle-agent-status/:agentId", verifyAdminToken, toggleAgentStatus)
 router.post("/copy-agent", verifyAdminToken, copyAgent);
 router.delete("/delete-agent/:agentId", verifyAdminToken, deleteAgent);
 router.put("/update-agent/:agentId", verifyAdminToken, updateAgent);
+router.put("/update-client/:clientId", verifyAdminToken, updateClient);
 
 // System Prompts
 router.post('/system-prompts', verifyAdminToken, createSystemPrompt);
