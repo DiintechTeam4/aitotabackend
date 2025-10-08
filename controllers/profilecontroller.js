@@ -9,11 +9,10 @@ function checkProfileCompleted(profile) {
     profile.businessType &&
     profile.contactNumber &&
     profile.contactName &&
-    profile.pincode &&
-    profile.city &&
-    profile.state &&
+    profile.address &&
     profile.website &&
     profile.pancard &&
+    profile.gst &&
     profile.annualTurnover
   );
 }
@@ -21,15 +20,38 @@ function checkProfileCompleted(profile) {
 // Helper to validate profile data
 function validateProfileData(data) {
   const errors = [];
-  
-  if (!data.contactNumber || data.contactNumber.trim().length === 0) {
-    errors.push('Contact number is required');
+  const requiredFields = [
+    'businessName',
+    'businessType',
+    'contactNumber',
+    'contactName',
+    'address',
+    'website',
+    'pancard',
+    'gst',
+    'annualTurnover'
+  ];
+
+  for (const f of requiredFields) {
+    if (!data[f] || String(data[f]).trim().length === 0) {
+      errors.push(`${f} is required`);
+    }
   }
-  
-  if (!data.contactName || data.contactName.trim().length === 0) {
-    errors.push('Contact name is required');
+
+  // Light format checks
+  if (data.website && !/^https?:\/\//i.test(data.website)) {
+    errors.push('website must start with http:// or https://');
   }
-  
+  if (data.pancard && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i.test(String(data.pancard))) {
+    errors.push('pancard appears invalid');
+  }
+  if (data.gst && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/i.test(String(data.gst))) {
+    errors.push('gst appears invalid');
+  }
+  if (data.contactNumber && String(data.contactNumber).replace(/\D/g, '').length < 10) {
+    errors.push('contactNumber appears invalid');
+  }
+
   return errors;
 }
 
