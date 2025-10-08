@@ -483,11 +483,101 @@ router.post('/stop', async (req, res) => {
   try {
     const { campaignId } = req.body || {};
     if (!campaignId) return res.status(400).json({ error: 'campaignId is required' });
+    
     const state = sequentialRuns.get(String(campaignId));
     if (state) {
       state.isRunning = false;
       sequentialRuns.set(String(campaignId), state);
+      
+      // Force save campaign history immediately when stopping
+      try {
+        const Campaign = require('../models/Campaign');
+        const CampaignHistory = require('../models/CampaignHistory');
+        
+        const campaign = await Campaign.findById(campaignId);
+        if (campaign && state.runId) {
+          const campaignDetails = Array.isArray(campaign.details) ? campaign.details : [];
+          const runDetails = campaignDetails.filter(d => d && d.runId === state.runId);
+          
+          if (runDetails.length > 0) {
+            // Build contacts array for history
+            const contactsById = new Map((campaign.contacts || []).map(c => [String(c._id || ''), c]));
+            const contacts = runDetails.map(d => {
+              const contact = contactsById.get(String(d.contactId || ''));
+              return {
+                documentId: d.uniqueId,
+                contactId: d.contactId,
+                number: contact?.phone || contact?.number || '',
+                name: contact?.name || '',
+                leadStatus: d.leadStatus || 'not_connected',
+                time: d.time ? d.time.toISOString() : new Date().toISOString(),
+                status: d.status || 'completed',
+                duration: d.callDuration || 0,
+                transcriptCount: 0,
+                whatsappMessageSent: false,
+                whatsappRequested: false
+              };
+            });
+
+            // Calculate stats
+            const totalContacts = contacts.length;
+            const successfulCalls = contacts.filter(c => c.leadStatus && c.leadStatus !== 'not_connected').length;
+            const failedCalls = contacts.filter(c => !c.leadStatus || c.leadStatus === 'not_connected').length;
+            const totalCallDuration = contacts.reduce((sum, c) => sum + (c.duration || 0), 0);
+            const averageCallDuration = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
+
+            // Calculate run time
+            const startTime = state.startedAt || new Date();
+            const endTime = new Date();
+            const elapsedSeconds = Math.floor((endTime - startTime) / 1000);
+            const hours = Math.floor(elapsedSeconds / 3600);
+            const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+            const seconds = elapsedSeconds % 60;
+
+            // Get instance number
+            const existingCount = await CampaignHistory.countDocuments({ campaignId });
+            const instanceNumber = existingCount + 1;
+
+            // Save to campaign history
+            await CampaignHistory.findOneAndUpdate(
+              { runId: state.runId },
+              {
+                $setOnInsert: {
+                  campaignId: campaignId,
+                  runId: state.runId,
+                  instanceNumber,
+                  startTime: startTime.toISOString(),
+                  status: 'running'
+                },
+                $set: {
+                  endTime: endTime.toISOString(),
+                  runTime: { hours, minutes, seconds },
+                  status: 'completed',
+                  contacts,
+                  stats: { totalContacts, successfulCalls, failedCalls, totalCallDuration, averageCallDuration },
+                  batchInfo: { isIntermediate: false }
+                }
+              },
+              { upsert: true, new: true }
+            );
+            
+            console.log(`💾 SERIES: Campaign history saved for run ${state.runId}`);
+          }
+        }
+      } catch (historyError) {
+        console.error(`❌ SERIES: Error saving campaign history:`, historyError);
+      }
     }
+    
+    // Mark campaign as stopped in database
+    try {
+      const Campaign = require('../models/Campaign');
+      await Campaign.updateOne({ _id: campaignId }, { $set: { isRunning: false } });
+      console.log(`⏹️ SERIES: Marked campaign ${campaignId} stopped in database`);
+    } catch (dbError) {
+      console.error(`❌ SERIES: Error updating campaign database:`, dbError);
+    }
+    
     console.log(`⏹️ SERIES: Stop requested for campaign=${campaignId}`);
     return res.json({ stopped: true, status: state || null });
   } catch (e) {

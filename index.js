@@ -1415,7 +1415,7 @@ app.post('/api/v1/admin/agent-config', async (req, res) => {
   try {
     const AgentConfig = require('./models/AgentConfig');
     const Agent = require('./models/Agent');
-    const { agentId, items, mode } = req.body || {};
+    const { agentId, items, mode, pMode } = req.body || {};
     if (!agentId) return res.status(400).json({ success: false, message: 'agentId is required' });
     const agent = await Agent.findById(agentId).lean();
     // Enforce single default
@@ -1438,6 +1438,7 @@ app.post('/api/v1/admin/agent-config', async (req, res) => {
       agentName: agent?.agentName || '',
       didNumber: agent?.didNumber || '',
       mode: (mode === 'serial' ? 'serial' : 'parallel'),
+      ...(pMode ? { pMode: (['slow','fast','effective'].includes(String(pMode)) ? String(pMode) : 'effective') } : {}),
       items: normalizedItems
     };
     const doc = await AgentConfig.findOneAndUpdate({ agentId }, payload, { upsert: true, new: true, setDefaultsOnInsert: true });
@@ -1451,7 +1452,7 @@ app.put('/api/v1/admin/agent-config/:id', async (req, res) => {
   try {
     const AgentConfig = require('./models/AgentConfig');
     const { id } = req.params;
-    const { items, mode } = req.body || {};
+    const { items, mode, pMode } = req.body || {};
     const normalizedItems = Array.isArray(items) ? items.map((it) => ({ n: 1, g: Number(it.g)||1, rSec: Number(it.rSec)||5, isDefault: !!it.isDefault })) : [];
     if (normalizedItems.length) {
       let foundDefault = false;
@@ -1466,7 +1467,9 @@ app.put('/api/v1/admin/agent-config/:id', async (req, res) => {
       }
       if (!foundDefault) normalizedItems[0].isDefault = true;
     }
-    const doc = await AgentConfig.findByIdAndUpdate(id, { items: normalizedItems, ...(mode ? { mode: (mode === 'serial' ? 'serial' : 'parallel') } : {}) }, { new: true });
+    const update = { items: normalizedItems, ...(mode ? { mode: (mode === 'serial' ? 'serial' : 'parallel') } : {}) };
+    if (pMode) update.pMode = (['slow','fast','effective'].includes(String(pMode)) ? String(pMode) : 'effective');
+    const doc = await AgentConfig.findByIdAndUpdate(id, update, { new: true });
     if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
     res.json({ success: true, data: doc });
   } catch (e) {
