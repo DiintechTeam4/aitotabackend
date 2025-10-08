@@ -1402,7 +1402,6 @@ app.get('/api/v1/client/agent-config/:agentId', async (req, res) => {
         } 
       });
     }
-
     console.log(`🔧 BACKEND: Returning config with mode: ${config.mode}`);
     res.json({ success: true, data: config });
   } catch (e) {
