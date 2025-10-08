@@ -1086,6 +1086,42 @@ router.post('/voice/synthesize', verifyClientOrAdminAndExtractClientId, async (r
   }
 });
 
+// Stream agent's firstMessage as generated audio without saving
+router.get('/agents/:id/first-message/audio', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const query = req.clientId ? { _id: id, clientId: req.clientId } : { _id: id };
+    const agent = await Agent.findOne(query).lean();
+    if (!agent) {
+      return res.status(404).json({ success: false, message: 'Agent not found' });
+    }
+    const text = (agent.firstMessage || '').trim();
+    if (!text) {
+      return res.status(400).json({ success: false, message: 'Agent has no firstMessage' });
+    }
+
+    const language = agent.language || 'en';
+    const speaker = agent.voiceSelection || agent.voiceId;
+    const serviceProvider = agent.ttsSelection || agent.voiceServiceProvider || 'sarvam';
+
+    const audioResult = await voiceService.textToSpeech(text, language, speaker, serviceProvider);
+    let buf = audioResult.audioBuffer;
+    if (!buf && audioResult.audioBase64) buf = Buffer.from(audioResult.audioBase64, 'base64');
+    if (!buf) {
+      return res.status(500).json({ success: false, message: 'Audio generation failed' });
+    }
+
+    const format = (audioResult.format || 'mp3').toLowerCase();
+    const mime = format === 'wav' ? 'audio/wav' : (format === 'ogg' ? 'audio/ogg' : 'audio/mpeg');
+    res.set({ 'Content-Type': mime, 'Content-Length': buf.length });
+    return res.send(buf);
+  } catch (error) {
+    console.error('❌ First message audio error:', error);
+    const message = typeof error?.message === 'string' ? error.message : String(error);
+    return res.status(500).json({ success: false, message });
+  }
+});
+
 // Inbound Reports
 router.get('/inbound/report', extractClientId, async (req, res) => {
   try {
