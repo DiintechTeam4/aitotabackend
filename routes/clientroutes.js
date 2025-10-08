@@ -4706,6 +4706,100 @@ router.post('/campaigns/:id/stop-calling', extractClientId, async (req, res) => 
     // Stop the calling process
     stopCampaignCalling(campaign._id.toString());
 
+    // Force save campaign history immediately when stopping
+    try {
+      const CampaignHistory = require('../models/CampaignHistory');
+      const CallLog = require('../models/CallLog');
+      
+      // Get the latest runId from campaign details
+      const campaignDetails = Array.isArray(campaign.details) ? campaign.details : [];
+      const latestDetail = campaignDetails
+        .filter(d => d && d.runId)
+        .sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0))[0];
+      
+      if (latestDetail && latestDetail.runId) {
+        const runId = latestDetail.runId;
+        
+        // Get call logs for this run
+        const callLogs = await CallLog.find({
+          campaignId: campaign._id,
+          'metadata.customParams.runId': runId
+        }).lean();
+
+        // Build contacts array for history
+        const contactsById = new Map((campaign.contacts || []).map(c => [String(c._id || ''), c]));
+        const runDetails = campaignDetails.filter(d => d && d.runId === runId);
+        
+        const contacts = runDetails.map(d => {
+          const contact = contactsById.get(String(d.contactId || ''));
+          const callLog = callLogs.find(log => log.metadata?.customParams?.uniqueid === d.uniqueId);
+          
+          return {
+            documentId: d.uniqueId,
+            contactId: d.contactId,
+            number: contact?.phone || contact?.number || '',
+            name: contact?.name || '',
+            leadStatus: d.leadStatus || 'not_connected',
+            time: d.time ? d.time.toISOString() : new Date().toISOString(),
+            status: d.status || 'completed',
+            duration: d.callDuration || 0,
+            transcriptCount: callLog?.transcriptCount || 0,
+            whatsappMessageSent: callLog?.whatsappMessageSent || false,
+            whatsappRequested: callLog?.whatsappRequested || false
+          };
+        });
+
+        // Calculate stats
+        const totalContacts = contacts.length;
+        const successfulCalls = contacts.filter(c => c.leadStatus && c.leadStatus !== 'not_connected').length;
+        const failedCalls = contacts.filter(c => !c.leadStatus || c.leadStatus === 'not_connected').length;
+        const totalCallDuration = contacts.reduce((sum, c) => sum + (c.duration || 0), 0);
+        const averageCallDuration = totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
+
+        // Calculate run time
+        const startTime = runDetails.reduce((min, d) => {
+          const t = new Date(d.time || 0).getTime();
+          return Math.min(min, t);
+        }, Number.POSITIVE_INFINITY);
+        const endTime = new Date();
+        const elapsedSeconds = Math.floor((endTime - new Date(startTime)) / 1000);
+        const hours = Math.floor(elapsedSeconds / 3600);
+        const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+        const seconds = elapsedSeconds % 60;
+
+        // Get instance number
+        const existingCount = await CampaignHistory.countDocuments({ campaignId: campaign._id });
+        const instanceNumber = existingCount + 1;
+
+        // Save to campaign history
+        await CampaignHistory.findOneAndUpdate(
+          { runId },
+          {
+            $setOnInsert: {
+              campaignId: campaign._id,
+              runId,
+              instanceNumber,
+              startTime: new Date(startTime).toISOString(),
+              status: 'running'
+            },
+            $set: {
+              endTime: endTime.toISOString(),
+              runTime: { hours, minutes, seconds },
+              status: 'completed',
+              contacts,
+              stats: { totalContacts, successfulCalls, failedCalls, totalCallDuration, averageCallDuration },
+              batchInfo: { isIntermediate: false }
+            }
+          },
+          { upsert: true, new: true }
+        );
+        
+        console.log(`💾 PARALLEL: Campaign history saved for run ${runId}`);
+      }
+    } catch (historyError) {
+      console.error(`❌ PARALLEL: Error saving campaign history:`, historyError);
+    }
+
     res.json({
       success: true,
       message: 'Campaign calling stopped',
@@ -4738,9 +4832,14 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
     // Note: progress.completedCalls counts initiated calls, not finalized, so do NOT use it here
     const details = Array.isArray(campaign.details) ? campaign.details : [];
     const initiatedCount = details.length;
+    const ringingCount = details.filter(d => d && d.status === 'ringing').length;
+    const ongoingCount = details.filter(d => d && d.status === 'ongoing').length;
     const hasActive = details.some(d => d && (d.status === 'ringing' || d.status === 'ongoing'));
     const completedCount = details.filter(d => d && d.status === 'completed').length;
     const allCallsFinalized = initiatedCount > 0 && !hasActive && completedCount === initiatedCount;
+
+    // Determine if campaign is actually running
+    const isActuallyRunning = campaign.isRunning && (hasActive || (callingProgress && callingProgress.isRunning));
 
     // Compute latestRunId and inferred runStartTime from details/progress
     let latestRunId = null;
@@ -4781,6 +4880,7 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
       // Campaign is marked as running but all calls are finalized - should be stopped
       newIsRunning = false;
       shouldUpdateIsRunning = true;
+      console.log(`🔄 BACKEND: Auto-stopping campaign ${id} - all calls finalized`);
     }
     // REMOVED: Auto-start logic that was overriding manual stops
     // Only auto-stop when all calls are finalized, don't auto-start
@@ -4796,11 +4896,17 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
       data: {
         campaignId: campaign._id,
         isRunning: newIsRunning,
+        isActuallyRunning,
+        allCallsFinalized,
+        hasActiveCalls: hasActive,
+        initiatedCount,
+        completedCount,
+        ringingCount,
+        ongoingCount,
         totalContacts: campaign.contacts.length,
         progress: callingProgress,
-        allCallsFinalized,
         latestRunId,
-        runStartTime
+        runStartTime: runStartTime ? runStartTime.toISOString() : null
       }
     });
 
