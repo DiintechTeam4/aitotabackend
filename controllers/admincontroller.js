@@ -281,6 +281,61 @@ const getClients = async (req, res) => {
     }
   };
 
+  const updateClient = async (req, res) => {
+    try {
+      const { clientId } = req.params;
+      if (!clientId) {
+        return res.status(400).json({ success: false, message: 'Missing clientId' });
+      }
+
+      // Only set provided fields
+      const {
+        name,
+        businessName,
+        websiteUrl,
+        city,
+        pincode,
+        gstNo,
+        panNo,
+        aadharNo,
+        mobileNo,
+        address,
+        state,
+      } = req.body || {};
+
+      const update = {};
+      if (name !== undefined) update.name = name;
+      if (businessName !== undefined) update.businessName = businessName;
+      if (websiteUrl !== undefined) update.websiteUrl = websiteUrl;
+      if (city !== undefined) update.city = city;
+      if (pincode !== undefined) update.pincode = pincode;
+      if (gstNo !== undefined) update.gstNo = gstNo;
+      if (panNo !== undefined) update.panNo = panNo;
+      if (aadharNo !== undefined) update.aadharNo = aadharNo;
+      if (mobileNo !== undefined) update.mobileNo = mobileNo;
+      if (address !== undefined) update.address = address;
+      if (state !== undefined) update.state = state;
+
+      if (Object.keys(update).length === 0) {
+        return res.status(400).json({ success: false, message: 'No fields to update' });
+      }
+
+      const client = await Client.findByIdAndUpdate(
+        clientId,
+        { $set: update },
+        { new: true }
+      );
+
+      if (!client) {
+        return res.status(404).json({ success: false, message: 'Client not found' });
+      }
+      res.status(200).json({ success: true, message: 'Client updated successfully', client });
+    } catch (error) {
+      console.error('Error updating client:', error);
+      res.status(500).json({ success: false, message: 'Failed to update client', error: error.message });
+    }
+  };
+
   const deleteclient = async(req, res) => {
     try {
         const id = req.params.id;
@@ -956,7 +1011,7 @@ const updateAgent = async (req, res) => {
   }
 };
 
-module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent, listDidNumbers, createDidNumber, addDidNumber, assignDidToAgent, unassignDid, assignCzentrixToAgent };
+module.exports = { loginAdmin, registerAdmin,getClients,getClientById,registerclient,deleteclient,getClientToken, approveClient, getAllAgents, toggleAgentStatus, copyAgent, deleteAgent, updateAgent,updateClient, listDidNumbers, createDidNumber, addDidNumber, assignDidToAgent, unassignDid, assignCzentrixToAgent };
 
 // Return agents locked due to running campaigns
 module.exports.getCampaignLocks = async (_req, res) => {
