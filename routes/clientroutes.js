@@ -1553,6 +1553,7 @@ router.get('/outbound/logs', extractClientId, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch logs' });
   }
 });
+
 // Inbound Leads
 router.get('/inbound/leads', extractClientId, async (req, res) => {
   try {
