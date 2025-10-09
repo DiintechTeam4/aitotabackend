@@ -16,6 +16,7 @@ const agentAccessRoutes = require('./routes/agentAccessRoutes')
 const makecallRoutes = require('./routes/makecallRoutes')
 const sttRoutes = require('./routes/sttRoutes')
 const Business = require('./models/MyBussiness');
+const humanAgentRoutes = require('./routes/humanAgentRoutes');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 const jwt = require('jsonwebtoken');
 const app = express();
@@ -24,7 +25,6 @@ const Payment = require("./models/Payment");
 const server = http.createServer(app);
 // Campaign calling background services
 // Cashfree callback (return_url handler)
-
 
 // Import required modules (add these to your existing imports)
 
@@ -1188,6 +1188,7 @@ app.post('/api/v1/client/proxy/clicktobot', async (req, res) => {
 app.use('/api/v1/superadmin',superadminRoutes);
 app.use('/api/v1/admin',adminRoutes);
 app.use('/api/v1/client',clientRoutes);
+app.use('/api/v1/human-agent', humanAgentRoutes);
 app.use('/api/v1/auth/client/profile', profileRoutes);
 app.use('/api/v1/chat', chatRoutes);
 app.use('/api/v1/templates', templateRoutes);
@@ -1402,6 +1403,7 @@ app.get('/api/v1/client/agent-config/:agentId', async (req, res) => {
         } 
       });
     }
+
     console.log(`🔧 BACKEND: Returning config with mode: ${config.mode}`);
     res.json({ success: true, data: config });
   } catch (e) {
@@ -1414,7 +1416,7 @@ app.post('/api/v1/admin/agent-config', async (req, res) => {
   try {
     const AgentConfig = require('./models/AgentConfig');
     const Agent = require('./models/Agent');
-    const { agentId, items, mode, pMode } = req.body || {};
+    const { agentId, items, mode } = req.body || {};
     if (!agentId) return res.status(400).json({ success: false, message: 'agentId is required' });
     const agent = await Agent.findById(agentId).lean();
     // Enforce single default
@@ -1437,7 +1439,6 @@ app.post('/api/v1/admin/agent-config', async (req, res) => {
       agentName: agent?.agentName || '',
       didNumber: agent?.didNumber || '',
       mode: (mode === 'serial' ? 'serial' : 'parallel'),
-      ...(pMode ? { pMode: (['slow','fast','effective'].includes(String(pMode)) ? String(pMode) : 'effective') } : {}),
       items: normalizedItems
     };
     const doc = await AgentConfig.findOneAndUpdate({ agentId }, payload, { upsert: true, new: true, setDefaultsOnInsert: true });
@@ -1451,7 +1452,7 @@ app.put('/api/v1/admin/agent-config/:id', async (req, res) => {
   try {
     const AgentConfig = require('./models/AgentConfig');
     const { id } = req.params;
-    const { items, mode, pMode } = req.body || {};
+    const { items, mode } = req.body || {};
     const normalizedItems = Array.isArray(items) ? items.map((it) => ({ n: 1, g: Number(it.g)||1, rSec: Number(it.rSec)||5, isDefault: !!it.isDefault })) : [];
     if (normalizedItems.length) {
       let foundDefault = false;
@@ -1466,9 +1467,7 @@ app.put('/api/v1/admin/agent-config/:id', async (req, res) => {
       }
       if (!foundDefault) normalizedItems[0].isDefault = true;
     }
-    const update = { items: normalizedItems, ...(mode ? { mode: (mode === 'serial' ? 'serial' : 'parallel') } : {}) };
-    if (pMode) update.pMode = (['slow','fast','effective'].includes(String(pMode)) ? String(pMode) : 'effective');
-    const doc = await AgentConfig.findByIdAndUpdate(id, update, { new: true });
+    const doc = await AgentConfig.findByIdAndUpdate(id, { items: normalizedItems, ...(mode ? { mode: (mode === 'serial' ? 'serial' : 'parallel') } : {}) }, { new: true });
     if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
     res.json({ success: true, data: doc });
   } catch (e) {
