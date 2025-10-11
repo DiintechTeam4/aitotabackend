@@ -464,7 +464,13 @@ router.post('/start', async (req, res) => {
       sequentialRuns.delete(String(campaignId));
     }
 
-    // Start in background
+    // Start in background and telegrama alert
+    try {
+       const { sendTelegramAlert } = require('../utils/telegramAlert');
+       const when = new Date().toLocaleString('en-IN', { hour12: false });
+       const client = await Client.findById(req.clientId).lean();
+       await sendTelegramAlert(`${campaign.name} campaign running from ${client?.name || client?.businessName} client`);
+     } catch (_) {}
     runSeries({ campaignId, agentId: agentId || null, apiKey: apiKey || null, clientId: clientId || null, minDelayMs: Math.max(5000, Number(minDelayMs) || 5000) })
       .catch(() => {})
       .finally(() => {});
