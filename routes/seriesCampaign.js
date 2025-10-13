@@ -473,7 +473,7 @@ router.post('/start', async (req, res) => {
       let client = null;
       if (clientMongoId) {
         client = await Client.findById(clientMongoId).lean();
-        if (!client) client = await Client.findOne({ userId: clientMongoId }).lean();
+        if (!client) client = await Client.findOne({ _id: clientMongoId }).lean();
       }
       if (!client && campaignDoc?.clientId) {
         try { client = await Client.findById(campaignDoc.clientId).lean(); } catch (_) {}
