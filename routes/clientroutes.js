@@ -4360,11 +4360,14 @@ router.post('/campaigns/:id/start-calling', extractClientId, async (req, res) =>
 
     // Telegram alert for campaign start
      try {
-       const { sendTelegramAlert } = require('../utils/telegramAlert');
-       const when = new Date().toLocaleString('en-IN', { hour12: false });
-       const client = await Client.findById(req.clientId).lean();
-       await sendTelegramAlert(`${campaign.name} campaign running from ${client?.name || client?.businessName} client`);
-     } catch (_) {}
+      const { sendCampaignStartAlert } = require('../utils/telegramAlert');
+      const client = await Client.findById(req.clientId).lean();
+      await sendCampaignStartAlert({
+        campaignName: campaign.name,
+        clientName: client?.name || client?.businessName || client?.email || 'Unknown Client',
+        mode: 'parallel'
+      });
+    } catch (_) {}
 
     res.json({
       success: true,
