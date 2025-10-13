@@ -465,16 +465,22 @@ router.post('/start', async (req, res) => {
     }
 
     // Start in background and telegrama alert
-    try {
+        try {
       const { sendCampaignStartAlert } = require('../utils/telegramAlert');
       const clientMongoId = req.clientId || clientId || null;
-      const [client, campaignDoc] = await Promise.all([
-        clientMongoId ? Client.findById(clientMongoId).lean() : Promise.resolve(null),
-        Campaign.findById(campaignId).lean()
-      ]);
+      const campaignDoc = await Campaign.findById(campaignId).lean();
+      // Resolve client doc robustly: try _id, then userId, then from campaign
+      let client = null;
+      if (clientMongoId) {
+        client = await Client.findById(clientMongoId).lean();
+        if (!client) client = await Client.findOne({ userId: clientMongoId }).lean();
+      }
+      if (!client && campaignDoc?.clientId) {
+        try { client = await Client.findById(campaignDoc.clientId).lean(); } catch (_) {}
+      }
       await sendCampaignStartAlert({
         campaignName: campaignDoc?.name || String(campaignId),
-        clientName: client?.name || client?.businessName || client?.email || 'Unknown Client',
+        clientName: client?.businessName || client?.name || client?.email || 'Unknown Client',
         mode: 'serial'
       });
     } catch (_) {}
