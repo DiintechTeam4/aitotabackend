@@ -466,11 +466,18 @@ router.post('/start', async (req, res) => {
 
     // Start in background and telegrama alert
     try {
-       const { sendTelegramAlert } = require('../utils/telegramAlert');
-       const when = new Date().toLocaleString('en-IN', { hour12: false });
-       const client = await Client.findById(req.clientId).lean();
-       await sendTelegramAlert(`${campaign.name} campaign running from ${client?.name || client?.businessName} client`);
-     } catch (_) {}
+      const { sendCampaignStartAlert } = require('../utils/telegramAlert');
+      const clientMongoId = req.clientId || clientId || null;
+      const [client, campaignDoc] = await Promise.all([
+        clientMongoId ? Client.findById(clientMongoId).lean() : Promise.resolve(null),
+        Campaign.findById(campaignId).lean()
+      ]);
+      await sendCampaignStartAlert({
+        campaignName: campaignDoc?.name || String(campaignId),
+        clientName: client?.name || client?.businessName || client?.email || 'Unknown Client',
+        mode: 'serial'
+      });
+    } catch (_) {}
     runSeries({ campaignId, agentId: agentId || null, apiKey: apiKey || null, clientId: clientId || null, minDelayMs: Math.max(5000, Number(minDelayMs) || 5000) })
       .catch(() => {})
       .finally(() => {});
