@@ -19,6 +19,13 @@ async function sendTelegramAlert(text) {
   }
 }
 
-module.exports = { sendTelegramAlert };
+async function sendCampaignStartAlert({ campaignName, clientName, mode }) {
+  const when = new Date().toLocaleString('en-IN', { hour12: false });
+  const modeEmoji = mode === 'parallel' ? '🟦' : '🟩';
+  const text = `🚀 Campaign Started ${modeEmoji}\n📛 ${campaignName}\n👤 ${clientName}\n🕒 ${when}`;
+  await sendTelegramAlert(text);
+}
+
+module.exports = { sendTelegramAlert , sendCampaignStartAlert};
 
 
