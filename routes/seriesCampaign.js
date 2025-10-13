@@ -465,7 +465,7 @@ router.post('/start', async (req, res) => {
     }
 
     // Start in background and telegrama alert
-        try {
+            try {
       const { sendCampaignStartAlert } = require('../utils/telegramAlert');
       const clientMongoId = req.clientId || clientId || null;
       const campaignDoc = await Campaign.findById(campaignId).lean();
@@ -478,9 +478,13 @@ router.post('/start', async (req, res) => {
       if (!client && campaignDoc?.clientId) {
         try { client = await Client.findById(campaignDoc.clientId).lean(); } catch (_) {}
       }
+      // Final fallback: try current authenticated client's id (from middleware)
+      if (!client && req.user?.userType === 'client' && req.user?.id) {
+        try { client = await Client.findById(req.user.id).lean(); } catch (_) {}
+      }
       await sendCampaignStartAlert({
         campaignName: campaignDoc?.name || String(campaignId),
-        clientName: client?.businessName || client?.name || client?.email || 'Unknown Client',
+        clientName: client?.businessName || client?.name || client?.email || String(clientMongoId || campaignDoc?.clientId || ''),
         mode: 'serial'
       });
     } catch (_) {}
