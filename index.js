@@ -15,6 +15,7 @@ const seriesCampaignRoutes = require('./routes/seriesCampaign')
 const agentAccessRoutes = require('./routes/agentAccessRoutes')
 const makecallRoutes = require('./routes/makecallRoutes')
 const sttRoutes = require('./routes/sttRoutes')
+const dispositionRoutes = require('./routes/dispositionRoutes')
 const Business = require('./models/MyBussiness');
 // const humanAgentRoutes = require('./routes/humanAgentRoutes');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
@@ -1195,6 +1196,7 @@ app.use('/api/v1/templates', templateRoutes);
 app.use('/api/v1/agent-access', agentAccessRoutes);
 app.use('/makecall', makecallRoutes);
 app.use('/api/v1/stt', sttRoutes);
+app.use('/api/v1/dispositions', dispositionRoutes);
 app.use('/api/v1/client/series-campaign', seriesCampaignRoutes);
 
 // Public API endpoint for business details (no authentication required)
