@@ -2925,6 +2925,7 @@ router.post('/campaigns/:id/groups', extractClientId, async (req, res) => {
 });
 
 // Add subset of a group's contacts to a campaign by index range
+  // Also persist the selection (with group name) in campaign.groupSelections
 router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, async (req, res) => {
   try {
     const { id, groupId } = req.params;
@@ -3033,6 +3034,29 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
     campaign.contacts = Array.isArray(campaign.contacts) ? campaign.contacts : [];
     campaign.contacts.push(...newContacts);
 
+    // Persist selection metadata for visibility across app
+    try {
+      const groupName = group?.name || '';
+      const count = newContacts.length;
+      const sel = {
+        groupId: group._id,
+        groupName,
+        startIndex,
+        endIndex,
+        selectedIndices: Array.isArray(selectedIndices) ? [...new Set(selectedIndices.filter((x)=>Number.isInteger(Number(x))).map((x)=>Number(x)).filter((i)=>i>=0 && i<total))] : [],
+        count,
+        replace: !!replace,
+        addedAt: new Date()
+      };
+      campaign.groupSelections = Array.isArray(campaign.groupSelections) ? campaign.groupSelections : [];
+      const idx = campaign.groupSelections.findIndex(gs => String(gs.groupId) === String(group._id));
+      if (idx >= 0) {
+        campaign.groupSelections[idx] = sel;
+      } else {
+        campaign.groupSelections.push(sel);
+      }
+    } catch (_) {}
+
     await campaign.save();
 
     // Also persist the human-friendly range into CampaignHistory.selectedRanges for this run if possible
@@ -3066,7 +3090,8 @@ router.post('/campaigns/:id/groups/:groupId/contacts-range', extractClientId, as
         totalSelected: slice.length,
         range: { startIndex, endIndex },
         usedSelectedIndices: Array.isArray(selectedIndices) ? selectedIndices : undefined,
-        totalCampaignContacts: campaign.contacts.length
+        totalCampaignContacts: campaign.contacts.length,
+        groupSelections: campaign.groupSelections
       },
       message: `Added ${added} contacts to campaign from range ${startIndex}-${endIndex}${replace ? ' (replaced existing contacts)' : ''}`
     });
@@ -3667,7 +3692,8 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     // Build a contacts map for O(1) lookups
     const contactsMap = new Map((campaign.contacts || []).map(c => [String(c._id), c]));
 
-    // 3. Single aggregation to fetch latest log per uniqueId and compute duration and isOngoing
+    // 3. Aggregation to fetch latest log per uniqueId, compute duration, isOngoing,
+    //    and sum transcript counts across all logs (fallback to transcript array size)
     const agg = await CallLog.aggregate([
       { $match: { clientId: req.clientId, 'metadata.customParams.uniqueid': { $in: allUniqueIds } } },
       { $sort: { createdAt: -1 } },
@@ -3676,7 +3702,12 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           latest: { $first: '$$ROOT' },
           maxExplicitDuration: { $max: { $ifNull: ['$duration', 0] } },
           earliestCreatedAt: { $last: '$createdAt' },
-          lastTimestamp: { $first: { $ifNull: ['$metadata.callEndTime', { $ifNull: ['$updatedAt', { $ifNull: ['$time', '$createdAt'] }] }] } }
+          lastTimestamp: { $first: { $ifNull: ['$metadata.callEndTime', { $ifNull: ['$updatedAt', { $ifNull: ['$time', '$createdAt'] }] }] } },
+          transcriptSum: { $sum: { $add: [
+            { $ifNull: ['$metadata.userTranscriptCount', 0] },
+            { $ifNull: ['$metadata.aiResponseCount', 0] },
+            { $cond: [ { $isArray: '$transcript' }, { $size: '$transcript' }, 0 ] }
+          ] } }
         }
       },
       { $project: {
@@ -3714,7 +3745,8 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
               ]
             }
           },
-          maxExplicitDuration: 1
+          maxExplicitDuration: 1,
+          transcriptSum: 1
         }
       },
       { $addFields: {
@@ -3726,7 +3758,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
               { $eq: ['$latest.leadStatus', 'maybe'] }
             ]
           },
-          transcriptCount: { $add: ['$latest.metadata.userTranscriptCount', '$latest.metadata.aiResponseCount'] }
+          transcriptCount: { $max: [ '$transcriptSum', { $add: ['$latest.metadata.userTranscriptCount', '$latest.metadata.aiResponseCount'] } ] }
         }
       }
     ], { allowDiskUse: true });
@@ -3934,7 +3966,8 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
       campaign: {
         _id: campaign._id,
         name: campaign.name,
-        detailsCount: totalDetails
+        detailsCount: totalDetails,
+        groupSelections: Array.isArray(campaign.groupSelections) ? campaign.groupSelections : []
       },
       totals: {
         totalItems: totalDetails,

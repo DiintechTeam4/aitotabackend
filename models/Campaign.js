@@ -92,6 +92,18 @@ const campaignSchema = new mongoose.Schema({
     email: { type: String, default: "" },
     addedAt: { type: Date, default: Date.now }
   }],
+  // Persist per-group contact selections (range or explicit indices) for visibility across the app
+  groupSelections: [{
+    groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', required: true },
+    groupName: { type: String, default: '' },
+    // Either a range [startIndex, endIndex) or explicit indices; both can be stored
+    startIndex: { type: Number, default: 0 },
+    endIndex: { type: Number, default: 0 },
+    selectedIndices: [{ type: Number }],
+    count: { type: Number, default: 0 },
+    replace: { type: Boolean, default: false },
+    addedAt: { type: Date, default: Date.now }
+  }],
   createdAt: {
     type: Date,
     default: Date.now
