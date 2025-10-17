@@ -90,6 +90,7 @@ const campaignSchema = new mongoose.Schema({
     phone: { type: String, required: true },
     status: { type: String, enum: ['default', 'interested', 'maybe', 'not interested'], default: 'default' },
     email: { type: String, default: "" },
+    bookmarked: { type: Boolean, default: false },
     addedAt: { type: Date, default: Date.now }
   }],
   // Persist per-group contact selections (range or explicit indices) for visibility across the app

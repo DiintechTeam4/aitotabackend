@@ -3381,6 +3381,7 @@ router.post('/campaigns/:id/contacts', extractClientId, async (req, res) => {
       name,
       phone,
       email: email || '',
+      bookmarked: false,
       addedAt: new Date()
     });
 
@@ -3426,6 +3427,57 @@ router.delete('/campaigns/:id/contacts/:contactId', extractClientId, async (req,
   } catch (error) {
     console.error('Error removing campaign contact:', error);
     res.status(500).json({ success: false, error: 'Failed to remove campaign contact' });
+  }
+});
+
+// PATCH toggle bookmark for a campaign contact
+router.patch('/campaigns/:id/contacts/:contactId/bookmark', extractClientId, async (req, res) => {
+  try {
+    const { id, contactId } = req.params;
+    const { bookmarked } = req.body;
+
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+
+    const idx = (campaign.contacts || []).findIndex(c => c._id && c._id.toString() === contactId);
+    if (idx === -1) {
+      return res.status(404).json({ success: false, error: 'Contact not found' });
+    }
+
+    const value = Boolean(bookmarked);
+    campaign.contacts[idx].bookmarked = value;
+    await campaign.save();
+
+    return res.json({ success: true, data: campaign.contacts[idx] });
+  } catch (error) {
+    console.error('Error toggling bookmark:', error);
+    return res.status(500).json({ success: false, error: 'Failed to toggle bookmark' });
+  }
+});
+
+// PATCH toggle bookmark for a campaign contact by phone (digits)
+router.patch('/campaigns/:id/contacts/bookmark-by-phone', extractClientId, async (req, res) => {
+  try {
+    const { id } = req.params;
+    let { phone, bookmarked } = req.body;
+    if (!phone) return res.status(400).json({ success: false, error: 'phone is required' });
+    const digits = String(phone).replace(/\D/g, '');
+    const campaign = await Campaign.findOne({ _id: id, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    }
+    const idx = (campaign.contacts || []).findIndex(c => String(c.phone).replace(/\D/g, '') === digits);
+    if (idx === -1) {
+      return res.status(404).json({ success: false, error: 'Contact not found for phone' });
+    }
+    campaign.contacts[idx].bookmarked = Boolean(bookmarked);
+    await campaign.save();
+    return res.json({ success: true, data: campaign.contacts[idx] });
+  } catch (error) {
+    console.error('Error toggling bookmark by phone:', error);
+    return res.status(500).json({ success: false, error: 'Failed to toggle bookmark by phone' });
   }
 });
 
