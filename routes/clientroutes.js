@@ -7,7 +7,7 @@ const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
 const { generateClientApiKey, getActiveClientApiKey, copyActiveClientApiKey } = require("../controllers/clientApiKeyController")
-const { getobject } = require('../utils/s3')
+const { getobject, getobjectFor, getobjectForWithRegion } = require('../utils/s3')
 const Agent = require('../models/Agent');
 const VoiceService = require('../services/voiceService');
 const voiceService = new VoiceService();
@@ -42,6 +42,7 @@ const {
   resetCircuitBreakers,
   getSafeLimits
 } = require('../services/campaignCallingService');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 
 
 const clientApiService = new ClientApiService()
@@ -241,6 +242,85 @@ router.get('/profile', authMiddleware, getClientProfile);
 // Knowledge Base uploads and file access
 router.get('/upload-url-knowledge-base', getUploadUrlKnowledgeBase);
 router.get('/file-url', getFileUrlByKey);
+
+// Stream call audio via backend proxy to avoid S3 CORS/signature issues
+router.get('/campaigns/:id/call-audio', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { documentId } = req.query;
+    if (!documentId) return res.status(400).json({ success: false, error: 'documentId is required' });
+
+    // Find CallLog by uniqueid first (more reliable)
+    let latest = await CallLog.findOne({
+      'metadata.customParams.uniqueid': String(documentId)
+    }).sort({ createdAt: -1 }).lean();
+
+    // If not found, try with campaignId filter as well
+    if (!latest) {
+      try {
+        const campaignIdObj = new mongoose.Types.ObjectId(id);
+        latest = await CallLog.findOne({
+          campaignId: campaignIdObj,
+          'metadata.customParams.uniqueid': String(documentId)
+        }).sort({ createdAt: -1 }).lean();
+      } catch (e) {
+        // If ObjectId conversion fails, try string match
+        latest = await CallLog.findOne({
+          campaignId: id,
+          'metadata.customParams.uniqueid': String(documentId)
+        }).sort({ createdAt: -1 }).lean();
+      }
+    }
+
+    if (!latest || !latest.audioUrl) {
+      console.log('Audio not found:', { documentId, campaignId: id, found: !!latest });
+      return res.status(404).json({ success: false, error: 'Recording not found' });
+    }
+
+    let bucket = process.env.AWS_BUCKET_NAME;
+    let key;
+    let region = process.env.AWS_REGION;
+    try {
+      const u = new URL(latest.audioUrl);
+      key = decodeURIComponent(u.pathname.replace(/^\//, ''));
+      const host = String(u.hostname || '');
+      if (host.includes('.s3')) {
+        bucket = host.split('.s3')[0];
+        if (host.includes('.s3.')) {
+          region = host.split('.s3.')[1].split('.')[0] || region;
+        }
+      }
+    } catch (_) {
+      key = latest.audioUrl; // treat as raw key
+    }
+
+    const client = new S3Client({
+      region: region || process.env.AWS_REGION,
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      },
+    });
+    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+    const s3Resp = await client.send(command);
+
+    // Default headers for audio
+    res.setHeader('Content-Type', s3Resp.ContentType || 'audio/wav');
+    if (s3Resp.ContentLength) res.setHeader('Content-Length', String(s3Resp.ContentLength));
+    // Allow range requests for audio seeking
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=0, no-cache, no-store');
+
+    if (s3Resp.Body && typeof s3Resp.Body.pipe === 'function') {
+      s3Resp.Body.pipe(res);
+    } else {
+      res.status(500).json({ success: false, error: 'Failed to stream audio' });
+    }
+  } catch (error) {
+    console.error('Audio proxy error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch audio' });
+  }
+});
 
 // Knowledge Base CRUD operations
 router.post('/knowledge-base', authMiddleware, createKnowledgeItem);
@@ -577,7 +657,8 @@ router.post('/campaigns/:id/save-run', extractClientId, async (req, res) => {
             contactId: detail.contactId || '',
             time: detail.time || '',
             status,
-            duration
+            duration,
+            audioUrl: log?.audioUrl || null
           });
         }
 
@@ -3237,7 +3318,7 @@ router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, re
         return res.status(404).json({ success: false, error: 'Document ID not found in this campaign' });
       }
 
-      const logsByDoc = await CallLog.find({
+      let logsByDoc = await CallLog.find({
         clientId: req.clientId,
         campaignId: campaign._id,
         'metadata.customParams.uniqueid': documentId
@@ -3246,6 +3327,18 @@ router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, re
         .populate('campaignId', 'name description')
         .populate('agentId', 'agentName')
         .lean();
+
+      // Replace with backend proxy URL to avoid S3 CORS/signature issues
+      try {
+        const base = `${req.protocol}://${req.get('host')}`;
+        logsByDoc = (logsByDoc || []).map((l) => {
+          const uid = l?.metadata?.customParams?.uniqueid;
+          if (uid) {
+            l.audioUrl = `${base}/api/v1/client/campaigns/${campaign._id}/call-audio?documentId=${encodeURIComponent(uid)}`;
+          }
+          return l;
+        });
+      } catch (_) {}
 
       return res.json({
         success: true,
@@ -3309,7 +3402,19 @@ router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, re
       metadata: { customParams: { uniqueid: uid }, isActive: false }
     }));
 
-    const allLogs = [...logs, ...placeholderLogs];
+    let allLogs = [...logs, ...placeholderLogs];
+
+    // Use backend proxy URL to avoid S3 CORS/signature issues
+    try {
+      const base = `${req.protocol}://${req.get('host')}`;
+      allLogs = (allLogs || []).map((l) => {
+        const uid = l?.metadata?.customParams?.uniqueid;
+        if (uid) {
+          l.audioUrl = `${base}/api/v1/client/campaigns/${campaign._id}/call-audio?documentId=${encodeURIComponent(uid)}`;
+        }
+        return l;
+      });
+    } catch (_) {}
 
     return res.json({
       success: true,
@@ -3771,6 +3876,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
             updatedAt: '$latest.updatedAt',
             time: '$latest.time',
             duration: '$latest.duration',
+            audioUrl: '$latest.audioUrl',
             status: '$latest.status',
             leadStatus: '$latest.leadStatus',
             mobile: '$latest.mobile',
@@ -3877,6 +3983,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
           time: detail.time || detail.createdAt,
           status: callStatus,
           duration: computedDuration,
+          audioUrl: log.audioUrl || null,
           isMissed: false,
           isOngoing: isOngoingFlag,
           transcriptCount,
@@ -3975,7 +4082,19 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     const totalItems = mergedCalls.length;
     const totalPages = Math.ceil(totalItems / limit);
     const skip = (page - 1) * limit;
-    const pagedCalls = mergedCalls.slice(skip, skip + limit);
+    let pagedCalls = mergedCalls.slice(skip, skip + limit);
+
+    // Use backend proxy URL to avoid S3 CORS/signature issues
+    try {
+      const base = `${req.protocol}://${req.get('host')}`;
+      pagedCalls = (pagedCalls || []).map((c) => {
+        const uid = c?.documentId;
+        if (uid) {
+          c.audioUrl = `${base}/api/v1/client/campaigns/${campaign._id}/call-audio?documentId=${encodeURIComponent(uid)}`;
+        }
+        return c;
+      });
+    } catch (_) {}
 
 
     // Calculate totals from all mergedCalls (before pagination)
@@ -4844,7 +4963,7 @@ router.post('/campaigns/:id/stop-calling', extractClientId, async (req, res) => 
         const contactsById = new Map((campaign.contacts || []).map(c => [String(c._id || ''), c]));
         const runDetails = campaignDetails.filter(d => d && d.runId === runId);
         
-        const contacts = runDetails.map(d => {
+        let contacts = runDetails.map(d => {
           const contact = contactsById.get(String(d.contactId || ''));
           const callLog = callLogs.find(log => log.metadata?.customParams?.uniqueid === d.uniqueId);
           
@@ -4857,11 +4976,24 @@ router.post('/campaigns/:id/stop-calling', extractClientId, async (req, res) => 
             time: d.time ? d.time.toISOString() : new Date().toISOString(),
             status: d.status || 'completed',
             duration: d.callDuration || 0,
+            audioUrl: callLog?.audioUrl || null,
             transcriptCount: callLog?.transcriptCount || 0,
             whatsappMessageSent: callLog?.whatsappMessageSent || false,
             whatsappRequested: callLog?.whatsappRequested || false
           };
         });
+
+        // Replace with backend proxy URL to avoid S3 CORS/signature issues
+        try {
+          const base = `${req.protocol}://${req.get('host')}`;
+          contacts = (contacts || []).map((c) => {
+            const uid = c?.documentId;
+            if (uid) {
+              c.audioUrl = `${base}/api/v1/client/campaigns/${campaign._id}/call-audio?documentId=${encodeURIComponent(uid)}`;
+            }
+            return c;
+          });
+        } catch (_) {}
 
         // Calculate stats
         const totalContacts = contacts.length;
