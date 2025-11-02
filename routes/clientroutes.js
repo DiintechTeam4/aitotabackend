@@ -322,6 +322,105 @@ router.get('/campaigns/:id/call-audio', async (req, res) => {
   }
 });
 
+// Stream agent call audio via backend proxy to avoid S3 CORS/signature issues
+// Note: This route accepts token from query parameter for audio element compatibility
+router.get('/agents/:id/call-audio', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { callLogId, token } = req.query;
+    if (!callLogId) return res.status(400).json({ success: false, error: 'callLogId is required' });
+
+    // Extract clientId from token (query param or header)
+    let clientId = null;
+    const authHeader = req.headers.authorization;
+    const authToken = token || (authHeader && authHeader.startsWith('Bearer') ? authHeader.split(' ')[1] : null);
+    
+    if (authToken) {
+      try {
+        const decoded = jwt.verify(authToken, process.env.JWT_SECRET);
+        if (decoded.userType === 'client' && decoded.id) {
+          clientId = decoded.id;
+        }
+      } catch (tokenError) {
+        // Token verification failed, will validate via callLog ownership instead
+      }
+    }
+
+    // Find CallLog by callLogId and agentId
+    const callLog = await CallLog.findOne({
+      _id: callLogId,
+      agentId: id
+    }).lean();
+
+    if (!callLog || !callLog.audioUrl) {
+      console.log('Audio not found:', { callLogId, agentId: id, found: !!callLog });
+      return res.status(404).json({ success: false, error: 'Recording not found' });
+    }
+
+    // Validate ownership: if we have clientId from token, verify it matches
+    if (clientId && callLog.clientId !== clientId) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+
+    // If no token but we found the callLog, validate agent belongs to the callLog's client
+    if (!clientId) {
+      const agent = await Agent.findOne({ _id: id, clientId: callLog.clientId }).lean();
+      if (!agent) {
+        return res.status(403).json({ success: false, error: 'Access denied' });
+      }
+    } else {
+      // Validate agent exists and belongs to client
+      const agent = await Agent.findOne({ _id: id, clientId: clientId }).lean();
+      if (!agent) {
+        return res.status(404).json({ success: false, error: 'Agent not found' });
+      }
+    }
+
+    let bucket = process.env.AWS_BUCKET_NAME;
+    let key;
+    let region = process.env.AWS_REGION;
+    try {
+      const u = new URL(callLog.audioUrl);
+      key = decodeURIComponent(u.pathname.replace(/^\//, ''));
+      const host = String(u.hostname || '');
+      if (host.includes('.s3')) {
+        bucket = host.split('.s3')[0];
+        if (host.includes('.s3.')) {
+          region = host.split('.s3.')[1].split('.')[0] || region;
+        }
+      }
+    } catch (_) {
+      key = callLog.audioUrl; // treat as raw key
+    }
+
+    const client = new S3Client({
+      region: region || process.env.AWS_REGION,
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      },
+    });
+    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+    const s3Resp = await client.send(command);
+
+    // Default headers for audio
+    res.setHeader('Content-Type', s3Resp.ContentType || 'audio/wav');
+    if (s3Resp.ContentLength) res.setHeader('Content-Length', String(s3Resp.ContentLength));
+    // Allow range requests for audio seeking
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=0, no-cache, no-store');
+
+    if (s3Resp.Body && typeof s3Resp.Body.pipe === 'function') {
+      s3Resp.Body.pipe(res);
+    } else {
+      res.status(500).json({ success: false, error: 'Failed to stream audio' });
+    }
+  } catch (error) {
+    console.error('Agent audio proxy error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch audio' });
+  }
+});
+
 // Knowledge Base CRUD operations
 router.post('/knowledge-base', authMiddleware, createKnowledgeItem);
 router.get('/knowledge-base/:agentId', authMiddleware, getKnowledgeItems);
@@ -6142,12 +6241,26 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
     const totalLogs = await CallLog.countDocuments(query);
     
     // Fetch call logs with pagination
-    const logs = await CallLog.find(query)
+    let logs = await CallLog.find(query)
       .sort({ time: -1 })
       .skip(skip)
       .limit(parseInt(limit))
       .populate('campaignId', 'name description')
       .lean();
+    
+    // Replace with backend proxy URL to avoid S3 CORS/signature issues
+    // Always generate proxy URL if we have a callLogId, even if audioUrl is empty (audio might be available)
+    try {
+      const base = `${req.protocol}://${req.get('host')}`;
+      logs = (logs || []).map((l) => {
+        if (l._id) {
+          // Generate proxy URL for all logs with an ID, regardless of whether audioUrl exists
+          // The proxy route will check if audio actually exists when requested
+          l.audioUrl = `${base}/api/v1/client/agents/${id}/call-audio?callLogId=${encodeURIComponent(l._id)}`;
+        }
+        return l;
+      });
+    } catch (_) {}
     
     // Calculate statistics
     const totalCalls = totalLogs;
