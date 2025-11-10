@@ -17,6 +17,7 @@ const makecallRoutes = require('./routes/makecallRoutes')
 const sttRoutes = require('./routes/sttRoutes')
 const dispositionRoutes = require('./routes/dispositionRoutes')
 const telegrambotRoutes = require('./routes/telegrambot')
+const mobileCallLogRoutes = require('./routes/mobileCallLogRoutes')
 const Business = require('./models/MyBussiness');
 // const humanAgentRoutes = require('./routes/humanAgentRoutes');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
@@ -1200,6 +1201,7 @@ app.use('/api/v1/stt', sttRoutes);
 app.use('/api/v1/dispositions', dispositionRoutes);
 app.use('/api/v1/client/series-campaign', seriesCampaignRoutes);
 app.use('/api/v1/telegram', telegrambotRoutes);
+app.use('/api/v1/mobile', mobileCallLogRoutes);
 
 // Public API endpoint for business details (no authentication required)
 app.get('/api/v1/public/business/:identifier', async (req, res) => {
