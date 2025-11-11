@@ -308,13 +308,42 @@ router.get('/call-logs/analysis', verifyClientOrAdminAndExtractClientId, async (
  * GET /call-logs/id/:id  (avoid conflict with /call-logs/filters)
  */
 router.get('/call-logs/id/:id', verifyClientOrAdminAndExtractClientId, async (req, res) => {
+  const { id } = req.params;
+  const clientId = req.clientId;
+  const logContext = {
+    callLogId: id,
+    clientId,
+    userId: req.user?.id,
+    userType: req.user?.userType
+  };
+
   try {
-    const doc = await MobileCallLog.findOne({ _id: req.params.id, clientId: req.clientId }).populate('mobileUserId').lean();
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.warn('[call-logs:id] Invalid call log id', logContext);
+      return res.status(400).json({ success: false, message: 'Invalid call log id' });
+    }
+
+    if (!clientId) {
+      console.warn('[call-logs:id] Missing client context', logContext);
+      return res.status(400).json({ success: false, message: 'clientId is required for this request' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(clientId)) {
+      console.warn('[call-logs:id] Invalid client id on request', logContext);
+      return res.status(400).json({ success: false, message: 'Invalid client id' });
+    }
+
+    console.info('[call-logs:id] Fetching call log', logContext);
+
+    const doc = await MobileCallLog.findOne(
+      { _id: id, clientId }
+    ).populate('mobileUserId').lean();
     if (!doc) return res.status(404).json({ success: false, message: 'Not found' });
 
     const contact = await MobileContact.findOne({ clientId: req.clientId, phoneNumber: doc.phoneNumber }).lean();
     res.json({ success: true, data: { ...doc, contact } });
   } catch (error) {
+    console.error('[call-logs:id] Error fetching call log', { ...logContext, error });
     res.status(500).json({ success: false, message: error.message });
   }
 });
