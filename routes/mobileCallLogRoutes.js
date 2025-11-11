@@ -309,6 +309,7 @@ router.get('/call-logs/analysis', verifyClientOrAdminAndExtractClientId, async (
  */
 router.get('/call-logs/id/:id', verifyClientOrAdminAndExtractClientId, async (req, res) => {
   const { id } = req.params;
+  console.log('id', id);
   const clientId = req.clientId;
   const logContext = {
     callLogId: id,
