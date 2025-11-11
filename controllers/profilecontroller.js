@@ -1,19 +1,32 @@
 const Profile = require('../models/Profile');
 const Client = require('../models/Client');
 const HumanAgent = require('../models/HumanAgent');
+const { getobject } = require('../utils/s3');
+
+// Helper to construct address from city, state, pincode
+function constructAddress(data) {
+  const addressParts = [];
+  if (data.city) addressParts.push(data.city);
+  if (data.state) addressParts.push(data.state);
+  if (data.pincode) addressParts.push(data.pincode);
+  return addressParts.length > 0 ? addressParts.join(', ') : (data.address || '');
+}
 
 // Helper to check if all required fields are filled
 function checkProfileCompleted(profile) {
+  // Construct address from city, state, pincode if address is not directly provided
+  const address = profile.address || constructAddress(profile);
+  
   return !!(
     profile.businessName &&
     profile.businessType &&
     profile.contactNumber &&
     profile.contactName &&
-    profile.address &&
+    address &&
     profile.website &&
     profile.pancard &&
-    profile.gst &&
     profile.annualTurnover
+    // gst is now optional, so removed from check
   );
 }
 
@@ -25,10 +38,8 @@ function validateProfileData(data) {
     'businessType',
     'contactNumber',
     'contactName',
-    'address',
     'website',
     'pancard',
-    'gst',
     'annualTurnover'
   ];
 
@@ -38,16 +49,18 @@ function validateProfileData(data) {
     }
   }
 
+  // Check if address can be constructed from city, state, pincode or if address is provided
+  const constructedAddress = constructAddress(data);
+  if (!constructedAddress || constructedAddress.trim().length === 0) {
+    errors.push('address is required (provide city, state, pincode, or address field)');
+  }
+
   // Light format checks
   if (data.website && !/^https?:\/\//i.test(data.website)) {
     errors.push('website must start with http:// or https://');
   }
-  if (data.pancard && !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/i.test(String(data.pancard))) {
-    errors.push('pancard appears invalid');
-  }
-  if (data.gst && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/i.test(String(data.gst))) {
-    errors.push('gst appears invalid');
-  }
+  // Removed pancard format validation - accepting any pancard value
+  // Removed gst format validation - gst is now optional
   if (data.contactNumber && String(data.contactNumber).replace(/\D/g, '').length < 10) {
     errors.push('contactNumber appears invalid');
   }
@@ -213,12 +226,58 @@ exports.getProfile = async (req, res) => {
       });
     }
 
-    const profile = await Profile.findById(req.params.profileId);
+    let profile = await Profile.findById(req.params.profileId);
     
+    // If profile not found, try treating the ID as clientId (fallback)
     if (!profile) {
+      try {
+        const client = await Client.findById(req.params.profileId);
+        if (client) {
+          // Generate client logo URL if possible
+          // Always generate a fresh URL on each request
+          let logoUrl = null;
+          try {
+            if (client.businessLogoKey) {
+              logoUrl = await getobject(client.businessLogoKey);
+            }
+          } catch (_) {}
+
+          // Return client data as fallback
+          return res.status(200).json({
+            statusCode: 200,
+            success: true,
+            message: 'Client data retrieved successfully (fallback)',
+            email: client.email,
+            role: 'client',
+            profile: {
+              _id: client._id,
+              clientId: client._id,
+              businessName: client.businessName,
+              email: client.email,
+              contactNumber: client.mobileNo,
+              contactName: client.name,
+              address: client.address,
+              clientLogo: logoUrl || null,
+              businessLogoKey: client.businessLogoKey || null,
+              gstNo: client.gstNo,
+              panNo: client.panNo,
+              role: 'client',
+              city: client.city,
+              pincode: client.pincode,
+              isProfileCompleted: client.isprofileCompleted || false,
+              createdAt: client.createdAt,
+              updatedAt: client.updatedAt
+            },
+          });
+        }
+      } catch (clientError) {
+        console.error('Error finding client as fallback:', clientError);
+      }
+      
+      // If neither profile nor client found
       return res.status(404).json({
         success: false,
-        message: 'Profile not found',
+        message: 'Profile or Client not found',
         statusCode: 404
       });
     }
@@ -226,16 +285,27 @@ exports.getProfile = async (req, res) => {
     // Get human email and role if profile has humanAgentId
     let clientEmail = null;
     let role = null;
+    let businessLogoKey = null;
+    let clientLogo = null;
     if (profile.humanAgentId) {
       const humanAgent = await HumanAgent.findById(profile.humanAgentId).select('email role');
       clientEmail = humanAgent ? humanAgent.email : null;
       role = humanAgent ? humanAgent.role : null;
     } else if (profile.clientId) {
       try {
-        const client = await Client.findById(profile.clientId).select('email');
+        const client = await Client.findById(profile.clientId).select('email businessLogoKey');
         if (client) {
           clientEmail = client.email;
           role = 'client'; // Set role as 'client' for client profiles
+          businessLogoKey = client.businessLogoKey || null;
+          // Always generate a fresh URL on each request
+          let logoUrl = null;
+          try {
+            if (client.businessLogoKey) {
+              logoUrl = await getobject(client.businessLogoKey);
+            }
+          } catch (_) {}
+          clientLogo = logoUrl;
         } else {
           clientEmail = null;
           role = null;
@@ -261,6 +331,8 @@ exports.getProfile = async (req, res) => {
       message: 'Profile retrieved successfully',
       email: clientEmail,
       role: role,
+      clientLogo: clientLogo || null,
+      businessLogoKey: businessLogoKey || null,
       profile,
       statusCode: 200
     });
@@ -377,6 +449,11 @@ exports.updateProfile = async (req, res) => {
     const updateData = { ...req.body };
     delete updateData.clientId;
     delete updateData.humanAgentId;
+
+    // Construct address from city, state, pincode if address is not directly provided
+    if (!updateData.address && (updateData.city || updateData.state || updateData.pincode)) {
+      updateData.address = constructAddress(updateData);
+    }
 
     // Find the current profile
     const profile = await Profile.findById(req.params.profileId);
