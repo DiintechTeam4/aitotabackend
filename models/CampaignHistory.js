@@ -30,7 +30,7 @@ const CampaignHistorySchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['running', 'completed', 'failed', 'paused'],
+        enum: ['running', 'completed', 'failed', 'paused','not_connected'],
         default: 'running'
     },
     contacts: [{
