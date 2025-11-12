@@ -49,7 +49,7 @@ const campaignSchema = new mongoose.Schema({
     },
     status: { 
       type: String, 
-      enum: ['ringing', 'ongoing', 'completed'], 
+      enum: ['ringing', 'ongoing', 'completed','failed', 'not_connected'], 
       default: 'ringing' 
     },
     runId:{
