@@ -990,12 +990,20 @@ const getHumanAgents = async (req, res) => {
     }
 
     const humanAgents = await HumanAgent.find({ clientId })
-      .populate('agentIds', 'agentName description')
+      .populate('agentIds', 'agentName description role')
       .sort({ createdAt: -1 });
+
+    // Rename role -> type in response shape
+    const data = humanAgents.map((doc) => {
+      const obj = doc.toObject ? doc.toObject() : { ...doc };
+      obj.type = obj.role;
+      delete obj.role;
+      return obj;
+    });
 
     res.json({ 
       success: true, 
-      data: humanAgents 
+      data 
     });
   } catch (error) {
     console.error("Error fetching human agents:", error);
@@ -1045,12 +1053,15 @@ const createHumanAgent = async (req, res) => {
       });
     }
 
-    // Check if email already exists
-    const existingEmail = await HumanAgent.findOne({ email: email.toLowerCase() });
+    // Check if email already exists for THIS client (allow same email across different clients)
+    const existingEmail = await HumanAgent.findOne({ 
+      email: email.toLowerCase(), 
+      clientId 
+    });
     if (existingEmail) {
       return res.status(400).json({ 
         success: false, 
-        message: "Email already registered" 
+        message: "Email already registered for this client" 
       });
     }
 
@@ -1096,6 +1107,22 @@ const updateHumanAgent = async (req, res) => {
         success: false, 
         message: "Client not found" 
       });
+    }
+
+    // If changing email, ensure uniqueness within this client
+    if (email && typeof email === 'string') {
+      const normalizedEmail = email.toLowerCase().trim();
+      const conflict = await HumanAgent.findOne({
+        clientId,
+        email: normalizedEmail,
+        _id: { $ne: agentId }
+      });
+      if (conflict) {
+        return res.status(400).json({
+          success: false,
+          message: "Email already registered for this client"
+        });
+      }
     }
 
     // Find and update human agent

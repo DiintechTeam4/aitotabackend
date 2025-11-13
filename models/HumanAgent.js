@@ -17,7 +17,6 @@ const humanAgentSchema = new mongoose.Schema({
   email: { 
     type: String, 
     required: true,
-    unique: true,
     lowercase: true,
     trim: true
   },
@@ -66,6 +65,7 @@ humanAgentSchema.pre('save', function(next) {
   next();
 });
 
-// Compound index for client + human agent name uniquene
+// Unique per (email, clientId) to allow same email across different clients
+humanAgentSchema.index({ email: 1, clientId: 1 }, { unique: true });
 
 module.exports = mongoose.model("HumanAgent", humanAgentSchema); 
