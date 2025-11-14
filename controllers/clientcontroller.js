@@ -1496,8 +1496,187 @@ const loginHumanAgentGoogle = async (req, res) => {
   }
 };
 
+//switch api
+const switchProfile = async (req, res) => {
+  try {
+    // Enforce: humanAgent tokens issued by client cannot switch
+    try {
+      const authHeaderRaw = req.headers.authorization || '';
+      const previousToken = authHeaderRaw.startsWith('Bearer ') ? authHeaderRaw.split(' ')[1] : null;
+      if (previousToken) {
+        const decodedSwitch = jwt.verify(previousToken, process.env.JWT_SECRET);
+        if (decodedSwitch && decodedSwitch.userType === 'humanAgent') {
+          if (decodedSwitch.aud === 'humanAgent' && decodedSwitch.allowSwitch !== true) {
+            return res.status(403).json({ success: false, message: 'Switch not allowed for this agent token' });
+          }
+        }
+      }
+    } catch (_) {
+      // ignore decode failures
+    }
+
+    // Initialize or get tokens object from request body
+    let tokens = req.body?.tokens || {
+      adminToken: null,
+      clientToken: null,
+      humanAgentToken: null
+    };
+
+    // Resolve email like above
+    let email = req.user?.email;
+    if (!email) {
+      if (req.user?.userType === 'admin') {
+        const admin = await Admin.findById(req.user.id);
+        email = admin?.email;
+      } else if (req.user?.userType === 'client') {
+        const client = await Client.findById(req.user.id);
+        email = client?.email;
+      } else if (req.user?.userType === 'humanAgent') {
+        const ha = await HumanAgent.findById(req.user.id);
+        email = ha?.email;
+      }
+    }
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Email not available for current user' });
+    }
+    email = String(email).toLowerCase();
+
+    // Accept full profile object or { role, id } or raw model objects
+    let role = req.body?.role;
+    let id = req.body?.id || req.body?._id;
+    // If role missing, infer from body shape
+    if (!role) {
+      const b = req.body || {};
+      // HumanAgent-like
+      if (b.humanAgentName || b.agentIds || b.role === 'humanAgent' || b.clientId) {
+        role = 'humanAgent';
+        id = id || b.humanAgentId || b.id || b._id;
+      }
+      // Client-like
+      else if (b.clientUserId || b.businessName || b.clientType || b.gstNo || b.panNo) {
+        role = 'client';
+        id = id || b.clientId || b.id || b._id;
+      }
+      // Admin-like
+      else if (b.userType === 'admin') {
+        role = 'admin';
+        id = id || b.id || b._id;
+      }
+    }
+    if (!role || !id) {
+      return res.status(400).json({ success: false, message: 'role and id (or a profile object) are required' });
+    }
+
+    // CLIENT SWITCH
+    if (role === 'client') {
+      const client = await Client.findOne({ _id: id, email });
+      if (!client) return res.status(404).json({ success: false, message: 'Client not found for this email' });
+      if (!client.isApproved) return res.status(401).json({ success: false, message: 'Client not approved' });
+      const sameEmailAdmin = await Admin.findOne({ email });
+      const adminAccess = !!sameEmailAdmin;
+      const adminId = sameEmailAdmin ? String(sameEmailAdmin._id) : undefined;
+      const token = jwt.sign({ id: client._id, email: client.email, userType: 'client', adminAccess, adminId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+      const profileId = await Profile.findOne({ clientId: client._id });
+
+      // Update tokens object - replace clientToken with new token
+      tokens.clientToken = token;
+
+      return res.json({
+        success: true,
+        token,
+        tokens,
+        userType: 'client',
+        id: client._id,
+        email: client.email,
+        name: client.name,
+        clientUserId: client.userId,
+        adminAccess,
+        adminId,
+        isApproved: !!client.isApproved,
+        isprofileCompleted: !!client.isprofileCompleted,
+        profileId: profileId ? profileId._id : null
+      });
+    }
+
+    // HUMAN AGENT SWITCH
+    if (role === 'humanAgent') {
+      // If called as client, validate by client context
+      let humanAgent;
+      if (req.user?.userType === 'client') {
+        const clientIdCtx = req.user.id;
+        humanAgent = await HumanAgent.findOne({ _id: id, clientId: clientIdCtx }).populate('clientId');
+        if (!humanAgent) return res.status(404).json({ success: false, message: 'Human agent not found under this client' });
+      } else {
+        humanAgent = await HumanAgent.findOne({ _id: id, email }).populate('clientId');
+        if (!humanAgent) return res.status(404).json({ success: false, message: 'Human agent not found for this email' });
+      }
+      if (!humanAgent.isApproved) return res.status(401).json({ success: false, message: 'Human agent not approved' });
+      if (!humanAgent.clientId) return res.status(400).json({ success: false, message: 'Associated client not found' });
+
+      const jwtToken = jwt.sign({
+        id: humanAgent._id,
+        userType: 'humanAgent',
+        clientId: humanAgent.clientId._id,
+        email: humanAgent.email,
+        aud: 'humanAgent',
+        allowSwitch: true
+      }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+      const humanAgentProfileId = await Profile.findOne({ humanAgentId: humanAgent._id });
+      const clientProfileId = await Profile.findOne({ clientId: humanAgent.clientId._id });
+
+      // Update tokens object - replace humanAgentToken with new token
+      tokens.humanAgentToken = jwtToken;
+
+      return res.json({
+        success: true,
+        token: jwtToken,
+        tokens,
+        userType: 'humanAgent',
+        id: humanAgent._id,
+        role: humanAgent.role,
+        email: humanAgent.email,
+        name: humanAgent.humanAgentName,
+        isApproved: !!humanAgent.isApproved,
+        isprofileCompleted: !!humanAgent.isprofileCompleted,
+        clientId: humanAgent.clientId._id,
+        clientUserId: humanAgent.clientId.userId,
+        clientName: humanAgent.clientId.businessName || humanAgent.clientId.name || humanAgent.clientId.email,
+        humanAgentProfileId: humanAgentProfileId ? humanAgentProfileId._id : null,
+        clientProfileId: clientProfileId ? clientProfileId._id : null
+      });
+    }
+
+    // ADMIN SWITCH
+    if (role === 'admin') {
+      const admin = await Admin.findOne({ _id: id, email });
+      if (!admin) return res.status(404).json({ success: false, message: 'Admin not found for this email' });
+      const token = jwt.sign({ id: admin._id, userType: 'admin', email: admin.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+      // Update tokens object - replace adminToken with new token
+      tokens.adminToken = token;
+
+      return res.json({
+        success: true,
+        token,
+        tokens,
+        userType: 'admin',
+        id: admin._id,
+        email: admin.email,
+        name: admin.name
+      });
+    }
+
+    return res.status(400).json({ success: false, message: 'Invalid role' });
+  } catch (error) {
+    console.error('switchProfile error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to switch profile' });
+  }
+};
+
 module.exports = { 
   getUploadUrl,
+  switchProfile,
   getUploadUrlMyBusiness,
   getUploadUrlCustomization,
   getUploadUrlKnowledgeBase,
