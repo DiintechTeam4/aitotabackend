@@ -66,23 +66,39 @@ const sanpbxCircuitBreaker = new CircuitBreaker(50, 60000); // 50 failures, 60s 
 /**
  * AUTOMATIC: Update call status in campaign based on isActive from call logs
  * This function runs automatically in the background to keep campaign status in sync
+ * Only logs when campaign is running on THIS server instance
  */
 async function updateCallStatusFromLogs(campaignId, uniqueId) {
   try {
+    const campaignIdStr = campaignId.toString();
+    
+    // CRITICAL: Only process and log if campaign is running on THIS server instance
+    const isOnThisServer = activeCampaigns.get(campaignIdStr) || campaignCallingProgress.has(campaignIdStr);
+    if (!isOnThisServer) {
+      // Campaign is not running on this server, silently return
+      return null;
+    }
+    
     const Campaign = require('../models/Campaign');
     const CallLog = require('../models/CallLog');
     
     // Find the campaign
     const campaign = await Campaign.findById(campaignId);
     if (!campaign) {
-      console.log(`❌ Campaign ${campaignId} not found`);
+      // Only log if on this server
+      if (isOnThisServer) {
+        console.log(`❌ Campaign ${campaignId} not found`);
+      }
       return null;
     }
     
     // Find the call detail
     const callDetail = campaign.details.find(d => d.uniqueId === uniqueId);
     if (!callDetail) {
-      console.log(`❌ Call detail with uniqueId ${uniqueId} not found in campaign ${campaignId}`);
+      // Only log if on this server
+      if (isOnThisServer) {
+        console.log(`❌ Call detail with uniqueId ${uniqueId} not found in campaign ${campaignId}`);
+      }
       return null;
     }
     
@@ -91,13 +107,19 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
       'metadata.customParams.uniqueid': uniqueId 
     }).sort({ createdAt: -1 }); // Get the most recent log
     
-    console.log(`🔍 Checking call ${uniqueId}: CallLog found = ${!!callLog}`);
+    // Only log if campaign is on this server
+    if (isOnThisServer) {
+      console.log(`🔍 Checking call ${uniqueId}: CallLog found = ${!!callLog}`);
+    }
     
     if (!callLog) {
       // No call log found - check if 45 seconds have passed since call initiation
       const timeSinceInitiation = Math.floor((new Date() - callDetail.time) / 1000);
       
-      console.log(`⏰ Call ${uniqueId}: No CallLog found, ${timeSinceInitiation}s since initiation`);
+      // Only log if campaign is on this server
+      if (isOnThisServer) {
+        console.log(`⏰ Call ${uniqueId}: No CallLog found, ${timeSinceInitiation}s since initiation`);
+      }
       
       if (timeSinceInitiation >= 45) {
         // No call log for 45+ seconds, mark as missed (not connected)
@@ -114,16 +136,24 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
               }
             }
           );
-          console.log(`✅ Call ${uniqueId}: Marked as completed (no CallLog for ${timeSinceInitiation}s)`);
+          // Only log if campaign is on this server
+          if (isOnThisServer) {
+            console.log(`✅ Call ${uniqueId}: Marked as completed (no CallLog for ${timeSinceInitiation}s)`);
+          }
           return 'missed';
         } else {
-          // Already completed, but log for debugging
-          console.log(`✅ Call ${uniqueId}: Already completed (no CallLog for ${timeSinceInitiation}s)`);
+          // Already completed, but log for debugging only if on this server
+          if (isOnThisServer) {
+            console.log(`✅ Call ${uniqueId}: Already completed (no CallLog for ${timeSinceInitiation}s)`);
+          }
           return 'already_completed';
         }
       } else {
         // Still within 45 seconds, keep as ringing
-        console.log(`⏳ Call ${uniqueId} still ringing (${timeSinceInitiation}s since initiation)`);
+        // Only log if campaign is on this server
+        if (isOnThisServer) {
+          console.log(`⏳ Call ${uniqueId} still ringing (${timeSinceInitiation}s since initiation)`);
+        }
         return null;
       }
     }
@@ -132,7 +162,10 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
     const isActive = callLog.metadata?.isActive;
     const timeSinceCallStart = Math.floor((new Date() - callDetail.time) / 1000);
     
-    console.log(`📞 Call ${uniqueId}: CallLog found, isActive = ${isActive}, current status = ${callDetail.status}, time since start = ${timeSinceCallStart}s`);
+    // Only log if campaign is on this server
+    if (isOnThisServer) {
+      console.log(`📞 Call ${uniqueId}: CallLog found, isActive = ${isActive}, current status = ${callDetail.status}, time since start = ${timeSinceCallStart}s`);
+    }
     
     // ENHANCED STATUS LOGIC: Check isActive and add timeout mechanism
     let newStatus;
@@ -142,7 +175,10 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
       if (timeSinceCallStart >= 480) {
         // Call has been "active" for too long, mark as completed
         newStatus = 'completed';
-        console.log(`🔄 Call ${uniqueId}: isActive=true but ${timeSinceCallStart}s passed, marking as completed (8min timeout)`);
+        // Only log if campaign is on this server
+        if (isOnThisServer) {
+          console.log(`🔄 Call ${uniqueId}: isActive=true but ${timeSinceCallStart}s passed, marking as completed (8min timeout)`);
+        }
         
         // Also update the CallLog to mark it as inactive
         try {
@@ -152,7 +188,10 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
             leadStatus: 'not_connected'
           });
         } catch (error) {
-          console.error(`❌ Error updating CallLog:`, error);
+          // Only log if campaign is on this server
+          if (isOnThisServer) {
+            console.error(`❌ Error updating CallLog:`, error);
+          }
         }
       } else {
         // Call is active and within reasonable time, keep as ongoing
@@ -189,7 +228,10 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
             await deductCreditsForCall({ clientId, uniqueId: uid });
           }
         } catch (e) {
-          console.error('Credit deduction failed:', e.message);
+          // Only log if campaign is on this server
+          if (isOnThisServer) {
+            console.error('Credit deduction failed:', e.message);
+          }
         }
       }
       await Campaign.updateOne(
@@ -213,7 +255,12 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
 
     return null;
   } catch (error) {
-    console.error('Error updating call status from logs:', error);
+    // Only log if campaign is on this server
+    const campaignIdStr = campaignId?.toString();
+    const isOnThisServer = campaignIdStr && (activeCampaigns.get(campaignIdStr) || campaignCallingProgress.has(campaignIdStr));
+    if (isOnThisServer) {
+      console.error('Error updating call status from logs:', error);
+    }
     return null;
   }
 }
@@ -221,10 +268,20 @@ async function updateCallStatusFromLogs(campaignId, uniqueId) {
 /**
  * Auto-update campaign isRunning field based on actual call status
  * This prevents campaigns from getting stuck in running state
+ * Only logs when campaign is running on THIS server instance
  */
 async function updateCampaignRunningStatus(campaign) {
   try {
     if (!campaign || !campaign.details) {
+      return;
+    }
+
+    const campaignIdStr = campaign._id.toString();
+    
+    // CRITICAL: Only process and log if campaign is running on THIS server instance
+    const isOnThisServer = activeCampaigns.get(campaignIdStr) || campaignCallingProgress.has(campaignIdStr);
+    if (!isOnThisServer) {
+      // Campaign is not running on this server, silently return
       return;
     }
 
@@ -238,41 +295,56 @@ async function updateCampaignRunningStatus(campaign) {
     let newIsRunning = campaign.isRunning;
 
     // Check if campaign is waiting for calls to complete
-    const progress = campaignCallingProgress.get(campaign._id.toString());
+    const progress = campaignCallingProgress.get(campaignIdStr);
     const isWaitingForCalls = progress && progress.waitingForCallsToComplete;
 
     if (campaign.isRunning && allCallsFinalized) {
       // Campaign is marked as running but all calls are finalized - should be stopped
       newIsRunning = false;
       shouldUpdate = true;
-      console.log(`🔄 Auto-stopping campaign ${campaign._id}: all calls finalized`);
+      // Only log if campaign is on this server
+      if (isOnThisServer) {
+        console.log(`🔄 Auto-stopping campaign ${campaign._id}: all calls finalized`);
+      }
       
       // Persist run to history on auto-stop to ensure history is saved in serial mode
       try {
         await autoSaveCampaignRun(campaign, progress || { currentIndex: campaign.details?.length || 0 });
       } catch (e) {
-        console.error('❌ Auto-save campaign run failed on auto-stop:', e?.message);
+        // Only log if campaign is on this server
+        if (isOnThisServer) {
+          console.error('❌ Auto-save campaign run failed on auto-stop:', e?.message);
+        }
       }
       
       // FALLBACK: Schedule cleanup after 5 minutes for automatically stopped campaigns
       setTimeout(async () => {
         try {
-          console.log('🧹 FALLBACK: Running cleanup after 5 minutes (auto-stop)...');
+          // Only log if campaign is on this server
+          if (isOnThisServer) {
+            console.log('🧹 FALLBACK: Running cleanup after 5 minutes (auto-stop)...');
+          }
           await cleanupCompletedCampaignsWithDetails();
         } catch (error) {
-          console.error('❌ FALLBACK: Error in 5-minute cleanup:', error);
+          // Only log if campaign is on this server
+          if (isOnThisServer) {
+            console.error('❌ FALLBACK: Error in 5-minute cleanup:', error);
+          }
         }
       }, 5 * 60 * 1000); // 5 minutes
     } else if (isWaitingForCalls && allCallsFinalized) {
       // Campaign was waiting for calls to complete and now all are done
       newIsRunning = false;
       shouldUpdate = true;
-      console.log(`✅ Campaign ${campaign._id}: All calls completed, marking as finished`);
+      // Only log if campaign is on this server
+      if (isOnThisServer) {
+        console.log(`✅ Campaign ${campaign._id}: All calls completed, marking as finished`);
+      }
       
       // Clear the waiting flag
       if (progress) {
         progress.waitingForCallsToComplete = false;
-        campaignCallingProgress.set(campaign._id.toString(), progress);
+        campaignCallingProgress.set(campaignIdStr, progress);
       }
 
       // Auto-save campaign run when all calls are completed after manual stop
@@ -282,25 +354,42 @@ async function updateCampaignRunningStatus(campaign) {
         // MANUAL: Schedule cleanup after 5 minutes (only for manual stop)
         setTimeout(async () => {
           try {
-            console.log('🧹 MANUAL: Running cleanup after 5 minutes...');
+            // Only log if campaign is on this server
+            if (isOnThisServer) {
+              console.log('🧹 MANUAL: Running cleanup after 5 minutes...');
+            }
             await cleanupCompletedCampaignsWithDetails();
           } catch (error) {
-            console.error('❌ MANUAL: Error in 5-minute cleanup:', error);
+            // Only log if campaign is on this server
+            if (isOnThisServer) {
+              console.error('❌ MANUAL: Error in 5-minute cleanup:', error);
+            }
           }
         }, 5 * 60 * 1000); // 5 minutes
         
       } catch (error) {
-        console.error(`❌ Error auto-saving campaign run for ${campaign._id}:`, error);
+        // Only log if campaign is on this server
+        if (isOnThisServer) {
+          console.error(`❌ Error auto-saving campaign run for ${campaign._id}:`, error);
+        }
       }
     }
 
     if (shouldUpdate) {
       campaign.isRunning = newIsRunning;
       await campaign.save();
-      console.log(`✅ Campaign ${campaign._id} isRunning updated to: ${newIsRunning}`);
+      // Only log if campaign is on this server
+      if (isOnThisServer) {
+        console.log(`✅ Campaign ${campaign._id} isRunning updated to: ${newIsRunning}`);
+      }
     }
   } catch (error) {
-    console.error('Error updating campaign running status:', error);
+    // Only log if campaign is on this server
+    const campaignIdStr = campaign?._id?.toString();
+    const isOnThisServer = campaignIdStr && (activeCampaigns.get(campaignIdStr) || campaignCallingProgress.has(campaignIdStr));
+    if (isOnThisServer) {
+      console.error('Error updating campaign running status:', error);
+    }
   }
 }
 
@@ -550,23 +639,39 @@ function stopAutomaticStatusUpdates() {
 
 /**
  * AUTOMATIC: Update call statuses for all campaigns based on isActive
+ * Only processes campaigns running on THIS server instance
  */
 async function updateAllCampaignCallStatuses() {
   try {
     const Campaign = require('../models/Campaign');
     const CallLog = require('../models/CallLog');
     
-    // Find all campaigns with ringing or ongoing calls
-    const campaigns = await Campaign.find({
-      'details.status': { $in: ['ringing', 'ongoing'] }
-    }).lean();
+    // CRITICAL: Only process campaigns that are running on THIS server instance
+    // Check activeCampaigns and campaignCallingProgress to ensure campaign is on this server
+    const campaignsOnThisServer = [];
+    for (const [campaignId, isActive] of activeCampaigns.entries()) {
+      if (isActive) {
+        const progress = campaignCallingProgress.get(campaignId);
+        if (progress && (progress.isRunning || progress.waitingForCallsToComplete)) {
+          try {
+            const campaign = await Campaign.findById(campaignId).lean();
+            if (campaign && campaign.details && campaign.details.some(d => d.status === 'ringing' || d.status === 'ongoing')) {
+              campaignsOnThisServer.push(campaign);
+            }
+          } catch (error) {
+            // Skip if campaign not found or error
+            continue;
+          }
+        }
+      }
+    }
     
-    if (campaigns.length === 0) {
+    if (campaignsOnThisServer.length === 0) {
       return;
     }
     
     // Filter out manually stopped campaigns (but still process campaigns waiting for calls to complete)
-    const activeCampaignsList = campaigns.filter(campaign => {
+    const activeCampaignsList = campaignsOnThisServer.filter(campaign => {
       const progress = campaignCallingProgress.get(campaign._id.toString());
       // Process if not manually stopped OR if waiting for calls to complete
       return !progress || !progress.manuallyStopped || progress.waitingForCallsToComplete;
@@ -592,7 +697,11 @@ async function updateAllCampaignCallStatuses() {
             totalUpdates++;
           }
         } catch (error) {
-          console.error(`❌ Error updating call ${callDetail.uniqueId} in campaign ${campaign._id}:`, error);
+          // Only log errors for campaigns on this server
+          const isOnThisServer = activeCampaigns.get(campaign._id.toString());
+          if (isOnThisServer) {
+            console.error(`❌ Error updating call ${callDetail.uniqueId} in campaign ${campaign._id}:`, error);
+          }
         }
       }
       
@@ -604,7 +713,11 @@ async function updateAllCampaignCallStatuses() {
           await updateCampaignRunningStatus(fullCampaign);
         }
       } catch (error) {
-        console.error(`❌ Error updating running status for campaign ${campaign._id}:`, error);
+        // Only log errors for campaigns on this server
+        const isOnThisServer = activeCampaigns.get(campaign._id.toString());
+        if (isOnThisServer) {
+          console.error(`❌ Error updating running status for campaign ${campaign._id}:`, error);
+        }
       }
     }
     
