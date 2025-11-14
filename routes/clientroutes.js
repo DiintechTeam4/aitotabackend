@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl, switchProfile,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem, embedKnowledgeItem } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl, switchProfile,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem, embedKnowledgeItem ,assignCampaignHistoryContactsToHumanAgents} = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken, verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -5613,26 +5613,34 @@ router.delete('/business/:id', extractClientId, async (req, res) => {
 router.post('/dials', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
-    const {category, phoneNumber, leadStatus ,contactName, date, other} = req.body;
+    const {category, subCategory, phoneNumber, leadStatus ,contactName, date, other, duration, explanation, gender, profession, pincode, city, age, } = req.body;
 
-    if(!category || !phoneNumber || !contactName){
-      return res.status(400).json({success: false, message: "Missing required fields. Required: category, phoneNumber, contactName"});
+    if(!category || !phoneNumber ){
+      return res.status(400).json({success: false, message: "Missing required fields. Required: category, phoneNumber"});
     }
 
     const dial = await MyDials.create({
       clientId : clientId,
       category,
+      subCategory,
       leadStatus,
       phoneNumber,
-      contactName,
+      contactName: contactName || "",
+      age,
       date,
-      other
+      other,
+      duration: duration || 0,
+      explanation: explanation || "",
+      gender,
+			profession,
+			pincode,
+			city,
     });
     res.status(201).json({success: true, data: dial});
 
   }catch(error){
     console.log(error);
-    return json.status(400)({sucess: true, message: "Failed to add dials"})
+    return res.status(400).json({success: false, message: "Failed to add dials"});
   }
 });
 
@@ -6652,6 +6660,9 @@ router.post('/campaigns/:id/force-save-history', extractClientId, async (req, re
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// Assign campaign history contacts to human agents
+router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, assignCampaignHistoryContactsToHumanAgents);
 
 // DEBUG: Check call status for debugging
 router.get('/debug/call-status/:uniqueId', extractClientId, async (req, res) => {

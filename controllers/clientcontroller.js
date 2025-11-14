@@ -1674,6 +1674,146 @@ const switchProfile = async (req, res) => {
   }
 };
 
+// Assign campaign history contacts to human agents
+const assignCampaignHistoryContactsToHumanAgents = async (req, res) => {
+  try {
+    const { id: campaignId, runId } = req.params;
+    const { contactIds, humanAgentIds } = req.body;
+    
+    // Validate required fields
+    if (!contactIds || !Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'contactIds array is required and must not be empty'
+      });
+    }
+    
+    if (!humanAgentIds || !Array.isArray(humanAgentIds) || humanAgentIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'humanAgentIds array is required and must not be empty'
+      });
+    }
+    
+    // Validate that the campaign exists and belongs to the client
+    const Campaign = require('../models/Campaign');
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        error: 'Campaign not found'
+      });
+    }
+    
+    // Validate that the campaign history exists
+    const CampaignHistory = require('../models/CampaignHistory');
+    const campaignHistory = await CampaignHistory.findOne({ 
+      campaignId: campaignId, 
+      runId: runId 
+    });
+    
+    if (!campaignHistory) {
+      return res.status(404).json({
+        success: false,
+        error: 'Campaign history not found'
+      });
+    }
+    
+    // Validate that all human agents exist and belong to the client
+    const HumanAgent = require('../models/HumanAgent');
+    const humanAgents = await HumanAgent.find({ 
+      _id: { $in: humanAgentIds }, 
+      clientId: req.clientId,
+      isApproved: true
+    });
+    
+    if (humanAgents.length !== humanAgentIds.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'Some human agents not found or not approved'
+      });
+    }
+    
+    // Validate that all contacts exist in the campaign history
+    const existingContactIds = campaignHistory.contacts.map(c => String(c._id));
+    const invalidContactIds = contactIds.filter(id => !existingContactIds.includes(String(id)));
+    
+    if (invalidContactIds.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Some contacts not found in campaign history: ${invalidContactIds.join(', ')}`
+      });
+    }
+    
+    // Update contacts with human agent assignments
+    const assignmentData = humanAgentIds.map(humanAgentId => ({
+      humanAgentId: humanAgentId,
+      assignedAt: new Date(),
+      assignedBy: req.clientId
+    }));
+    
+    // Update each contact with the new assignments
+    const updatePromises = contactIds.map(contactId => {
+      return CampaignHistory.updateOne(
+        { 
+          campaignId: campaignId, 
+          runId: runId,
+          'contacts._id': contactId 
+        },
+        { 
+          $push: { 
+            'contacts.$.assignedToHumanAgents': { $each: assignmentData }
+          } 
+        }
+      );
+    });
+    
+    await Promise.all(updatePromises);
+    
+    // Get updated campaign history with populated human agent data
+    const updatedHistory = await CampaignHistory.findOne({ 
+      campaignId: campaignId, 
+      runId: runId 
+    }).populate('contacts.assignedToHumanAgents.humanAgentId', 'humanAgentName email role');
+    
+    // Filter only the assigned contacts for response
+    const assignedContacts = updatedHistory.contacts.filter(contact => 
+      contactIds.includes(String(contact._id))
+    );
+    
+    res.json({
+      success: true,
+      message: `Successfully assigned ${contactIds.length} contact(s) to ${humanAgentIds.length} human agent(s)`,
+      data: {
+        assignedContactsCount: contactIds.length,
+        assignedHumanAgentsCount: humanAgentIds.length,
+        humanAgents: humanAgents.map(agent => ({
+          _id: agent._id,
+          humanAgentName: agent.humanAgentName,
+          email: agent.email,
+          role: agent.role
+        })),
+        assignedContacts: assignedContacts.map(contact => ({
+          _id: contact._id,
+          documentId: contact.documentId,
+          number: contact.number,
+          name: contact.name,
+          leadStatus: contact.leadStatus,
+          status: contact.status,
+          assignedToHumanAgents: contact.assignedToHumanAgents
+        }))
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error assigning campaign history contacts to human agents:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error while assigning contacts'
+    });
+  }
+};
+
 module.exports = { 
   getUploadUrl,
   switchProfile,
@@ -1696,5 +1836,6 @@ module.exports = {
   deleteHumanAgent,
   getHumanAgentById,
   loginHumanAgent,
-  loginHumanAgentGoogle
+  loginHumanAgentGoogle,
+  assignCampaignHistoryContactsToHumanAgents
 };
