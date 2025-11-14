@@ -1,10 +1,11 @@
 // ===================== MY DIALS (Human Agent) ===============================
 const MyDials = require('../models/MyDials');
+const ContactProfile = require('../models/ContactProfile');
 
 exports.addDial = async (req, res) => { 
 	try {
 		const humanAgentId = req.user.id;
-		const { category,subCategory, explanation, duration, phoneNumber, leadStatus, contactName, date,gender, profession, pincode, city, other } = req.body;
+		const { category,subCategory, explanation, duration, phoneNumber, leadStatus, contactName, date, gender, profession, pincode, city, age, other } = req.body;
 		if (!category || !phoneNumber) {
 			return res.status(400).json({ success: false, message: "Missing required fields. Required: category, phoneNumber" });
 		}
@@ -23,8 +24,45 @@ exports.addDial = async (req, res) => {
 			profession,
 			pincode,
 			city,
+			age,
 			other
 		});
+
+		// Only create/update ContactProfile if at least one of (age, profession, gender, city, pincode) is present
+		const hasProfileData = !!(age || profession || gender || city || pincode);
+		if (hasProfileData) {
+			// Normalize phone number for query (same logic as MyDials)
+			const normalizePhone = (phone) => {
+				if (!phone) return "";
+				const digitsOnly = String(phone).replaceAll(/\D/g, "");
+				if (!digitsOnly) return "";
+				if (digitsOnly.length > 10) {
+					return digitsOnly.slice(-10);
+				}
+				return digitsOnly;
+			};
+			const normalizedPhone = normalizePhone(phoneNumber);
+			
+			// Use findOneAndUpdate with upsert to overwrite existing profile for same phone number
+			// Query by normalizedPhoneNumber only (not client dependent - same contact for all clients)
+			await ContactProfile.findOneAndUpdate(
+				{ normalizedPhoneNumber: normalizedPhone },
+				{
+					$set: {
+						clientId: req.user.clientId, // Store latest clientId for reference
+						humanAgentId: humanAgentId,
+						phoneNumber: phoneNumber,
+						contactName: contactName || "",
+						age: age || null,
+						gender: gender || null,
+						profession: profession || null,
+						city: city || null,
+						pincode: pincode || null,
+					}
+				},
+				{ upsert: true, new: true }
+			);
+		}
 		res.status(201).json({ success: true, data: dial });
 	} catch (error) {
 		console.log(error);

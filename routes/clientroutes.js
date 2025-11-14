@@ -21,6 +21,7 @@ const Business = require('../models/BusinessInfo');
 const Contacts = require('../models/Contacts');
 const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
+const ContactProfile = require('../models/ContactProfile');
 const User = require('../models/User'); // Added User model import
 const CampaignHistory = require('../models/CampaignHistory');
 const { generateBusinessHash } = require('../utils/hashUtils');
@@ -5636,6 +5637,41 @@ router.post('/dials', extractClientId, async(req,res)=>{
 			pincode,
 			city,
     });
+
+    // Only create/update ContactProfile if at least one of (age, profession, gender, city, pincode) is present
+    const hasProfileData = !!(age || profession || gender || city || pincode);
+    if (hasProfileData) {
+      // Normalize phone number for query (same logic as MyDials)
+      const normalizePhone = (phone) => {
+        if (!phone) return "";
+        const digitsOnly = String(phone).replaceAll(/\D/g, "");
+        if (!digitsOnly) return "";
+        if (digitsOnly.length > 10) {
+          return digitsOnly.slice(-10);
+        }
+        return digitsOnly;
+      };
+      const normalizedPhone = normalizePhone(phoneNumber);
+      
+      // Use findOneAndUpdate with upsert to overwrite existing profile for same phone number
+      // Query by normalizedPhoneNumber only (not client dependent - same contact for all clients)
+      await ContactProfile.findOneAndUpdate(
+        { normalizedPhoneNumber: normalizedPhone },
+        {
+          $set: {
+            clientId: clientId, // Store latest clientId for reference
+            phoneNumber: phoneNumber,
+            contactName: contactName || "",
+            age: age || null,
+            gender: gender || null,
+            profession: profession || null,
+            city: city || null,
+            pincode: pincode || null,
+          }
+        },
+        { upsert: true, new: true }
+      );
+    }
     res.status(201).json({success: true, data: dial});
 
   }catch(error){
