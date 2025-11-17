@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem, embedKnowledgeItem } = require('../controllers/clientcontroller');
+const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl, switchProfile,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem, embedKnowledgeItem ,assignCampaignHistoryContactsToHumanAgents} = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken, verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
@@ -22,6 +22,7 @@ const Business = require('../models/BusinessInfo');
 const Contacts = require('../models/Contacts');
 const MyBusiness = require('../models/MyBussiness');
 const MyDials = require('../models/MyDials');
+const ContactProfile = require('../models/ContactProfile');
 const User = require('../models/User'); // Added User model import
 const CampaignHistory = require('../models/CampaignHistory');
 const { generateBusinessHash } = require('../utils/hashUtils');
@@ -225,6 +226,9 @@ router.get("/api-key", extractClientId, getActiveClientApiKey)
 router.post("/api-key/copy", extractClientId, copyActiveClientApiKey)
 
 router.get('/upload-url',getUploadUrl);
+
+//switch api
+router.post('/auth/switch', authMiddleware, switchProfile);
 
 router.get('/upload-url-mybusiness',getUploadUrlMyBusiness);
 
@@ -5820,26 +5824,69 @@ router.delete('/business/:id', extractClientId, async (req, res) => {
 router.post('/dials', extractClientId, async(req,res)=>{
   try{
     const clientId = req.clientId;
-    const {category, phoneNumber, leadStatus ,contactName, date, other} = req.body;
+    const {category, subCategory, phoneNumber, leadStatus ,contactName, date, other, duration, explanation, gender, profession, pincode, city, age, } = req.body;
 
-    if(!category || !phoneNumber || !contactName){
-      return res.status(400).json({success: false, message: "Missing required fields. Required: category, phoneNumber, contactName"});
+    if(!category || !phoneNumber ){
+      return res.status(400).json({success: false, message: "Missing required fields. Required: category, phoneNumber"});
     }
 
     const dial = await MyDials.create({
       clientId : clientId,
       category,
+      subCategory,
       leadStatus,
       phoneNumber,
-      contactName,
+      contactName: contactName || "",
+      age,
       date,
-      other
+      other,
+      duration: duration || 0,
+      explanation: explanation || "",
+      gender,
+			profession,
+			pincode,
+			city,
     });
+
+    // Only create/update ContactProfile if at least one of (age, profession, gender, city, pincode) is present
+    const hasProfileData = !!(age || profession || gender || city || pincode);
+    if (hasProfileData) {
+      // Normalize phone number for query (same logic as MyDials)
+      const normalizePhone = (phone) => {
+        if (!phone) return "";
+        const digitsOnly = String(phone).replaceAll(/\D/g, "");
+        if (!digitsOnly) return "";
+        if (digitsOnly.length > 10) {
+          return digitsOnly.slice(-10);
+        }
+        return digitsOnly;
+      };
+      const normalizedPhone = normalizePhone(phoneNumber);
+      
+      // Use findOneAndUpdate with upsert to overwrite existing profile for same phone number
+      // Query by normalizedPhoneNumber only (not client dependent - same contact for all clients)
+      await ContactProfile.findOneAndUpdate(
+        { normalizedPhoneNumber: normalizedPhone },
+        {
+          $set: {
+            clientId: clientId, // Store latest clientId for reference
+            phoneNumber: phoneNumber,
+            contactName: contactName || "",
+            age: age || null,
+            gender: gender || null,
+            profession: profession || null,
+            city: city || null,
+            pincode: pincode || null,
+          }
+        },
+        { upsert: true, new: true }
+      );
+    }
     res.status(201).json({success: true, data: dial});
 
   }catch(error){
     console.log(error);
-    return json.status(400)({sucess: true, message: "Failed to add dials"})
+    return res.status(400).json({success: false, message: "Failed to add dials"});
   }
 });
 
@@ -6859,6 +6906,9 @@ router.post('/campaigns/:id/force-save-history', extractClientId, async (req, re
     return res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// Assign campaign history contacts to human agents
+router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, assignCampaignHistoryContactsToHumanAgents);
 
 // DEBUG: Check call status for debugging
 router.get('/debug/call-status/:uniqueId', extractClientId, async (req, res) => {

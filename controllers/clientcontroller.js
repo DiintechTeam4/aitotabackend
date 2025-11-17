@@ -990,12 +990,20 @@ const getHumanAgents = async (req, res) => {
     }
 
     const humanAgents = await HumanAgent.find({ clientId })
-      .populate('agentIds', 'agentName description')
+      .populate('agentIds', 'agentName description role')
       .sort({ createdAt: -1 });
+
+    // Rename role -> type in response shape
+    const data = humanAgents.map((doc) => {
+      const obj = doc.toObject ? doc.toObject() : { ...doc };
+      obj.type = obj.role;
+      delete obj.role;
+      return obj;
+    });
 
     res.json({ 
       success: true, 
-      data: humanAgents 
+      data 
     });
   } catch (error) {
     console.error("Error fetching human agents:", error);
@@ -1045,12 +1053,15 @@ const createHumanAgent = async (req, res) => {
       });
     }
 
-    // Check if email already exists
-    const existingEmail = await HumanAgent.findOne({ email: email.toLowerCase() });
+    // Check if email already exists for THIS client (allow same email across different clients)
+    const existingEmail = await HumanAgent.findOne({ 
+      email: email.toLowerCase(), 
+      clientId 
+    });
     if (existingEmail) {
       return res.status(400).json({ 
         success: false, 
-        message: "Email already registered" 
+        message: "Email already registered for this client" 
       });
     }
 
@@ -1096,6 +1107,22 @@ const updateHumanAgent = async (req, res) => {
         success: false, 
         message: "Client not found" 
       });
+    }
+
+    // If changing email, ensure uniqueness within this client
+    if (email && typeof email === 'string') {
+      const normalizedEmail = email.toLowerCase().trim();
+      const conflict = await HumanAgent.findOne({
+        clientId,
+        email: normalizedEmail,
+        _id: { $ne: agentId }
+      });
+      if (conflict) {
+        return res.status(400).json({
+          success: false,
+          message: "Email already registered for this client"
+        });
+      }
     }
 
     // Find and update human agent
@@ -1469,8 +1496,327 @@ const loginHumanAgentGoogle = async (req, res) => {
   }
 };
 
+//switch api
+const switchProfile = async (req, res) => {
+  try {
+    // Enforce: humanAgent tokens issued by client cannot switch
+    try {
+      const authHeaderRaw = req.headers.authorization || '';
+      const previousToken = authHeaderRaw.startsWith('Bearer ') ? authHeaderRaw.split(' ')[1] : null;
+      if (previousToken) {
+        const decodedSwitch = jwt.verify(previousToken, process.env.JWT_SECRET);
+        if (decodedSwitch && decodedSwitch.userType === 'humanAgent') {
+          if (decodedSwitch.aud === 'humanAgent' && decodedSwitch.allowSwitch !== true) {
+            return res.status(403).json({ success: false, message: 'Switch not allowed for this agent token' });
+          }
+        }
+      }
+    } catch (_) {
+      // ignore decode failures
+    }
+
+    // Initialize or get tokens object from request body
+    let tokens = req.body?.tokens || {
+      adminToken: null,
+      clientToken: null,
+      humanAgentToken: null
+    };
+
+    // Resolve email like above
+    let email = req.user?.email;
+    if (!email) {
+      if (req.user?.userType === 'admin') {
+        const admin = await Admin.findById(req.user.id);
+        email = admin?.email;
+      } else if (req.user?.userType === 'client') {
+        const client = await Client.findById(req.user.id);
+        email = client?.email;
+      } else if (req.user?.userType === 'humanAgent') {
+        const ha = await HumanAgent.findById(req.user.id);
+        email = ha?.email;
+      }
+    }
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Email not available for current user' });
+    }
+    email = String(email).toLowerCase();
+
+    // Accept full profile object or { role, id } or raw model objects
+    let role = req.body?.role;
+    let id = req.body?.id || req.body?._id;
+    // If role missing, infer from body shape
+    if (!role) {
+      const b = req.body || {};
+      // HumanAgent-like
+      if (b.humanAgentName || b.agentIds || b.role === 'humanAgent' || b.clientId) {
+        role = 'humanAgent';
+        id = id || b.humanAgentId || b.id || b._id;
+      }
+      // Client-like
+      else if (b.clientUserId || b.businessName || b.clientType || b.gstNo || b.panNo) {
+        role = 'client';
+        id = id || b.clientId || b.id || b._id;
+      }
+      // Admin-like
+      else if (b.userType === 'admin') {
+        role = 'admin';
+        id = id || b.id || b._id;
+      }
+    }
+    if (!role || !id) {
+      return res.status(400).json({ success: false, message: 'role and id (or a profile object) are required' });
+    }
+
+    // CLIENT SWITCH
+    if (role === 'client') {
+      const client = await Client.findOne({ _id: id, email });
+      if (!client) return res.status(404).json({ success: false, message: 'Client not found for this email' });
+      if (!client.isApproved) return res.status(401).json({ success: false, message: 'Client not approved' });
+      const sameEmailAdmin = await Admin.findOne({ email });
+      const adminAccess = !!sameEmailAdmin;
+      const adminId = sameEmailAdmin ? String(sameEmailAdmin._id) : undefined;
+      const token = jwt.sign({ id: client._id, email: client.email, userType: 'client', adminAccess, adminId }, process.env.JWT_SECRET, { expiresIn: '7d' });
+      const profileId = await Profile.findOne({ clientId: client._id });
+
+      // Update tokens object - replace clientToken with new token
+      tokens.clientToken = token;
+
+      return res.json({
+        success: true,
+        token,
+        tokens,
+        userType: 'client',
+        id: client._id,
+        email: client.email,
+        name: client.name,
+        clientUserId: client.userId,
+        adminAccess,
+        adminId,
+        isApproved: !!client.isApproved,
+        isprofileCompleted: !!client.isprofileCompleted,
+        profileId: profileId ? profileId._id : null
+      });
+    }
+
+    // HUMAN AGENT SWITCH
+    if (role === 'humanAgent') {
+      // If called as client, validate by client context
+      let humanAgent;
+      if (req.user?.userType === 'client') {
+        const clientIdCtx = req.user.id;
+        humanAgent = await HumanAgent.findOne({ _id: id, clientId: clientIdCtx }).populate('clientId');
+        if (!humanAgent) return res.status(404).json({ success: false, message: 'Human agent not found under this client' });
+      } else {
+        humanAgent = await HumanAgent.findOne({ _id: id, email }).populate('clientId');
+        if (!humanAgent) return res.status(404).json({ success: false, message: 'Human agent not found for this email' });
+      }
+      if (!humanAgent.isApproved) return res.status(401).json({ success: false, message: 'Human agent not approved' });
+      if (!humanAgent.clientId) return res.status(400).json({ success: false, message: 'Associated client not found' });
+
+      const jwtToken = jwt.sign({
+        id: humanAgent._id,
+        userType: 'humanAgent',
+        clientId: humanAgent.clientId._id,
+        email: humanAgent.email,
+        aud: 'humanAgent',
+        allowSwitch: true
+      }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+      const humanAgentProfileId = await Profile.findOne({ humanAgentId: humanAgent._id });
+      const clientProfileId = await Profile.findOne({ clientId: humanAgent.clientId._id });
+
+      // Update tokens object - replace humanAgentToken with new token
+      tokens.humanAgentToken = jwtToken;
+
+      return res.json({
+        success: true,
+        token: jwtToken,
+        tokens,
+        userType: 'humanAgent',
+        id: humanAgent._id,
+        role: humanAgent.role,
+        email: humanAgent.email,
+        name: humanAgent.humanAgentName,
+        isApproved: !!humanAgent.isApproved,
+        isprofileCompleted: !!humanAgent.isprofileCompleted,
+        clientId: humanAgent.clientId._id,
+        clientUserId: humanAgent.clientId.userId,
+        clientName: humanAgent.clientId.businessName || humanAgent.clientId.name || humanAgent.clientId.email,
+        humanAgentProfileId: humanAgentProfileId ? humanAgentProfileId._id : null,
+        clientProfileId: clientProfileId ? clientProfileId._id : null
+      });
+    }
+
+    // ADMIN SWITCH
+    if (role === 'admin') {
+      const admin = await Admin.findOne({ _id: id, email });
+      if (!admin) return res.status(404).json({ success: false, message: 'Admin not found for this email' });
+      const token = jwt.sign({ id: admin._id, userType: 'admin', email: admin.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+      // Update tokens object - replace adminToken with new token
+      tokens.adminToken = token;
+
+      return res.json({
+        success: true,
+        token,
+        tokens,
+        userType: 'admin',
+        id: admin._id,
+        email: admin.email,
+        name: admin.name
+      });
+    }
+
+    return res.status(400).json({ success: false, message: 'Invalid role' });
+  } catch (error) {
+    console.error('switchProfile error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to switch profile' });
+  }
+};
+
+// Assign campaign history contacts to human agents
+const assignCampaignHistoryContactsToHumanAgents = async (req, res) => {
+  try {
+    const { id: campaignId, runId } = req.params;
+    const { contactIds, humanAgentIds } = req.body;
+    
+    // Validate required fields
+    if (!contactIds || !Array.isArray(contactIds) || contactIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'contactIds array is required and must not be empty'
+      });
+    }
+    
+    if (!humanAgentIds || !Array.isArray(humanAgentIds) || humanAgentIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'humanAgentIds array is required and must not be empty'
+      });
+    }
+    
+    // Validate that the campaign exists and belongs to the client
+    const Campaign = require('../models/Campaign');
+    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.clientId });
+    if (!campaign) {
+      return res.status(404).json({
+        success: false,
+        error: 'Campaign not found'
+      });
+    }
+    
+    // Validate that the campaign history exists
+    const CampaignHistory = require('../models/CampaignHistory');
+    const campaignHistory = await CampaignHistory.findOne({ 
+      campaignId: campaignId, 
+      runId: runId 
+    });
+    
+    if (!campaignHistory) {
+      return res.status(404).json({
+        success: false,
+        error: 'Campaign history not found'
+      });
+    }
+    
+    // Validate that all human agents exist and belong to the client
+    const HumanAgent = require('../models/HumanAgent');
+    const humanAgents = await HumanAgent.find({ 
+      _id: { $in: humanAgentIds }, 
+      clientId: req.clientId,
+      isApproved: true
+    });
+    
+    if (humanAgents.length !== humanAgentIds.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'Some human agents not found or not approved'
+      });
+    }
+    
+    // Validate that all contacts exist in the campaign history
+    const existingContactIds = campaignHistory.contacts.map(c => String(c._id));
+    const invalidContactIds = contactIds.filter(id => !existingContactIds.includes(String(id)));
+    
+    if (invalidContactIds.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Some contacts not found in campaign history: ${invalidContactIds.join(', ')}`
+      });
+    }
+    
+    // Update contacts with human agent assignments
+    const assignmentData = humanAgentIds.map(humanAgentId => ({
+      humanAgentId: humanAgentId,
+      assignedAt: new Date(),
+      assignedBy: req.clientId
+    }));
+    
+    // Update each contact with the new assignments
+    const updatePromises = contactIds.map(contactId => {
+      return CampaignHistory.updateOne(
+        { 
+          campaignId: campaignId, 
+          runId: runId,
+          'contacts._id': contactId 
+        },
+        { 
+          $push: { 
+            'contacts.$.assignedToHumanAgents': { $each: assignmentData }
+          } 
+        }
+      );
+    });
+    
+    await Promise.all(updatePromises);
+    
+    // Get updated campaign history with populated human agent data
+    const updatedHistory = await CampaignHistory.findOne({ 
+      campaignId: campaignId, 
+      runId: runId 
+    }).populate('contacts.assignedToHumanAgents.humanAgentId', 'humanAgentName email role');
+    
+    // Filter only the assigned contacts for response
+    const assignedContacts = updatedHistory.contacts.filter(contact => 
+      contactIds.includes(String(contact._id))
+    );
+    
+    res.json({
+      success: true,
+      message: `Successfully assigned ${contactIds.length} contact(s) to ${humanAgentIds.length} human agent(s)`,
+      data: {
+        assignedContactsCount: contactIds.length,
+        assignedHumanAgentsCount: humanAgentIds.length,
+        humanAgents: humanAgents.map(agent => ({
+          _id: agent._id,
+          humanAgentName: agent.humanAgentName,
+          email: agent.email,
+          role: agent.role
+        })),
+        assignedContacts: assignedContacts.map(contact => ({
+          _id: contact._id,
+          documentId: contact.documentId,
+          number: contact.number,
+          name: contact.name,
+          leadStatus: contact.leadStatus,
+          status: contact.status,
+          assignedToHumanAgents: contact.assignedToHumanAgents
+        }))
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error assigning campaign history contacts to human agents:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error while assigning contacts'
+    });
+  }
+};
+
 module.exports = { 
   getUploadUrl,
+  switchProfile,
   getUploadUrlMyBusiness,
   getUploadUrlCustomization,
   getUploadUrlKnowledgeBase,
@@ -1490,5 +1836,6 @@ module.exports = {
   deleteHumanAgent,
   getHumanAgentById,
   loginHumanAgent,
-  loginHumanAgentGoogle
+  loginHumanAgentGoogle,
+  assignCampaignHistoryContactsToHumanAgents
 };

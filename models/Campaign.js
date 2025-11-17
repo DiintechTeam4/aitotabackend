@@ -26,6 +26,19 @@ const campaignSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Group'
   }],
+  // Ownership: who owns this campaign (client or humanAgent)
+  ownerType: {
+    type: String,
+    enum: ['client', 'humanAgent'],
+    required: false,
+    default: 'client',
+    index: true
+  },
+  ownerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: false,
+    index: true
+  },
   clientId: {
     type: String,
     required: true,
@@ -151,3 +164,6 @@ campaignSchema.set('toJSON', { virtuals: true });
 campaignSchema.set('toObject', { virtuals: true });
 
 module.exports = mongoose.model('Campaign', campaignSchema); 
+
+// Compound index for fast listing by ownership and recency
+campaignSchema.index({ ownerType: 1, ownerId: 1, createdAt: -1 });

@@ -30,7 +30,7 @@ const CampaignHistorySchema = new mongoose.Schema({
     },
     status: {
         type: String,
-        enum: ['running', 'completed', 'failed', 'paused','not_connected'],
+        enum: ['running', 'completed', 'failed', 'paused'],
         default: 'running'
     },
     contacts: [{
@@ -42,10 +42,9 @@ const CampaignHistorySchema = new mongoose.Schema({
         time: String,
         status: String,
         duration: Number,
-        audioUrl: String,
         transcriptCount: Number,
         whatsappMessageSent: Boolean,
-        whatsappRequested: Boolean,
+        whatsappRequested: Boolean
         assignedHumanAgents: [{
             humanAgentId: {
                 type: mongoose.Schema.Types.ObjectId,

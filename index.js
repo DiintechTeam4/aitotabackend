@@ -18,8 +18,9 @@ const sttRoutes = require('./routes/sttRoutes')
 const dispositionRoutes = require('./routes/dispositionRoutes')
 const telegrambotRoutes = require('./routes/telegrambot')
 const mobileCallLogRoutes = require('./routes/mobileCallLogRoutes')
+const userInfoRoutes = require('./routes/userInfoRoute')
 const Business = require('./models/MyBussiness');
-// const humanAgentRoutes = require('./routes/humanAgentRoutes');
+const humanAgentRoutes = require('./routes/humanAgentRoutes');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 const jwt = require('jsonwebtoken');
 const app = express();
@@ -1191,7 +1192,7 @@ app.post('/api/v1/client/proxy/clicktobot', async (req, res) => {
 app.use('/api/v1/superadmin',superadminRoutes);
 app.use('/api/v1/admin',adminRoutes);
 app.use('/api/v1/client',clientRoutes);
-// app.use('/api/v1/human-agent', humanAgentRoutes);
+app.use('/api/v1/human-agent', humanAgentRoutes);
 app.use('/api/v1/auth/client/profile', profileRoutes);
 app.use('/api/v1/chat', chatRoutes);
 app.use('/api/v1/templates', templateRoutes);
@@ -1202,6 +1203,8 @@ app.use('/api/v1/dispositions', dispositionRoutes);
 app.use('/api/v1/client/series-campaign', seriesCampaignRoutes);
 app.use('/api/v1/telegram', telegrambotRoutes);
 app.use('/api/v1/mobile', mobileCallLogRoutes);
+app.use('/api/v1/user-info', userInfoRoutes);
+
 // const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
 // app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);
 // // Also register without /api/v1 for compatibility
