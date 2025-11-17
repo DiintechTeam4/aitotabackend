@@ -9,6 +9,7 @@ const ClientApiService = require("../services/ClientApiService")
 const { generateClientApiKey, getActiveClientApiKey, copyActiveClientApiKey } = require("../controllers/clientApiKeyController")
 const { getobject, getobjectFor, getobjectForWithRegion } = require('../utils/s3')
 const Agent = require('../models/Agent');
+const HumanAgent = require('../models/HumanAgent');
 const VoiceService = require('../services/voiceService');
 const voiceService = new VoiceService();
 const CallLog = require('../models/CallLog');
@@ -5215,6 +5216,27 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
     if (!runStartTime && callingProgress && callingProgress.startTime) {
       runStartTime = new Date(callingProgress.startTime);
     }
+    if (!latestRunId) {
+      try {
+        const latestHistory = await CampaignHistory.findOne(
+          { campaignId: campaign._id },
+          { runId: 1, startTime: 1, createdAt: 1 }
+        )
+          .sort({ instanceNumber: -1, createdAt: -1 })
+          .lean();
+        if (latestHistory && latestHistory.runId) {
+          latestRunId = latestHistory.runId;
+          if (!runStartTime && latestHistory.startTime) {
+            runStartTime = new Date(latestHistory.startTime);
+          }
+        }
+      } catch (historyError) {
+        console.warn(
+          `⚠️ Unable to derive latest runId from history for campaign ${id}:`,
+          historyError
+        );
+      }
+    }
 
     // Auto-update isRunning based on actual call status to prevent stuck campaigns
     // BUT respect manual stops - don't auto-start if campaign was manually stopped
@@ -5236,6 +5258,11 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
       await campaign.save();
     }
 
+    const safeRunStartTime =
+      runStartTime instanceof Date && !isNaN(runStartTime.getTime())
+        ? runStartTime.toISOString()
+        : null;
+
     res.json({
       success: true,
       data: {
@@ -5251,7 +5278,7 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
         totalContacts: campaign.contacts.length,
         progress: callingProgress,
         latestRunId,
-        runStartTime: runStartTime ? runStartTime.toISOString() : null
+        runStartTime: safeRunStartTime
       }
     });
 
@@ -5279,6 +5306,189 @@ router.get('/campaigns/:id/history', extractClientId, async (req, res) => {
   } catch (error) {
     console.error('Error fetching campaign history:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch campaign history' });
+  }
+});
+
+router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, async (req, res) => {
+  try {
+    const { id, runId } = req.params;
+    const { contactIds, humanAgentIds } = req.body || {};
+
+    const normalizedContactIds = Array.from(
+      new Set(
+        (Array.isArray(contactIds) ? contactIds : [contactIds])
+          .map((value) => (value ? String(value).trim() : ''))
+          .filter(Boolean)
+      )
+    );
+    if (!normalizedContactIds.length) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'contactIds are required' });
+    }
+
+    const normalizedHumanAgentIds = Array.from(
+      new Set(
+        (Array.isArray(humanAgentIds) ? humanAgentIds : [humanAgentIds])
+          .map((value) => (value ? String(value).trim() : ''))
+          .filter(Boolean)
+      )
+    );
+    if (!normalizedHumanAgentIds.length) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'humanAgentIds are required' });
+    }
+
+    const invalidAgentIds = normalizedHumanAgentIds.filter(
+      (agentId) => !mongoose.Types.ObjectId.isValid(agentId)
+    );
+    if (invalidAgentIds.length) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid humanAgentIds: ${invalidAgentIds.join(', ')}`
+      });
+    }
+
+    const campaign = await Campaign.findOne({
+      _id: id,
+      clientId: req.clientId
+    });
+    if (!campaign) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'Campaign not found' });
+    }
+
+    const requestedAgentObjectIds = normalizedHumanAgentIds.map(
+      (agentId) => new mongoose.Types.ObjectId(agentId)
+    );
+    const agents = await HumanAgent.find({
+      _id: { $in: requestedAgentObjectIds },
+      clientId: req.clientId
+    })
+      .select('_id humanAgentName email mobileNumber')
+      .lean();
+
+    if (!agents.length) {
+      return res.status(404).json({
+        success: false,
+        error: 'No matching human agents found for this client'
+      });
+    }
+
+    const agentMap = new Map(agents.map((agent) => [String(agent._id), agent]));
+    const orderedAgents = normalizedHumanAgentIds
+      .map((agentId) => agentMap.get(agentId))
+      .filter(Boolean);
+
+    if (orderedAgents.length !== normalizedHumanAgentIds.length) {
+      const missingAgents = normalizedHumanAgentIds.filter(
+        (agentId) => !agentMap.has(agentId)
+      );
+      return res.status(404).json({
+        success: false,
+        error: `Unable to locate the following human agents: ${missingAgents.join(
+          ', '
+        )}`
+      });
+    }
+
+    const now = new Date();
+    const assignmentRecords = orderedAgents.map((agent) => ({
+      humanAgentId: agent._id,
+      humanAgentName:
+        agent.humanAgentName ||
+        agent.email ||
+        agent.mobileNumber ||
+        'Human Agent',
+      assignedAt: now
+    }));
+    const assignmentIdList = orderedAgents.map((agent) => agent._id);
+
+    const contactIdSet = new Set(normalizedContactIds.map(String));
+    const matchedContactIds = new Set();
+
+    const history = await CampaignHistory.findOne({
+      campaignId: campaign._id,
+      runId
+    });
+
+    let historyModified = false;
+    if (history && Array.isArray(history.contacts)) {
+      history.contacts.forEach((contact) => {
+        if (!contact) return;
+        const contactKey = String(contact._id || '');
+        if (contactKey && contactIdSet.has(contactKey)) {
+          contact.assignedHumanAgents = assignmentRecords.map((record) => ({
+            humanAgentId: record.humanAgentId,
+            humanAgentName: record.humanAgentName,
+            assignedAt: record.assignedAt
+          }));
+          contact.assignedHumanAgentIds = assignmentIdList;
+          contact.lastAssignedAt = now;
+          contact.lastAssignedBy = req.clientId;
+          matchedContactIds.add(contactKey);
+          historyModified = true;
+        }
+      });
+      if (historyModified) {
+        history.markModified('contacts');
+        await history.save();
+      }
+    }
+
+    let campaignDetailsModified = false;
+    if (Array.isArray(campaign.details) && campaign.details.length) {
+      campaign.details.forEach((detail) => {
+        if (!detail) return;
+        const detailKey = String(detail._id || detail.contactId || '');
+        if (detailKey && contactIdSet.has(detailKey)) {
+          detail.assignedHumanAgents = assignmentRecords.map((record) => ({
+            humanAgentId: record.humanAgentId,
+            humanAgentName: record.humanAgentName,
+            assignedAt: record.assignedAt
+          }));
+          detail.assignedHumanAgentIds = assignmentIdList;
+          detail.lastAssignedAt = now;
+          detail.lastAssignedBy = req.clientId;
+          matchedContactIds.add(detailKey);
+          campaignDetailsModified = true;
+        }
+      });
+      if (campaignDetailsModified) {
+        campaign.markModified('details');
+        await campaign.save();
+      }
+    }
+
+    const updatedContactsCount = matchedContactIds.size;
+    if (!updatedContactsCount) {
+      return res.status(404).json({
+        success: false,
+        error:
+          'No matching contacts were found for assignment. Please refresh run data and try again.'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        campaignId: campaign._id,
+        runId,
+        updatedContacts: updatedContactsCount,
+        humanAgentIds: assignmentIdList.map((id) => String(id)),
+        historyUpdated: historyModified,
+        campaignDetailsUpdated: campaignDetailsModified
+      },
+      message: `Assigned ${orderedAgents.length} human agent(s) to ${updatedContactsCount} contact(s)`
+    });
+  } catch (error) {
+    console.error('Error assigning contacts to human agents:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to assign contacts to human agents'
+    });
   }
 });
 

@@ -518,6 +518,34 @@ const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
       return next();
     }
 
+    if (decoded.userType === 'humanAgent') {
+      const humanAgent = await HumanAgent.findById(decoded.id);
+      if (!humanAgent) {
+        return res.status(401).json({ success: false, error: 'Human agent not found' });
+      }
+
+      if (!humanAgent.isApproved) {
+        return res.status(403).json({ success: false, error: 'Human agent is not approved' });
+      }
+
+      req.humanAgent = humanAgent;
+      const clientObjectId = humanAgent.clientId ? humanAgent.clientId.toString() : undefined;
+      req.clientId = clientObjectId;
+
+      if (clientObjectId) {
+        try {
+          const clientDoc = await Client.findById(clientObjectId).select('userId');
+          req.clientUserId = clientDoc?.userId ? String(clientDoc.userId) : clientObjectId;
+        } catch (clientLookupError) {
+          console.warn('Unable to fetch client info for human agent token:', clientLookupError);
+          req.clientUserId = clientObjectId;
+        }
+      }
+
+      req.user = { id: humanAgent._id, userType: 'humanAgent', email: humanAgent.email };
+      return next();
+    }
+
     return res.status(401).json({ success: false, error: 'Invalid token type' });
   } catch (error) {
     console.error('verifyClientOrAdminAndExtractClientId error:', error);

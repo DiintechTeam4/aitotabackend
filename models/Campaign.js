@@ -82,6 +82,34 @@ const campaignSchema = new mongoose.Schema({
       ],
       default: 'not_connected'
     },
+    assignedHumanAgents: [
+      {
+        humanAgentId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'HumanAgent'
+        },
+        humanAgentName: {
+          type: String,
+          default: ''
+        },
+        assignedAt: {
+          type: Date,
+          default: Date.now
+        }
+      }
+    ],
+    assignedHumanAgentIds: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'HumanAgent'
+      }
+    ],
+    lastAssignedBy: {
+      type: String
+    },
+    lastAssignedAt: {
+      type: Date
+    }
   }],
   // Array to store campaign contacts (copied from groups but can be manipulated independently)
   contacts: [{

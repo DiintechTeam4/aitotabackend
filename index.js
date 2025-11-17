@@ -1202,6 +1202,10 @@ app.use('/api/v1/dispositions', dispositionRoutes);
 app.use('/api/v1/client/series-campaign', seriesCampaignRoutes);
 app.use('/api/v1/telegram', telegrambotRoutes);
 app.use('/api/v1/mobile', mobileCallLogRoutes);
+// const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
+// app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);
+// // Also register without /api/v1 for compatibility
+// app.use('/whatsapp-template', whatsappTemplateRoutes);
 
 // Public API endpoint for business details (no authentication required)
 app.get('/api/v1/public/business/:identifier', async (req, res) => {
