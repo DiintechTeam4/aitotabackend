@@ -44,7 +44,7 @@ const CampaignHistorySchema = new mongoose.Schema({
         duration: Number,
         transcriptCount: Number,
         whatsappMessageSent: Boolean,
-        whatsappRequested: Boolean
+        whatsappRequested: Boolean,
         assignedHumanAgents: [{
             humanAgentId: {
                 type: mongoose.Schema.Types.ObjectId,
