@@ -5313,8 +5313,17 @@ router.get('/campaigns/:id/history', extractClientId, async (req, res) => {
   }
 });
 
-router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, async (req, res) => {
+router.post('/campaign/:id/history/:runId/assign-contacts', extractClientId, async (req, res) => {
   try {
+    console.log('📋 ASSIGN CONTACTS: Request received', {
+      campaignId: req.params.id,
+      runId: req.params.runId,
+      clientId: req.clientId,
+      contactIds: req.body?.contactIds,
+      humanAgentIds: req.body?.humanAgentIds,
+      timestamp: new Date().toISOString()
+    });
+    
     const { id, runId } = req.params;
     const { contactIds, humanAgentIds } = req.body || {};
 
@@ -5325,7 +5334,9 @@ router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, as
           .filter(Boolean)
       )
     );
+    console.log('📋 ASSIGN CONTACTS: Normalized contactIds', { count: normalizedContactIds.length, ids: normalizedContactIds });
     if (!normalizedContactIds.length) {
+      console.warn('⚠️ ASSIGN CONTACTS: No valid contactIds provided');
       return res
         .status(400)
         .json({ success: false, error: 'contactIds are required' });
@@ -5359,14 +5370,21 @@ router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, as
       clientId: req.clientId
     });
     if (!campaign) {
+      console.warn('⚠️ ASSIGN CONTACTS: Campaign not found', { campaignId: id, clientId: req.clientId });
       return res
         .status(404)
         .json({ success: false, error: 'Campaign not found' });
     }
+    console.log('✅ ASSIGN CONTACTS: Campaign found', { campaignId: campaign._id, campaignName: campaign.name });
 
     const requestedAgentObjectIds = normalizedHumanAgentIds.map(
       (agentId) => new mongoose.Types.ObjectId(agentId)
     );
+    console.log('🔍 ASSIGN CONTACTS: Looking up human agents', { 
+      requestedAgentIds: normalizedHumanAgentIds,
+      clientId: req.clientId 
+    });
+    
     const agents = await HumanAgent.find({
       _id: { $in: requestedAgentObjectIds },
       clientId: req.clientId
@@ -5375,11 +5393,20 @@ router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, as
       .lean();
 
     if (!agents.length) {
+      console.warn('⚠️ ASSIGN CONTACTS: No matching human agents found', { 
+        requestedIds: normalizedHumanAgentIds,
+        clientId: req.clientId 
+      });
       return res.status(404).json({
         success: false,
         error: 'No matching human agents found for this client'
       });
     }
+
+    console.log('✅ ASSIGN CONTACTS: Found human agents', { 
+      count: agents.length,
+      agentNames: agents.map(a => a.humanAgentName)
+    });
 
     const agentMap = new Map(agents.map((agent) => [String(agent._id), agent]));
     const orderedAgents = normalizedHumanAgentIds
@@ -5390,6 +5417,7 @@ router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, as
       const missingAgents = normalizedHumanAgentIds.filter(
         (agentId) => !agentMap.has(agentId)
       );
+      console.warn('⚠️ ASSIGN CONTACTS: Some human agents not found', { missingAgents });
       return res.status(404).json({
         success: false,
         error: `Unable to locate the following human agents: ${missingAgents.join(
@@ -5418,6 +5446,15 @@ router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, as
       runId
     });
 
+    if (!history) {
+      console.warn('⚠️ ASSIGN CONTACTS: Campaign history not found', { campaignId: campaign._id, runId });
+    } else {
+      console.log('✅ ASSIGN CONTACTS: Campaign history found', { 
+        historyId: history._id, 
+        contactsCount: history.contacts?.length || 0 
+      });
+    }
+
     let historyModified = false;
     if (history && Array.isArray(history.contacts)) {
       history.contacts.forEach((contact) => {
@@ -5434,16 +5471,25 @@ router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, as
           contact.lastAssignedBy = req.clientId;
           matchedContactIds.add(contactKey);
           historyModified = true;
+          console.log('📝 ASSIGN CONTACTS: Updated contact in history', { 
+            contactId: contactKey, 
+            assignedAgents: assignmentIdList.map(String) 
+          });
         }
       });
       if (historyModified) {
         history.markModified('contacts');
         await history.save();
+        console.log('💾 ASSIGN CONTACTS: Campaign history saved', { 
+          runId, 
+          updatedContacts: matchedContactIds.size 
+        });
       }
     }
 
     let campaignDetailsModified = false;
     if (Array.isArray(campaign.details) && campaign.details.length) {
+      console.log('🔍 ASSIGN CONTACTS: Checking campaign details', { detailsCount: campaign.details.length });
       campaign.details.forEach((detail) => {
         if (!detail) return;
         const detailKey = String(detail._id || detail.contactId || '');
@@ -5458,22 +5504,47 @@ router.post('/campaigns/:id/history/:runId/assign-contacts', extractClientId, as
           detail.lastAssignedBy = req.clientId;
           matchedContactIds.add(detailKey);
           campaignDetailsModified = true;
+          console.log('📝 ASSIGN CONTACTS: Updated contact in campaign details', { 
+            contactKey: detailKey, 
+            assignedAgents: assignmentIdList.map(String) 
+          });
         }
       });
       if (campaignDetailsModified) {
         campaign.markModified('details');
         await campaign.save();
+        console.log('💾 ASSIGN CONTACTS: Campaign details saved', { 
+          campaignId: campaign._id, 
+          updatedContacts: matchedContactIds.size 
+        });
+      } else {
+        console.log('ℹ️ ASSIGN CONTACTS: No matching contacts in campaign details to update');
       }
+    } else {
+      console.log('ℹ️ ASSIGN CONTACTS: No campaign details array found or empty');
     }
 
     const updatedContactsCount = matchedContactIds.size;
     if (!updatedContactsCount) {
+      console.warn('⚠️ ASSIGN CONTACTS: No matching contacts found', { 
+        requestedContactIds: Array.from(contactIdSet),
+        matchedCount: matchedContactIds.size
+      });
       return res.status(404).json({
         success: false,
         error:
           'No matching contacts were found for assignment. Please refresh run data and try again.'
       });
     }
+
+    console.log('✅ ASSIGN CONTACTS: Assignment completed successfully', {
+      campaignId: campaign._id,
+      runId,
+      updatedContacts: updatedContactsCount,
+      humanAgentIds: assignmentIdList.map((id) => String(id)),
+      historyUpdated: historyModified,
+      campaignDetailsUpdated: campaignDetailsModified
+    });
 
     res.json({
       success: true,

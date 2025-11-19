@@ -1800,15 +1800,18 @@ exports.getAssignedContacts = async (req, res) => {
     const Campaign = require('../models/Campaign');
     const histories = await CampaignHistory.find({
       campaignId,
-      'contacts.assignedToHumanAgents.humanAgentId': humanAgentId,
+      'contacts.assignedHumanAgents.humanAgentId': humanAgentId,
       ...dateFilter
     }).lean();
 
     const out = [];
     for (const h of histories) {
       for (const c of h.contacts || []) {
-        const isAssigned = (c.assignedToHumanAgents || []).some(a => String(a.humanAgentId) === String(humanAgentId));
+        // Check if this contact is assigned to the human agent
+        const isAssigned = (c.assignedHumanAgents || []).some(a => String(a.humanAgentId) === String(humanAgentId)) ||
+                          (c.assignedHumanAgentIds || []).some(id => String(id) === String(humanAgentId));
         if (!isAssigned) continue;
+        
         // latest disposition from MyDials
         let currentDisposition = null;
         try {
@@ -1823,21 +1826,32 @@ exports.getAssignedContacts = async (req, res) => {
           currentDisposition = d?.leadStatus || null;
         } catch (_) {}
 
-        const a = (c.assignedToHumanAgents || []).find(x => String(x.humanAgentId) === String(humanAgentId));
+        // Find the assignment record for this human agent
+        const assignmentRecord = (c.assignedHumanAgents || []).find(x => String(x.humanAgentId) === String(humanAgentId));
         out.push({
           ...c,
           campaignHistoryId: h._id,
           campaignId: h.campaignId,
           runId: h.runId,
           instanceNumber: h.instanceNumber,
-          assignedAt: a?.assignedAt,
-          assignedBy: a?.assignedBy,
+          // Assignment metadata from the new schema
+          assignedAt: assignmentRecord?.assignedAt || c.lastAssignedAt || null,
+          assignedBy: c.lastAssignedBy || null,
+          assignedHumanAgents: c.assignedHumanAgents || [],
+          assignedHumanAgentIds: c.assignedHumanAgentIds || [],
+          lastAssignedBy: c.lastAssignedBy || null,
+          lastAssignedAt: c.lastAssignedAt || null,
+          // Current disposition (from MyDials or contact)
           leadStatus: currentDisposition || c.leadStatus || null
         });
       }
     }
 
-    out.sort((a, b) => new Date(b.assignedAt) - new Date(a.assignedAt));
+    out.sort((a, b) => {
+      const dateA = a.assignedAt ? new Date(a.assignedAt).getTime() : (a.lastAssignedAt ? new Date(a.lastAssignedAt).getTime() : 0);
+      const dateB = b.assignedAt ? new Date(b.assignedAt).getTime() : (b.lastAssignedAt ? new Date(b.lastAssignedAt).getTime() : 0);
+      return dateB - dateA; // Descending order (newest first)
+    });
     const totalCount = out.length;
     const paginated = out.slice(skip, skip + limitNum);
     const campaign = await Campaign.findById(campaignId).select('name description category').lean();

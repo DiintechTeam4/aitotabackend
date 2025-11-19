@@ -62,7 +62,7 @@ const campaignSchema = new mongoose.Schema({
     },
     status: { 
       type: String, 
-      enum: ['ringing', 'ongoing', 'completed','failed', 'not_connected'], 
+      enum: ['ringing', 'ongoing', 'completed'], 
       default: 'ringing' 
     },
     runId:{
@@ -95,34 +95,6 @@ const campaignSchema = new mongoose.Schema({
       ],
       default: 'not_connected'
     },
-    assignedHumanAgents: [
-      {
-        humanAgentId: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'HumanAgent'
-        },
-        humanAgentName: {
-          type: String,
-          default: ''
-        },
-        assignedAt: {
-          type: Date,
-          default: Date.now
-        }
-      }
-    ],
-    assignedHumanAgentIds: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'HumanAgent'
-      }
-    ],
-    lastAssignedBy: {
-      type: String
-    },
-    lastAssignedAt: {
-      type: Date
-    }
   }],
   // Array to store campaign contacts (copied from groups but can be manipulated independently)
   contacts: [{
@@ -131,19 +103,6 @@ const campaignSchema = new mongoose.Schema({
     phone: { type: String, required: true },
     status: { type: String, enum: ['default', 'interested', 'maybe', 'not interested'], default: 'default' },
     email: { type: String, default: "" },
-    bookmarked: { type: Boolean, default: false },
-    addedAt: { type: Date, default: Date.now }
-  }],
-  // Persist per-group contact selections (range or explicit indices) for visibility across the app
-  groupSelections: [{
-    groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', required: true },
-    groupName: { type: String, default: '' },
-    // Either a range [startIndex, endIndex) or explicit indices; both can be stored
-    startIndex: { type: Number, default: 0 },
-    endIndex: { type: Number, default: 0 },
-    selectedIndices: [{ type: Number }],
-    count: { type: Number, default: 0 },
-    replace: { type: Boolean, default: false },
     addedAt: { type: Date, default: Date.now }
   }],
   createdAt: {

@@ -45,30 +45,11 @@ const CampaignHistorySchema = new mongoose.Schema({
         transcriptCount: Number,
         whatsappMessageSent: Boolean,
         whatsappRequested: Boolean,
-        assignedHumanAgents: [{
-            humanAgentId: {
-                type: mongoose.Schema.Types.ObjectId,
-                ref: 'HumanAgent'
-            },
-            humanAgentName: {
-                type: String,
-                default: ''
-            },
-            assignedAt: {
-                type: Date,
-                default: Date.now
-            }
-        }],
-        assignedHumanAgentIds: [{
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'HumanAgent'
-        }],
-        lastAssignedBy: {
-            type: String
-        },
-        lastAssignedAt: {
-            type: Date
-        }
+        assignedToHumanAgents: [{
+            humanAgentId: { type: mongoose.Schema.Types.ObjectId, ref: 'HumanAgent' },
+            assignedAt: { type: Date, default: Date.now },
+            assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' }
+        }]
     }],
     stats: {
         totalContacts: { type: Number, default: 0 },

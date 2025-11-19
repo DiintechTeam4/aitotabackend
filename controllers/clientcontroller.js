@@ -1676,9 +1676,11 @@ const switchProfile = async (req, res) => {
 
 // Assign campaign history contacts to human agents
 const assignCampaignHistoryContactsToHumanAgents = async (req, res) => {
+  console.log('assignCampaignHistoryContactsToHumanAgents', req.body);
   try {
     const { id: campaignId, runId } = req.params;
     const { contactIds, humanAgentIds } = req.body;
+    console.log('assignCampaignHistoryContactsToHumanAgents', req.body);
     
     // Validate required fields
     if (!contactIds || !Array.isArray(contactIds) || contactIds.length === 0) {
