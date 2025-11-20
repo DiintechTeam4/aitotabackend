@@ -2024,103 +2024,328 @@ async function autoSaveCampaignRun(campaign, progress) {
       return;
     }
 
-    const now = new Date();
-    const startTime = progress.startTime;
-    const endTime = now;
-    const runTime = Math.floor((endTime - startTime) / 1000); // in seconds
-    const runId = progress.runId || `run-${Date.now()}`;
-
-    console.log(`💾 AUTO-SAVE: Saving campaign run for ${campaign._id}, runTime: ${runTime}s`);
-
-    // Fetch call logs for this run
+    const CampaignHistory = require('../models/CampaignHistory');
     const CallLog = require('../models/CallLog');
-    const callLogs = await CallLog.find({
+
+    const toHms = (secs) => ({
+      hours: Math.floor(secs / 3600),
+      minutes: Math.floor((secs % 3600) / 60),
+      seconds: secs % 60
+    });
+
+    const now = new Date();
+    const startTime =
+      progress.startTime instanceof Date
+        ? progress.startTime
+        : new Date(progress.startTime);
+    const endTime =
+      progress.endTime instanceof Date
+        ? progress.endTime
+        : now;
+    const runSeconds = Math.max(0, Math.floor((endTime - startTime) / 1000));
+    const runId =
+      progress.runId ||
+      (Array.isArray(campaign.details) && campaign.details.length
+        ? campaign.details[0].runId
+        : null) ||
+      `run_${Date.now()}`;
+
+    console.log(
+      `💾 AUTO-SAVE: Persisting campaign history for ${campaign._id} (run ${runId})`
+    );
+
+    const contactsLookup = new Map(
+      (campaign.contacts || []).map((contact) => [
+        String(contact._id || contact.contactId || ''),
+        contact
+      ])
+    );
+
+    const runDetails = Array.isArray(campaign.details)
+      ? campaign.details.filter((detail) =>
+          runId ? detail?.runId === runId : true
+        )
+      : [];
+
+    const existingHistoryDoc = await CampaignHistory.findOne({
       campaignId: campaign._id,
-      'metadata.customParams.runId': runId
+      runId
     }).lean();
 
-    console.log(`💾 AUTO-SAVE: Found ${callLogs.length} call logs for run ${runId}`);
+    let contactsPayload = runDetails
+      .filter((detail) => detail && detail.uniqueId)
+      .map((detail) => {
+        const linkedContact = detail.contactId
+          ? contactsLookup.get(String(detail.contactId))
+          : null;
 
-    // Create campaign history entry
-    const historyEntry = {
-      runId,
-      startTime,
-      endTime,
-      runTime,
-      callLogs: callLogs.map(log => ({
-        uniqueId: log.metadata?.customParams?.uniqueid,
-        phone: log.mobile,
-        duration: log.duration,
-        leadStatus: log.leadStatus,
-        statusText: log.statusText,
-        time: log.time
-      })),
-      totalCalls: callLogs.length,
-      successfulCalls: callLogs.filter(log => log.leadStatus && log.leadStatus !== 'not_connected').length,
-      failedCalls: callLogs.filter(log => !log.leadStatus || log.leadStatus === 'not_connected').length
-    };
+        return {
+          documentId: detail.uniqueId,
+          number:
+            linkedContact?.phone ||
+            linkedContact?.number ||
+            detail.number ||
+            '',
+          name: linkedContact?.name || detail.name || '',
+          leadStatus:
+            detail.leadStatus ||
+            (detail.status === 'completed' ? 'connected' : 'not_connected'),
+          contactId: detail.contactId ? String(detail.contactId) : '',
+          time:
+            detail.time instanceof Date
+              ? detail.time.toISOString()
+              : detail.time || new Date().toISOString(),
+          status: detail.status || 'completed',
+          duration:
+            typeof detail.callDuration === 'number' ? detail.callDuration : 0,
+          callDuration:
+            typeof detail.callDuration === 'number' ? detail.callDuration : 0,
+          transcriptCount:
+            typeof detail.transcriptCount === 'number'
+              ? detail.transcriptCount
+              : 0,
+          whatsappMessageSent: !!detail.whatsappMessageSent,
+          whatsappRequested: !!detail.whatsappRequested,
+          assignedToHumanAgents: detail.assignedToHumanAgents || []
+        };
+      });
 
-    // Add to campaign history
-    if (!campaign.history) {
-      campaign.history = [];
+    if (existingHistoryDoc?.contacts?.length) {
+      const existingMap = new Map(
+        existingHistoryDoc.contacts.map((contact) => [
+          String(
+            contact.documentId ||
+              contact._id ||
+              contact.number ||
+              contact.contactId ||
+              ''
+          ),
+          contact?.toObject ? contact.toObject() : contact
+        ])
+      );
+
+      contactsPayload = contactsPayload.map((contact) => {
+        const key = String(
+          contact.documentId ||
+            contact._id ||
+            contact.number ||
+            contact.contactId ||
+            ''
+        );
+        const existing = existingMap.get(key);
+        if (existing) {
+          if (
+            Array.isArray(existing.assignedToHumanAgents) &&
+            existing.assignedToHumanAgents.length
+          ) {
+            contact.assignedToHumanAgents = existing.assignedToHumanAgents;
+          }
+          if (typeof existing.transcriptCount === 'number') {
+            contact.transcriptCount = existing.transcriptCount;
+          }
+          if (existing.whatsappMessageSent !== undefined) {
+            contact.whatsappMessageSent = existing.whatsappMessageSent;
+          }
+          if (existing.whatsappRequested !== undefined) {
+            contact.whatsappRequested = existing.whatsappRequested;
+          }
+          if (
+            typeof existing.duration === 'number' &&
+            existing.duration > 0 &&
+            !Number.isFinite(contact.duration)
+          ) {
+            contact.duration = existing.duration;
+            contact.callDuration = existing.duration;
+          }
+          existingMap.delete(key);
+        }
+        return contact;
+      });
+
+      const remainingContacts = Array.from(existingMap.values());
+      if (remainingContacts.length) {
+        contactsPayload = contactsPayload.concat(remainingContacts);
+      }
     }
-    campaign.history.push(historyEntry);
-    await campaign.save();
 
-    // Send detailed campaign end telegram alert
+    const totalContacts = contactsPayload.length;
+    const successfulCalls = contactsPayload.filter(
+      (contact) =>
+        contact.leadStatus && contact.leadStatus !== 'not_connected'
+    ).length;
+    const failedCalls = totalContacts - successfulCalls;
+    const totalCallDuration = contactsPayload.reduce(
+      (sum, contact) => sum + (Number(contact.duration) || 0),
+      0
+    );
+    const averageCallDuration =
+      totalContacts > 0
+        ? Math.round(totalCallDuration / totalContacts)
+        : 0;
+
+    let instanceNumber = existingHistoryDoc?.instanceNumber;
+    if (!instanceNumber) {
+      const existingCount = await CampaignHistory.countDocuments({
+        campaignId: campaign._id
+      });
+      instanceNumber = existingCount + 1;
+    }
+
+    const historyDoc = await CampaignHistory.findOneAndUpdate(
+      { campaignId: campaign._id, runId },
+      {
+        $set: {
+          campaignId: campaign._id,
+          runId,
+          instanceNumber,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          runTime: toHms(runSeconds),
+          status: 'completed',
+          contacts: contactsPayload,
+          stats: {
+            totalContacts,
+            successfulCalls,
+            failedCalls,
+            totalCallDuration,
+            averageCallDuration
+          }
+        }
+      },
+      { upsert: true, new: true }
+    );
+
+    console.log(
+      `✅ AUTO-SAVE: CampaignHistory ${historyDoc?._id} updated for run ${runId}`
+    );
+
+    try {
+      const Campaign = require('../models/Campaign');
+      await Campaign.updateOne(
+        { _id: campaign._id },
+        { $set: { details: [], isRunning: false } }
+      );
+    } catch (clearError) {
+      console.error(
+        `⚠️ AUTO-SAVE: Failed to clear details for campaign ${campaign._id}:`,
+        clearError.message
+      );
+    }
+
+    try {
+      const callLogs = await CallLog.find({
+        campaignId: campaign._id,
+        'metadata.customParams.runId': runId
+      }).lean();
+
+      const legacyEntry = {
+        runId,
+        startTime,
+        endTime,
+        runTime: runSeconds,
+        callLogs: callLogs.map((log) => ({
+          uniqueId: log.metadata?.customParams?.uniqueid,
+          phone: log.mobile,
+          duration: log.duration,
+          leadStatus: log.leadStatus,
+          statusText: log.statusText,
+          time: log.time
+        })),
+        totalCalls: callLogs.length,
+        successfulCalls: callLogs.filter(
+          (log) => log.leadStatus && log.leadStatus !== 'not_connected'
+        ).length,
+        failedCalls: callLogs.filter(
+          (log) => !log.leadStatus || log.leadStatus === 'not_connected'
+        ).length
+      };
+
+      if (!Array.isArray(campaign.history)) {
+        campaign.history = [];
+      }
+      campaign.history.push(legacyEntry);
+      await campaign.save();
+    } catch (legacyError) {
+      console.warn(
+        `⚠️ AUTO-SAVE: Unable to append legacy history for campaign ${campaign._id}:`,
+        legacyError.message
+      );
+    }
+
     try {
       const Agent = require('../models/Agent');
       const Client = require('../models/Client');
       const Group = require('../models/Group');
-      // Resolve agent id from campaign (array) or fallback
-      const agentIdFromCampaign = Array.isArray(campaign.agent) && campaign.agent.length ? campaign.agent[0] : campaign.agentId;
-      const agent = agentIdFromCampaign ? await Agent.findById(agentIdFromCampaign) : null;
-      const client = campaign.clientId ? await Client.findById(campaign.clientId) : null;
-      // Resolve group name from campaign.groupIds[0]
+      const agentIdFromCampaign =
+        Array.isArray(campaign.agent) && campaign.agent.length
+          ? campaign.agent[0]
+          : campaign.agentId;
+      const agent = agentIdFromCampaign
+        ? await Agent.findById(agentIdFromCampaign)
+        : null;
+      const client = campaign.clientId
+        ? await Client.findById(campaign.clientId)
+        : null;
       let groupName = 'Default Group';
       try {
-        const firstGroupId = Array.isArray(campaign.groupIds) && campaign.groupIds.length ? campaign.groupIds[0] : null;
+        const firstGroupId =
+          Array.isArray(campaign.groupIds) && campaign.groupIds.length
+            ? campaign.groupIds[0]
+            : null;
         if (firstGroupId) {
           const groupDoc = await Group.findById(firstGroupId).lean();
-          groupName = groupDoc?.groupName || groupDoc?.name || groupDoc?.title || groupName;
+          groupName =
+            groupDoc?.groupName || groupDoc?.name || groupDoc?.title || groupName;
         }
       } catch {}
-      
-      const connected = historyEntry.successfulCalls;
-      const missed = historyEntry.failedCalls;
-      const totalContacts = Array.isArray(campaign.contacts) ? campaign.contacts.length : (historyEntry.totalCalls || 0);
-      const connectedPercentage = totalContacts > 0 ? Math.round((connected / totalContacts) * 100) : 0;
-      
-      // Format duration as HH:MM:SS
-      const hours = Math.floor(runTime / 3600);
-      const minutes = Math.floor((runTime % 3600) / 60);
-      const seconds = runTime % 60;
-      const durationFormatted = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-      
+
+      const connected = successfulCalls;
+      const missed = failedCalls;
+      const totalDialed = Array.isArray(campaign.contacts)
+        ? campaign.contacts.length
+        : totalContacts;
+      const connectedPercentage =
+        totalDialed > 0 ? Math.round((connected / totalDialed) * 100) : 0;
+
+      const hours = Math.floor(runSeconds / 3600);
+      const minutes = Math.floor((runSeconds % 3600) / 60);
+      const seconds = runSeconds % 60;
+      const durationFormatted = `${hours.toString().padStart(2, '0')}:${minutes
+        .toString()
+        .padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
       await sendDetailedCampaignEndAlert({
         campaignName: campaign.name || 'Unnamed Campaign',
-        runId: runId,
+        runId,
         agentName: agent?.agentName || 'Unknown Agent',
-        groupName: groupName,
+        groupName,
         didNumber: agent?.didNumber || 'N/A',
-        totalContacts: totalContacts,
-        startTime: startTime,
-        endTime: endTime,
+        totalContacts: totalDialed,
+        startTime,
+        endTime,
         duration: durationFormatted,
-        connected: connected,
-        missed: missed,
-        connectedPercentage: connectedPercentage,
+        connected,
+        missed,
+        connectedPercentage,
         clientName: client?.name || client?.username || 'Unknown Client',
         userEmail: client?.email || 'N/A',
         mode: progress.callingMode || 'serial'
       });
-    } catch (error) {
-      console.error('❌ Failed to send campaign end telegram alert:', error.message);
+    } catch (alertError) {
+      console.error(
+        '❌ Failed to send campaign end telegram alert:',
+        alertError.message
+      );
     }
 
-    console.log(`✅ AUTO-SAVE: Campaign run saved successfully for ${campaign._id}`);
+    console.log(
+      `✅ AUTO-SAVE: Campaign run persisted successfully for ${campaign._id}`
+    );
   } catch (error) {
-    console.error(`❌ AUTO-SAVE: Error saving campaign run for ${campaign._id}:`, error);
+    console.error(
+      `❌ AUTO-SAVE: Error saving campaign run for ${campaign._id}:`,
+      error
+    );
   }
 }
 

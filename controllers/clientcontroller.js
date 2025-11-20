@@ -1674,141 +1674,758 @@ const switchProfile = async (req, res) => {
   }
 };
 
-// Assign campaign history contacts to human agents
+// Assign campaign history contacts (manual list or transcript range) to human agents
 const assignCampaignHistoryContactsToHumanAgents = async (req, res) => {
-  console.log('assignCampaignHistoryContactsToHumanAgents', req.body);
-  try {
-    const { id: campaignId, runId } = req.params;
-    const { contactIds, humanAgentIds } = req.body;
-    console.log('assignCampaignHistoryContactsToHumanAgents', req.body);
-    
-    // Validate required fields
-    if (!contactIds || !Array.isArray(contactIds) || contactIds.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'contactIds array is required and must not be empty'
-      });
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] 📋 ASSIGN: assignCampaignHistoryContactsToHumanAgents called`, {
+    campaignId: req.params.id,
+    runId: req.params.runId,
+    humanAgentIds: req.body.humanAgentIds,
+    transcriptRange: req.body.transcriptRange,
+    contactIds: req.body.contactIds?.length || 0
+  });
+
+  const Campaign = require('../models/Campaign');
+  const CampaignHistory = require('../models/CampaignHistory');
+  const HumanAgent = require('../models/HumanAgent');
+  const CallLog = require('../models/CallLog');
+
+  const parseNumericValue = (value, allowNull = true) => {
+    if (value === undefined || value === null || value === '') {
+      return allowNull ? null : 0;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const buildHistoryContactFromDetail = (detail, contactsLookup) => {
+    if (!detail || !detail.uniqueId) return null;
+    const linkedContact = detail.contactId
+      ? contactsLookup.get(String(detail.contactId))
+      : null;
+
+    return {
+      documentId: detail.uniqueId,
+      number: linkedContact?.phone || linkedContact?.number || detail.number || '',
+      name: linkedContact?.name || detail.name || '',
+      leadStatus:
+        detail.leadStatus ||
+        (detail.status === 'completed' ? 'connected' : 'not_connected'),
+      contactId: detail.contactId ? String(detail.contactId) : '',
+      time:
+        detail.time instanceof Date
+          ? detail.time.toISOString()
+          : detail.time || new Date().toISOString(),
+      status: detail.status || 'ringing',
+      duration:
+        typeof detail.callDuration === 'number' ? detail.callDuration : 0,
+      transcriptCount:
+        typeof detail.transcriptCount === 'number' ? detail.transcriptCount : 0,
+      whatsappMessageSent: !!detail.whatsappMessageSent,
+      whatsappRequested: !!detail.whatsappRequested,
+      assignedToHumanAgents: []
+    };
+  };
+
+  const ensureHistoryDocument = async (campaign, runId) => {
+    let history = await CampaignHistory.findOne({
+      campaignId: campaign._id,
+      runId
+    });
+
+    if (history) return history;
+
+    const detailsForRun = Array.isArray(campaign.details)
+      ? campaign.details.filter((detail) => detail && detail.runId === runId)
+      : [];
+
+    if (detailsForRun.length === 0) {
+      return null;
+    }
+
+    const contactsLookup = new Map(
+      (campaign.contacts || []).map((contact) => [
+        String(contact._id || contact.contactId || ''),
+        contact
+      ])
+    );
+
+    const contactsPayload = detailsForRun
+      .map((detail) => buildHistoryContactFromDetail(detail, contactsLookup))
+      .filter(Boolean);
+
+    if (contactsPayload.length === 0) {
+      return null;
+    }
+
+    const now = new Date();
+    const startTime =
+      detailsForRun[0]?.time instanceof Date
+        ? detailsForRun[0].time
+        : new Date(detailsForRun[0]?.time || now);
+    const totalExistingRuns = await CampaignHistory.countDocuments({
+      campaignId: campaign._id
+    });
+
+    // Calculate initial stats from contacts payload
+    const successfulCalls = contactsPayload.filter(
+      (c) => c.leadStatus && c.leadStatus !== 'not_connected'
+    ).length;
+    const failedCalls = contactsPayload.filter(
+      (c) => !c.leadStatus || c.leadStatus === 'not_connected'
+    ).length;
+    const totalCallDuration = contactsPayload.reduce(
+      (sum, c) => sum + (Number(c.duration) || Number(c.callDuration) || 0),
+      0
+    );
+    const averageCallDuration =
+      contactsPayload.length > 0
+        ? Math.round(totalCallDuration / contactsPayload.length)
+        : 0;
+
+    history = await CampaignHistory.create({
+      campaignId: campaign._id,
+      runId,
+      instanceNumber: totalExistingRuns + 1,
+      startTime: startTime.toISOString(),
+      endTime: now.toISOString(),
+      runTime: { hours: 0, minutes: 0, seconds: 0 },
+      status: campaign.isRunning ? 'running' : 'completed',
+      contacts: contactsPayload,
+      stats: {
+        totalContacts: contactsPayload.length,
+        successfulCalls,
+        failedCalls,
+        totalCallDuration,
+        averageCallDuration
+      }
+    });
+
+    return history;
+  };
+
+  const syncHistoryContactsFromDetails = async (history, campaign, runId) => {
+    if (!history) {
+      console.log(`🔄 SYNC: No history document found for runId ${runId}`);
+      return null;
+    }
+    const existingDocIds = new Set(
+      (history.contacts || [])
+        .map((contact) => contact?.documentId)
+        .filter(Boolean)
+    );
+
+    const detailsForRun = Array.isArray(campaign.details)
+      ? campaign.details.filter(
+          (detail) => detail && detail.runId === runId && detail.uniqueId
+        )
+      : [];
+
+    console.log(`🔄 SYNC: Found ${detailsForRun.length} details for runId ${runId}, ${existingDocIds.size} existing contacts in history`);
+
+    const newDetails = detailsForRun.filter(
+      (detail) => !existingDocIds.has(detail.uniqueId)
+    );
+    if (newDetails.length === 0) {
+      console.log(`✅ SYNC: No new contacts to sync for runId ${runId}`);
+      return history;
     }
     
-    if (!humanAgentIds || !Array.isArray(humanAgentIds) || humanAgentIds.length === 0) {
+    console.log(`📥 SYNC: Syncing ${newDetails.length} new contacts for runId ${runId}`);
+
+    const contactsLookup = new Map(
+      (campaign.contacts || []).map((contact) => [
+        String(contact._id || contact.contactId || ''),
+        contact
+      ])
+    );
+
+    const newContacts = newDetails
+      .map((detail) => buildHistoryContactFromDetail(detail, contactsLookup))
+      .filter(Boolean);
+
+    if (newContacts.length === 0) {
+      return history;
+    }
+
+    await CampaignHistory.updateOne(
+      { _id: history._id },
+      {
+        $push: { contacts: { $each: newContacts } },
+        $set: { updatedAt: new Date() }
+      }
+    );
+
+    // Recalculate stats after syncing new contacts
+    const updatedHistory = await CampaignHistory.findById(history._id).lean();
+    if (updatedHistory && Array.isArray(updatedHistory.contacts)) {
+      const allContacts = updatedHistory.contacts;
+      const totalContacts = allContacts.length;
+      const successfulCalls = allContacts.filter(
+        (c) => c.leadStatus && c.leadStatus !== 'not_connected'
+      ).length;
+      const failedCalls = allContacts.filter(
+        (c) => !c.leadStatus || c.leadStatus === 'not_connected'
+      ).length;
+      const totalCallDuration = allContacts.reduce(
+        (sum, c) => sum + (Number(c.duration) || Number(c.callDuration) || 0),
+        0
+      );
+      const averageCallDuration =
+        totalContacts > 0 ? Math.round(totalCallDuration / totalContacts) : 0;
+
+      await CampaignHistory.updateOne(
+        { _id: history._id },
+        {
+          $set: {
+            stats: {
+              totalContacts,
+              successfulCalls,
+              failedCalls,
+              totalCallDuration,
+              averageCallDuration
+            }
+          }
+        }
+      );
+    }
+
+    return CampaignHistory.findById(history._id);
+  };
+
+  const fetchTranscriptCounts = async (documentIds, runIdFilter, clientId) => {
+    if (!Array.isArray(documentIds) || documentIds.length === 0) {
+      return new Map();
+    }
+    const uniqueIds = [...new Set(documentIds.filter(Boolean))];
+    if (uniqueIds.length === 0) {
+      return new Map();
+    }
+
+    const buildPipeline = (matchStage) => [
+      { $match: matchStage },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: '$metadata.customParams.uniqueid',
+          transcriptSum: {
+            $sum: {
+              $add: [
+                { $ifNull: ['$metadata.userTranscriptCount', 0] },
+                { $ifNull: ['$metadata.aiResponseCount', 0] },
+                {
+                  $cond: [
+                    { $isArray: '$transcript' },
+                    { $size: '$transcript' },
+                    0
+                  ]
+                }
+              ]
+            }
+          },
+          userTranscriptCount: { $max: { $ifNull: ['$metadata.userTranscriptCount', 0] } },
+          aiResponseCount: { $max: { $ifNull: ['$metadata.aiResponseCount', 0] } }
+        }
+      },
+      {
+        $project: {
+          uniqueId: '$_id',
+          transcriptCount: {
+            $max: [
+              '$transcriptSum',
+              { $add: ['$userTranscriptCount', '$aiResponseCount'] }
+            ]
+          }
+        }
+      }
+    ];
+
+    const baseMatch = {
+      'metadata.customParams.uniqueid': { $in: uniqueIds }
+    };
+    if (runIdFilter) {
+      baseMatch['metadata.customParams.runId'] = runIdFilter;
+    }
+    if (clientId) {
+      baseMatch.clientId = clientId;
+    }
+
+    let aggregation = await CallLog.aggregate(buildPipeline(baseMatch), {
+      allowDiskUse: true
+    });
+
+    // Fallback 1: drop runId filter (some legacy logs don't store it)
+    if ((!aggregation || aggregation.length === 0) && runIdFilter) {
+      const fallbackMatch = { ...baseMatch };
+      delete fallbackMatch['metadata.customParams.runId'];
+      aggregation = await CallLog.aggregate(buildPipeline(fallbackMatch), {
+        allowDiskUse: true
+      });
+    }
+
+    // Fallback 2: drop clientId filter if still empty (cross-tenant logs)
+    if ((!aggregation || aggregation.length === 0) && baseMatch.clientId) {
+      const fallbackMatch = { ...baseMatch };
+      delete fallbackMatch.clientId;
+      aggregation = await CallLog.aggregate(buildPipeline(fallbackMatch), {
+        allowDiskUse: true
+      });
+    }
+
+    const map = new Map();
+    for (const entry of aggregation || []) {
+      const key = entry.uniqueId || entry._id;
+      if (!key) continue;
+      const value =
+        typeof entry.transcriptCount === 'number' ? entry.transcriptCount : 0;
+      map.set(String(key), value);
+    }
+    return map;
+  };
+
+  try {
+    const { id: campaignId, runId } = req.params;
+    const { contactIds, humanAgentIds, transcriptRange } = req.body || {};
+
+    if (!runId) {
+      return res.status(400).json({
+        success: false,
+        error: 'runId parameter is required'
+      });
+    }
+
+    const normalizedContactIds = Array.isArray(contactIds)
+      ? [...new Set(contactIds.map((id) => String(id)))]
+      : [];
+    const hasContactIds = normalizedContactIds.length > 0;
+
+    const hasTranscriptRange =
+      transcriptRange &&
+      (transcriptRange.minTranscriptCount !== undefined ||
+        transcriptRange.maxTranscriptCount !== undefined);
+
+    if (!hasContactIds && !hasTranscriptRange) {
+      return res.status(400).json({
+        success: false,
+        error: 'Provide contactIds array or a transcriptRange object'
+      });
+    }
+
+    if (
+      !humanAgentIds ||
+      !Array.isArray(humanAgentIds) ||
+      humanAgentIds.length === 0
+    ) {
       return res.status(400).json({
         success: false,
         error: 'humanAgentIds array is required and must not be empty'
       });
     }
-    
-    // Validate that the campaign exists and belongs to the client
-    const Campaign = require('../models/Campaign');
-    const campaign = await Campaign.findOne({ _id: campaignId, clientId: req.clientId });
+
+    let minTranscriptCount = null;
+    let maxTranscriptCount = null;
+    if (hasTranscriptRange) {
+      minTranscriptCount = parseNumericValue(
+        transcriptRange.minTranscriptCount,
+        false
+      );
+      maxTranscriptCount = parseNumericValue(transcriptRange.maxTranscriptCount);
+
+      if (minTranscriptCount === null && transcriptRange.minTranscriptCount) {
+        return res.status(400).json({
+          success: false,
+          error: 'minTranscriptCount must be a valid number'
+        });
+      }
+      if (
+        maxTranscriptCount === null &&
+        transcriptRange.maxTranscriptCount !== undefined &&
+        transcriptRange.maxTranscriptCount !== null &&
+        transcriptRange.maxTranscriptCount !== ''
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'maxTranscriptCount must be a valid number'
+        });
+      }
+      if (
+        minTranscriptCount !== null &&
+        maxTranscriptCount !== null &&
+        minTranscriptCount > maxTranscriptCount
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'minTranscriptCount cannot exceed maxTranscriptCount'
+        });
+      }
+    }
+
+    const sanitizedHumanAgentIds = [
+      ...new Set(humanAgentIds.map((id) => String(id)))
+    ];
+
+    // Validate campaign ownership
+    const campaign = await Campaign.findOne({
+      _id: campaignId,
+      clientId: req.clientId
+    }).lean();
     if (!campaign) {
       return res.status(404).json({
         success: false,
         error: 'Campaign not found'
       });
     }
-    
-    // Validate that the campaign history exists
-    const CampaignHistory = require('../models/CampaignHistory');
-    const campaignHistory = await CampaignHistory.findOne({ 
-      campaignId: campaignId, 
-      runId: runId 
+
+    // Validate / bootstrap campaign history document
+    let campaignHistory = await CampaignHistory.findOne({
+      campaignId: campaign._id,
+      runId
     });
+    console.log(`[${timestamp}] 📋 ASSIGN: Campaign history lookup - found: ${!!campaignHistory}, runId: ${runId}`);
     
     if (!campaignHistory) {
+      console.log(`[${timestamp}] 📋 ASSIGN: Creating history document for runId ${runId}`);
+      campaignHistory = await ensureHistoryDocument(campaign, runId);
+    }
+    if (!campaignHistory) {
+      console.log(`[${timestamp}] ❌ ASSIGN: Failed to create/find history document for runId ${runId}`);
       return res.status(404).json({
         success: false,
-        error: 'Campaign history not found'
+        error:
+          'Campaign history not found for this run. Wait for calls to be logged and try again.'
+      });
+    }
+
+    console.log(`[${timestamp}] 📋 ASSIGN: Syncing contacts from campaign.details to history for runId ${runId}`);
+    campaignHistory = await syncHistoryContactsFromDetails(
+      campaignHistory,
+      campaign,
+      runId
+    );
+    
+    if (!campaignHistory) {
+      console.log(`[${timestamp}] ❌ ASSIGN: Failed to sync contacts for runId ${runId}`);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to sync campaign history contacts'
       });
     }
     
-    // Validate that all human agents exist and belong to the client
-    const HumanAgent = require('../models/HumanAgent');
-    const humanAgents = await HumanAgent.find({ 
-      _id: { $in: humanAgentIds }, 
+    console.log(`[${timestamp}] ✅ ASSIGN: History document ready with ${campaignHistory.contacts?.length || 0} contacts`);
+
+    const historyContacts = Array.isArray(campaignHistory?.contacts)
+      ? campaignHistory.contacts.map((contact) =>
+          contact?.toObject ? contact.toObject() : contact
+        )
+      : [];
+    
+    console.log(`[${timestamp}] 📋 ASSIGN: History has ${historyContacts.length} contacts after sync`);
+
+    const contactIdMap = new Map(
+      historyContacts
+        .filter((contact) => contact && contact._id)
+        .map((contact) => [String(contact._id), contact])
+    );
+    const documentIdMap = new Map(
+      historyContacts
+        .filter((contact) => contact?.documentId)
+        .map((contact) => [String(contact.documentId), contact])
+    );
+
+    if (!hasContactIds && historyContacts.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'No contacts available for this run yet. Please try again once calls are logged.'
+      });
+    }
+
+    // Validate human agents
+    const humanAgents = await HumanAgent.find({
+      _id: { $in: sanitizedHumanAgentIds },
       clientId: req.clientId,
       isApproved: true
     });
-    
-    if (humanAgents.length !== humanAgentIds.length) {
+    if (humanAgents.length !== sanitizedHumanAgentIds.length) {
       return res.status(400).json({
         success: false,
         error: 'Some human agents not found or not approved'
       });
     }
+
+    let transcriptCountsMap = null;
+    if (hasTranscriptRange) {
+      const documentIds = Array.from(documentIdMap.keys());
+      console.log(`[${timestamp}] 📊 TRANSCRIPT: Fetching fresh transcript counts for ${documentIds.length} documentIds (live campaign check)`);
+      // Always fetch fresh transcript counts for live campaigns to get real-time updates
+      transcriptCountsMap = await fetchTranscriptCounts(
+        documentIds,
+        runId,
+        req.clientId
+      );
+      console.log(`[${timestamp}] 📊 TRANSCRIPT: Found transcript counts for ${transcriptCountsMap.size} contacts`);
+      
+      // Log transcript counts for debugging
+      if (transcriptCountsMap.size > 0) {
+        const sampleCounts = Array.from(transcriptCountsMap.entries()).slice(0, 5);
+        console.log(`[${timestamp}] 📊 TRANSCRIPT SAMPLE: First 5 counts:`, sampleCounts.map(([id, count]) => ({ id: id.slice(0, 8) + '...', count })));
+      }
+
+      // Persist updated transcript counts to history for future quick lookups
+      if (transcriptCountsMap.size > 0) {
+        const bulkUpdates = [];
+        for (const [docId, count] of transcriptCountsMap.entries()) {
+          const targetContact = documentIdMap.get(docId);
+          if (!targetContact) continue;
+          if (targetContact.transcriptCount === count) continue;
+          targetContact.transcriptCount = count;
+          bulkUpdates.push({
+            updateOne: {
+              filter: { _id: campaignHistory._id, 'contacts._id': targetContact._id },
+              update: { $set: { 'contacts.$.transcriptCount': count } }
+            }
+          });
+        }
+        if (bulkUpdates.length > 0) {
+          await CampaignHistory.bulkWrite(bulkUpdates);
+        }
+      }
+    }
+
+    const resolveContactId = (rawId) => {
+      const normalized = String(rawId || '').trim();
+      if (!normalized) return null;
+      if (contactIdMap.has(normalized)) return normalized;
+      const docMatch = documentIdMap.get(normalized);
+      if (docMatch && docMatch._id) {
+        return String(docMatch._id);
+      }
+      return null;
+    };
+
+    let targetContactIds = normalizedContactIds
+      .map(resolveContactId)
+      .filter(Boolean);
+    let appliedTranscriptRange = null;
+    if (!targetContactIds.length && hasTranscriptRange) {
+      const fallbackMin = minTranscriptCount ?? 0;
+      const fallbackMax = maxTranscriptCount;
+      appliedTranscriptRange = {
+        minTranscriptCount: fallbackMin,
+        maxTranscriptCount:
+          fallbackMax === null || fallbackMax === undefined ? null : fallbackMax
+      };
+
+      console.log(`📊 TRANSCRIPT FILTER: Filtering ${historyContacts.length} contacts with range [${fallbackMin}, ${fallbackMax === null ? 'null' : fallbackMax}]`);
+      
+      targetContactIds = historyContacts
+        .filter((contact) => {
+          // Skip contacts that are already assigned to any of the target human agents
+          const existingAssignments = new Set(
+            (contact.assignedToHumanAgents || []).map((entry) =>
+              String(entry.humanAgentId)
+            )
+          );
+          const isAlreadyAssigned = sanitizedHumanAgentIds.some(
+            (agentId) => existingAssignments.has(String(agentId))
+          );
+          
+          if (isAlreadyAssigned) {
+            return false; // Skip already assigned contacts
+          }
+          
+          // Get current transcript count (fetch fresh from CallLogs)
+          const transcriptCount =
+            (contact.documentId &&
+              transcriptCountsMap?.get(String(contact.documentId))) ??
+            (typeof contact.transcriptCount === 'number'
+              ? contact.transcriptCount
+              : 0);
+          
+          const matchesMin = transcriptCount >= fallbackMin;
+          const matchesMax = fallbackMax === null || fallbackMax === undefined || transcriptCount <= fallbackMax;
+          const matches = matchesMin && matchesMax;
+          
+          if (!matches) {
+            console.log(`⏳ TRANSCRIPT FILTER: Contact ${contact.documentId || contact._id} not yet in range - transcriptCount: ${transcriptCount}, range: [${fallbackMin}, ${fallbackMax === null ? 'null' : fallbackMax}]`);
+          } else {
+            console.log(`✅ TRANSCRIPT FILTER: Contact ${contact.documentId || contact._id} matches range - transcriptCount: ${transcriptCount}, range: [${fallbackMin}, ${fallbackMax === null ? 'null' : fallbackMax}]`);
+          }
+          
+          return matches;
+        })
+        .map((contact) => String(contact._id))
+        .filter(Boolean);
+      
+      console.log(`✅ TRANSCRIPT FILTER: ${targetContactIds.length} contacts matched the transcript range and are not already assigned`);
+    }
+
+    console.log(`📊 ASSIGNMENT: Found ${targetContactIds.length} contacts to assign out of ${historyContacts.length} total contacts`);
+    console.log(`📊 ASSIGNMENT: hasTranscriptRange: ${hasTranscriptRange}, hasContactIds: ${hasContactIds}, historyContacts.length: ${historyContacts.length}`);
     
-    // Validate that all contacts exist in the campaign history
-    const existingContactIds = campaignHistory.contacts.map(c => String(c._id));
-    const invalidContactIds = contactIds.filter(id => !existingContactIds.includes(String(id)));
-    
-    if (invalidContactIds.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: `Some contacts not found in campaign history: ${invalidContactIds.join(', ')}`
+    if (!targetContactIds.length) {
+      const reason = hasTranscriptRange 
+        ? `No unassigned contacts matched transcript range [${minTranscriptCount ?? 0}, ${maxTranscriptCount === null ? 'null' : maxTranscriptCount}]. Will continue checking for live calls.`
+        : 'No contacts provided or found';
+      console.log(`[${timestamp}] ⚠️ ASSIGNMENT: ${reason}`);
+      
+      // For live campaigns, return success even if no contacts match yet (they might match later)
+      return res.json({
+        success: true,
+        message: reason,
+        data: {
+          assignedContactsCount: 0,
+          assignedHumanAgentsCount: sanitizedHumanAgentIds.length,
+          humanAgents: humanAgents.map((agent) => ({
+            _id: agent._id,
+            humanAgentName: agent.humanAgentName,
+            email: agent.email,
+            role: agent.role
+          })),
+          assignedContacts: [],
+          transcriptRangeApplied: appliedTranscriptRange,
+          debug: {
+            totalHistoryContacts: historyContacts.length,
+            transcriptRange: hasTranscriptRange ? { min: minTranscriptCount, max: maxTranscriptCount } : null,
+            hasContactIds,
+            alreadyAssignedCount: historyContacts.filter(c => {
+              const existingAssignments = new Set(
+                (c.assignedToHumanAgents || []).map((entry) => String(entry.humanAgentId))
+              );
+              return sanitizedHumanAgentIds.some((agentId) => existingAssignments.has(String(agentId)));
+            }).length
+          }
+        }
       });
     }
-    
-    // Update contacts with human agent assignments
-    const assignmentData = humanAgentIds.map(humanAgentId => ({
-      humanAgentId: humanAgentId,
-      assignedAt: new Date(),
-      assignedBy: req.clientId
-    }));
-    
-    // Update each contact with the new assignments
-    const updatePromises = contactIds.map(contactId => {
-      return CampaignHistory.updateOne(
-        { 
-          campaignId: campaignId, 
-          runId: runId,
-          'contacts._id': contactId 
-        },
-        { 
-          $push: { 
-            'contacts.$.assignedToHumanAgents': { $each: assignmentData }
-          } 
-        }
-      );
-    });
-    
-    await Promise.all(updatePromises);
-    
-    // Get updated campaign history with populated human agent data
-    const updatedHistory = await CampaignHistory.findOne({ 
-      campaignId: campaignId, 
-      runId: runId 
-    }).populate('contacts.assignedToHumanAgents.humanAgentId', 'humanAgentName email role');
-    
-    // Filter only the assigned contacts for response
-    const assignedContacts = updatedHistory.contacts.filter(contact => 
-      contactIds.includes(String(contact._id))
+
+    const invalidContactIds = normalizedContactIds.filter(
+      (rawId) => !resolveContactId(rawId)
     );
-    
+    if (
+      invalidContactIds.length > 0 &&
+      invalidContactIds.length === normalizedContactIds.length &&
+      !hasTranscriptRange
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: `Some contacts not found in campaign history: ${invalidContactIds.join(
+          ', '
+        )}`
+      });
+    }
+
+    const now = new Date();
+    const assignmentOps = [];
+    for (const contactId of targetContactIds) {
+      const contact = contactIdMap.get(contactId);
+      if (!contact) continue;
+      const existingAssignments = new Set(
+        (contact.assignedToHumanAgents || []).map((entry) =>
+          String(entry.humanAgentId)
+        )
+      );
+
+      const newAssignments = sanitizedHumanAgentIds
+        .filter((agentId) => !existingAssignments.has(String(agentId)))
+        .map((agentId) => ({
+          humanAgentId: agentId,
+          assignedAt: now,
+          assignedBy: req.clientId
+        }));
+
+      if (newAssignments.length === 0) continue;
+
+      assignmentOps.push({
+        updateOne: {
+          filter: {
+            _id: campaignHistory._id,
+            'contacts._id': contact._id
+          },
+          update: {
+            $push: {
+              'contacts.$.assignedToHumanAgents': { $each: newAssignments }
+            }
+          }
+        }
+      });
+    }
+
+    if (assignmentOps.length === 0) {
+      return res.json({
+        success: true,
+        message:
+          'Selected contacts are already assigned to the chosen human agents',
+        data: {
+          assignedContactsCount: 0,
+          assignedHumanAgentsCount: sanitizedHumanAgentIds.length,
+          humanAgents: humanAgents.map((agent) => ({
+            _id: agent._id,
+            humanAgentName: agent.humanAgentName,
+            email: agent.email,
+            role: agent.role
+          })),
+          assignedContacts: [],
+          transcriptRangeApplied: appliedTranscriptRange
+        }
+      });
+    }
+
+    console.log(`[${timestamp}] 📋 ASSIGNMENT: Executing ${assignmentOps.length} assignment operations`);
+    await CampaignHistory.bulkWrite(assignmentOps);
+    console.log(`[${timestamp}] ✅ ASSIGNMENT: Successfully assigned ${assignmentOps.length} contacts`);
+
+    const updatedHistory = await CampaignHistory.findOne({
+      campaignId: campaign._id,
+      runId
+    })
+      .populate(
+        'contacts.assignedToHumanAgents.humanAgentId',
+        'humanAgentName email role'
+      )
+      .lean();
+
+    const assignedContacts = (updatedHistory.contacts || []).filter((contact) =>
+      targetContactIds.includes(String(contact._id))
+    );
+
     res.json({
       success: true,
-      message: `Successfully assigned ${contactIds.length} contact(s) to ${humanAgentIds.length} human agent(s)`,
+      message: `Successfully assigned ${assignedContacts.length} contact(s) to ${sanitizedHumanAgentIds.length} human agent(s)`,
       data: {
-        assignedContactsCount: contactIds.length,
-        assignedHumanAgentsCount: humanAgentIds.length,
-        humanAgents: humanAgents.map(agent => ({
+        assignedContactsCount: assignedContacts.length,
+        assignedHumanAgentsCount: sanitizedHumanAgentIds.length,
+        humanAgents: humanAgents.map((agent) => ({
           _id: agent._id,
           humanAgentName: agent.humanAgentName,
           email: agent.email,
           role: agent.role
         })),
-        assignedContacts: assignedContacts.map(contact => ({
-          _id: contact._id,
-          documentId: contact.documentId,
-          number: contact.number,
-          name: contact.name,
-          leadStatus: contact.leadStatus,
-          status: contact.status,
-          assignedToHumanAgents: contact.assignedToHumanAgents
-        }))
+        assignedContacts: assignedContacts.map((contact) => {
+          const effectiveTranscriptCount =
+            (contact.documentId &&
+              transcriptCountsMap?.get(String(contact.documentId))) ??
+            contact.transcriptCount ??
+            0;
+          return {
+            _id: contact._id,
+            documentId: contact.documentId,
+            number: contact.number,
+            name: contact.name,
+            leadStatus: contact.leadStatus,
+            status: contact.status,
+            transcriptCount: effectiveTranscriptCount,
+            assignedToHumanAgents: contact.assignedToHumanAgents || []
+          };
+        }),
+        transcriptRangeApplied: appliedTranscriptRange
       }
     });
-    
   } catch (error) {
-    console.error('Error assigning campaign history contacts to human agents:', error);
+    console.error(
+      'Error assigning campaign history contacts to human agents:',
+      error
+    );
     res.status(500).json({
       success: false,
       error: 'Internal server error while assigning contacts'
