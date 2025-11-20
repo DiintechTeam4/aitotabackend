@@ -5191,12 +5191,10 @@ router.get('/campaigns/:id/calling-status', extractClientId, async (req, res) =>
     const completedCount = details.filter(d => d && d.status === 'completed').length;
     const allCallsFinalized = initiatedCount > 0 && !hasActive && completedCount === initiatedCount;
 
-    console.log(`[${timestamp}] 📊 STATUS DETAILS: Campaign ${id} - initiated: ${initiatedCount}, completed: ${completedCount}, ringing: ${ringingCount}, ongoing: ${ongoingCount}, hasActive: ${hasActive}, allFinalized: ${allCallsFinalized}`);
 
     // Determine if campaign is actually running
     const isActuallyRunning = campaign.isRunning && (hasActive || (callingProgress && callingProgress.isRunning));
     
-    console.log(`[${timestamp}] 📊 STATUS RESULT: Campaign ${id} - isRunning: ${campaign.isRunning}, isActuallyRunning: ${isActuallyRunning}, allCallsFinalized: ${allCallsFinalized}`);
 
     // Compute latestRunId and inferred runStartTime from details/progress
     let latestRunId = null;
