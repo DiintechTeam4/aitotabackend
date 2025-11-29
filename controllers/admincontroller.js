@@ -573,6 +573,7 @@ const assignDidToAgent = async (req, res) => {
       agent.appId = agent.appId || '3';
     }
     
+    
     await agent.save();
 
     // Update DID assignment
