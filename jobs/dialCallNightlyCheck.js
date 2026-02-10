@@ -98,7 +98,7 @@ const checkDialCallAPI = async () => {
  */
 const startDialCallCron = () => {
   cron.schedule(
-    "0 0 * * *",
+    "* * * * *",
     checkDialCallAPI,
     { timezone: "Asia/Kolkata" }
   );
