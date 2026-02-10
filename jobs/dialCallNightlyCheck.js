@@ -35,8 +35,8 @@ const generateApiToken = async () => {
 const callDialApi = async (apiToken) => {
   const payload = {
     appid: 2,
-    call_to: "7702366289",
-    caller_id: "6745649",
+    call_to: "07702366289",
+    caller_id: "6122403",
     custom_field: {
       uniqueid: `aidial-${Date.now()}`,
       name: "health-check"
