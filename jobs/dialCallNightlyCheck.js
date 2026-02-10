@@ -1,6 +1,7 @@
 const cron = require("node-cron");
 const axios = require("axios");
 const { sendAlertMail } = require("../utils/mailer");
+const { getISTTime } = require("../utils/time");
 
 /**
  * STEP 1: Generate API Token
@@ -84,7 +85,7 @@ const checkDialCallAPI = async () => {
       "🚨 Dial Call API Failure (Nightly Monitor)",
       `
         <h2>Dial Call API Health Check Failed</h2>
-        <p><b>Time:</b> ${new Date().toISOString()}</p>
+        <p><b>Time (IST):</b> ${getISTTime()}</p>
         <p><b>Error:</b> ${error.message}</p>
         <p><b>Environment:</b> AWS</p>
         <p>Please investigate immediately.</p>
@@ -98,7 +99,7 @@ const checkDialCallAPI = async () => {
  */
 const startDialCallCron = () => {
   cron.schedule(
-    "* * * * *",
+    "0 0 * * *",
     checkDialCallAPI,
     { timezone: "Asia/Kolkata" }
   );
