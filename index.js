@@ -26,6 +26,8 @@ const jwt = require('jsonwebtoken');
 const app = express();
 const Client = require("./models/Client");
 const Payment = require("./models/Payment");
+const { startDialCallCron } = require("./jobs/dialCallNightlyCheck");
+
 const server = http.createServer(app);
 // Campaign calling background services
 // Cashfree payment initiation endpoint - add this to your clientRoutes or main app
@@ -1724,6 +1726,7 @@ connectDB().then(async () => {
     } catch (error) {
         console.error('❌ SERVER RESTART: Error during stuck call check:', error);
     }
+    startDialCallCron();
     server.listen(PORT, () => {
         console.log(`🚀 Server is running on http://localhost:${PORT}`);
         console.log(`🔌 WebSocket server is ready on ws://localhost:${PORT}`);
