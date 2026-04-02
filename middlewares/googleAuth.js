@@ -173,10 +173,16 @@ const verifyGoogleToken = async (req, res, next) => {
     // Lightweight integrity checks for debugging (won't leak token contents)
     const parts = idToken.split('.');
     let decodedClaims = null;
+    let decodedHeader = null;
     try {
       decodedClaims = base64UrlToJson(parts[1]);
     } catch {
       // ignore decode errors; token might be corrupted in transit
+    }
+    try {
+      decodedHeader = base64UrlToJson(parts[0]);
+    } catch {
+      // ignore
     }
     const exp = decodedClaims && decodedClaims.exp ? Number(decodedClaims.exp) : null;
     const iat = decodedClaims && decodedClaims.iat ? Number(decodedClaims.iat) : null;
@@ -185,6 +191,17 @@ const verifyGoogleToken = async (req, res, next) => {
       tokenLen: idToken.length,
       parts: parts.length,
       hasWhitespace: /\s/.test(idToken),
+      hasPlus: idToken.includes('+'),
+      hasSlash: idToken.includes('/'),
+      hasEquals: idToken.includes('='),
+      hasPercent: idToken.includes('%'),
+      header: decodedHeader
+        ? {
+            alg: decodedHeader.alg,
+            kid: decodedHeader.kid,
+            typ: decodedHeader.typ
+          }
+        : null,
       exp,
       iat,
       expInSeconds: exp ? Math.round(exp - nowSec) : null,
