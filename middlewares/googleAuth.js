@@ -111,7 +111,16 @@ async function verifyGoogleIdToken(idToken, audience) {
           'Google verifyIdToken failed after retry; using tokeninfo fallback:',
           second?.message || second
         );
-        return verifyIdTokenViaGoogleTokeninfo(idToken, audience);
+        try {
+          return await verifyIdTokenViaGoogleTokeninfo(idToken, audience);
+        } catch (tokeninfoErr) {
+          // Log Google response to help distinguish: wrong token type vs audience/issuer mismatch vs corrupted token
+          console.error(
+            'Google tokeninfo fallback failed:',
+            tokeninfoErr?.response?.data || tokeninfoErr?.message || tokeninfoErr
+          );
+          throw second; // keep original signature failure as the root-cause
+        }
       }
     }
 
@@ -154,6 +163,12 @@ const verifyGoogleToken = async (req, res, next) => {
     }
 
     const idToken = normalizeGoogleIdToken(token);
+    // Lightweight integrity checks for debugging (won't leak token contents)
+    console.log('Google ID token integrity:', {
+      tokenLen: idToken.length,
+      parts: idToken.split('.').length,
+      hasWhitespace: /\s/.test(idToken)
+    });
     const ticket = await verifyGoogleIdToken(idToken, audience);
     const payload = ticket.getPayload();
 
