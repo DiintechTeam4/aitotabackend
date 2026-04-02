@@ -188,6 +188,7 @@ const verifyGoogleToken = async (req, res, next) => {
     const iat = decodedClaims && decodedClaims.iat ? Number(decodedClaims.iat) : null;
     const nowSec = Date.now() / 1000;
     const signature = parts[2] || '';
+    const expInSeconds = exp ? Math.round(exp - nowSec) : null;
     console.log('Google ID token integrity:', {
       tokenLen: idToken.length,
       parts: parts.length,
@@ -208,9 +209,19 @@ const verifyGoogleToken = async (req, res, next) => {
         : null,
       exp,
       iat,
-      expInSeconds: exp ? Math.round(exp - nowSec) : null,
+      expInSeconds,
       aud: decodedClaims?.aud ? String(decodedClaims.aud).slice(0, 40) : null
     });
+
+    // Fail fast with a clearer error when the token is already expired
+    // (prevents confusing "Invalid token signature" logs).
+    if (typeof expInSeconds === 'number' && expInSeconds < -30) {
+      return res.status(401).json({
+        success: false,
+        message: 'Google token expired',
+        expInSeconds
+      });
+    }
     const ticket = await verifyGoogleIdToken(idToken, audience);
     const payload = ticket.getPayload();
 
