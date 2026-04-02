@@ -41,6 +41,13 @@ function normalizeGoogleIdToken(raw) {
   return s;
 }
 
+function base64UrlToJson(segment) {
+  const b64 = segment.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+  const buf = Buffer.from(padded, 'base64');
+  return JSON.parse(buf.toString('utf8'));
+}
+
 /**
  * When local RSA verify fails, ask Google to validate the token (same trust model as fetching JWKS).
  * Set GOOGLE_DISABLE_TOKENINFO_FALLBACK=true to disable (library-only verification).
@@ -164,10 +171,24 @@ const verifyGoogleToken = async (req, res, next) => {
 
     const idToken = normalizeGoogleIdToken(token);
     // Lightweight integrity checks for debugging (won't leak token contents)
+    const parts = idToken.split('.');
+    let decodedClaims = null;
+    try {
+      decodedClaims = base64UrlToJson(parts[1]);
+    } catch {
+      // ignore decode errors; token might be corrupted in transit
+    }
+    const exp = decodedClaims && decodedClaims.exp ? Number(decodedClaims.exp) : null;
+    const iat = decodedClaims && decodedClaims.iat ? Number(decodedClaims.iat) : null;
+    const nowSec = Date.now() / 1000;
     console.log('Google ID token integrity:', {
       tokenLen: idToken.length,
-      parts: idToken.split('.').length,
-      hasWhitespace: /\s/.test(idToken)
+      parts: parts.length,
+      hasWhitespace: /\s/.test(idToken),
+      exp,
+      iat,
+      expInSeconds: exp ? Math.round(exp - nowSec) : null,
+      aud: decodedClaims?.aud ? String(decodedClaims.aud).slice(0, 40) : null
     });
     const ticket = await verifyGoogleIdToken(idToken, audience);
     const payload = ticket.getPayload();
