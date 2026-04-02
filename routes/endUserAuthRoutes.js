@@ -6,6 +6,7 @@ const {
   sendMobileOtp,
   verifyMobileOtp,
   completeProfile,
+  updateProfile,
   updateProfileImage,
   loginEmailPassword,
   requestForgotPassword,
