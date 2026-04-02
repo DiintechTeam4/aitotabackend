@@ -1,4 +1,5 @@
 const { OAuth2Client } = require('google-auth-library');
+const axios = require('axios');
 
 /**
  * All OAuth 2.0 client IDs that may appear as JWT `aud` for your app (web, Android, iOS).
@@ -22,10 +23,111 @@ function getGoogleTokenAudiences() {
   return [...new Set(list)];
 }
 
-// Client ID only affects some OAuth flows; verifyIdToken uses explicit audience below
-const googleClient = new OAuth2Client(
+/**
+ * Normalize client-sent ID token: trim, strip Bearer, ensure three JWT segments.
+ * Corrupted tokens (extra whitespace, line breaks, wrong encoding) often yield
+ * "Invalid token signature" from google-auth-library.
+ */
+function normalizeGoogleIdToken(raw) {
+  if (raw == null) return '';
+  let s = typeof raw === 'string' ? raw : String(raw);
+  s = s.trim();
+  s = s.replace(/^\s*Bearer\s+/i, '');
+  s = s.replace(/\s+/g, '');
+  const parts = s.split('.');
+  if (parts.length !== 3) {
+    throw new Error('ID token must have three segments (header.payload.signature)');
+  }
+  return s;
+}
+
+/**
+ * When local RSA verify fails, ask Google to validate the token (same trust model as fetching JWKS).
+ * Set GOOGLE_DISABLE_TOKENINFO_FALLBACK=true to disable (library-only verification).
+ */
+async function verifyIdTokenViaGoogleTokeninfo(idToken, allowedAudiences) {
+  const { data } = await axios.get('https://oauth2.googleapis.com/tokeninfo', {
+    params: { id_token: idToken },
+    timeout: 15000
+  });
+
+  if (data.error) {
+    throw new Error(data.error_description || String(data.error));
+  }
+
+  const rawAud = data.aud;
+  const audList = Array.isArray(rawAud) ? rawAud : rawAud != null ? [String(rawAud)] : [];
+  const audOk = audList.some((a) => allowedAudiences.includes(a));
+  if (!audOk) {
+    throw new Error('Wrong recipient, payload audience != requiredAudience');
+  }
+
+  const iss = data.iss || '';
+  if (iss !== 'https://accounts.google.com' && iss !== 'accounts.google.com') {
+    throw new Error('Invalid issuer');
+  }
+
+  if (data.exp != null) {
+    const exp = Number(data.exp);
+    if (Number.isFinite(exp) && Date.now() / 1000 > exp + 120) {
+      throw new Error('Token used too late');
+    }
+  }
+
+  return {
+    getPayload: () => ({
+      sub: data.sub,
+      email: data.email,
+      name: data.name,
+      picture: data.picture,
+      email_verified: data.email_verified === true || data.email_verified === 'true'
+    })
+  };
+}
+
+const googleClientSingleton = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_WEB_CLIENT_ID || process.env.GOOGLE_ANDROID_CLIENT_ID
 );
+
+async function verifyGoogleIdToken(idToken, audience) {
+  try {
+    return await googleClientSingleton.verifyIdToken({ idToken, audience });
+  } catch (first) {
+    const msg = first?.message || String(first);
+    const isSigOrCert =
+      /Invalid token signature/i.test(msg) ||
+      /No pem found for envelope/i.test(msg) ||
+      /Failed to retrieve verification certificates/i.test(msg);
+
+    if (isSigOrCert) {
+      try {
+        const fresh = new OAuth2Client(audience[0]);
+        return await fresh.verifyIdToken({ idToken, audience });
+      } catch (second) {
+        if (process.env.GOOGLE_DISABLE_TOKENINFO_FALLBACK === 'true') {
+          throw second;
+        }
+        console.warn(
+          'Google verifyIdToken failed after retry; using tokeninfo fallback:',
+          second?.message || second
+        );
+        return verifyIdTokenViaGoogleTokeninfo(idToken, audience);
+      }
+    }
+
+    if (process.env.GOOGLE_DISABLE_TOKENINFO_FALLBACK === 'true') {
+      throw first;
+    }
+    if (/Wrong recipient|Invalid issuer|Token used too late|too early/i.test(msg)) {
+      throw first;
+    }
+    try {
+      return await verifyIdTokenViaGoogleTokeninfo(idToken, audience);
+    } catch {
+      throw first;
+    }
+  }
+}
 
 /**
  * Middleware to verify Google ID token
@@ -51,11 +153,8 @@ const verifyGoogleToken = async (req, res, next) => {
       });
     }
 
-    const ticket = await googleClient.verifyIdToken({
-      idToken: token,
-      audience
-    });
-
+    const idToken = normalizeGoogleIdToken(token);
+    const ticket = await verifyGoogleIdToken(idToken, audience);
     const payload = ticket.getPayload();
 
     req.googleUser = {
@@ -64,7 +163,7 @@ const verifyGoogleToken = async (req, res, next) => {
       name: payload.name,
       picture: payload.picture,
       emailVerified: payload.email_verified,
-      googleToken: token
+      googleToken: idToken
     };
 
     next();
@@ -73,7 +172,7 @@ const verifyGoogleToken = async (req, res, next) => {
     console.error('Google token verification error:', reason);
     if (process.env.NODE_ENV === 'development') {
       console.error(
-        'Hint: ID token `aud` must match one of GOOGLE_CLIENT_ID / GOOGLE_WEB_CLIENT_ID / GOOGLE_ANDROID_CLIENT_ID. Web tokens use the Web OAuth client ID.'
+        'Hint: Send the ID token (JWT from Google), not the OAuth access_token. Ensure `aud` matches a configured OAuth client ID.'
       );
     }
     return res.status(401).json({
@@ -84,7 +183,8 @@ const verifyGoogleToken = async (req, res, next) => {
   }
 };
 
-
 module.exports = {
   verifyGoogleToken,
+  normalizeGoogleIdToken,
+  getGoogleTokenAudiences
 };
