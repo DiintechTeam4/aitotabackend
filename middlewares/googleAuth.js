@@ -187,6 +187,7 @@ const verifyGoogleToken = async (req, res, next) => {
     const exp = decodedClaims && decodedClaims.exp ? Number(decodedClaims.exp) : null;
     const iat = decodedClaims && decodedClaims.iat ? Number(decodedClaims.iat) : null;
     const nowSec = Date.now() / 1000;
+    const signature = parts[2] || '';
     console.log('Google ID token integrity:', {
       tokenLen: idToken.length,
       parts: parts.length,
@@ -195,6 +196,9 @@ const verifyGoogleToken = async (req, res, next) => {
       hasSlash: idToken.includes('/'),
       hasEquals: idToken.includes('='),
       hasPercent: idToken.includes('%'),
+      signatureLen: signature.length,
+      signatureStart: signature.slice(0, 12),
+      signatureEnd: signature.slice(-12),
       header: decodedHeader
         ? {
             alg: decodedHeader.alg,
