@@ -172,7 +172,10 @@ function validateProfilePayload(profile, mergedFields) {
 }
 
 function isValidClientId(clientId) {
-  return mongoose.Types.ObjectId.isValid(String(clientId));
+  // In this project, "clientId" is expected to be Client.userId (e.g. "CLI6474...").
+  // We validate as a non-empty string; actual existence is checked in DB by controller/admin APIs.
+  const s = String(clientId || '').trim();
+  return s.length > 0;
 }
 
 module.exports = {

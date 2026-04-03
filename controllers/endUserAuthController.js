@@ -147,7 +147,9 @@ function issueTokenForEndUser(user) {
 
 async function getMergedFieldsForClientId(clientId) {
   if (!isValidClientId(clientId)) return null;
-  const client = await Client.findById(clientId).select('endUserProfileFields').lean();
+  const client = await Client.findOne({ userId: clientId })
+    .select('endUserProfileFields userId businessName name')
+    .lean();
   if (!client) return null;
   return mergeFieldsWithLocked(client.endUserProfileFields);
 }
@@ -158,14 +160,14 @@ async function getPublicProfileFields(req, res) {
     if (!isValidClientId(clientId)) {
       return res.status(400).json({ success: false, message: 'Invalid clientId' });
     }
-    const client = await Client.findById(clientId).select('_id businessName name').lean();
+    const client = await Client.findOne({ userId: clientId }).select('_id userId businessName name').lean();
     if (!client) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
     const fields = await getMergedFieldsForClientId(clientId);
     return res.json({
       success: true,
-      clientId: String(client._id),
+      clientId: String(client.userId),
       clientName: client.businessName || client.name || '',
       fields
     });
@@ -196,7 +198,7 @@ async function registerStep1(req, res) {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     }
 
-    const clientExists = await Client.findById(clientId).select('_id').lean();
+    const clientExists = await Client.findOne({ userId: clientId }).select('userId').lean();
     if (!clientExists) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }

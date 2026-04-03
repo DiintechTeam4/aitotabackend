@@ -1143,8 +1143,9 @@ module.exports.getClientEndUserProfileFields = async (req, res) => {
     if (!isValidClientId(clientId)) {
       return res.status(400).json({ success: false, message: "Invalid clientId" });
     }
-    const client = await Client.findById(clientId)
-      .select("endUserProfileFields businessName name email")
+    // Here clientId is expected to be Client.userId (e.g. CLI...)
+    const client = await Client.findOne({ userId: clientId })
+      .select("endUserProfileFields businessName name email userId")
       .lean();
     if (!client) {
       return res.status(404).json({ success: false, message: "Client not found" });
@@ -1153,7 +1154,7 @@ module.exports.getClientEndUserProfileFields = async (req, res) => {
     return res.json({
       success: true,
       data: {
-        clientId: String(client._id),
+        clientId: String(client.userId),
         clientLabel: client.businessName || client.name || client.email || "",
         fields,
       },
@@ -1172,11 +1173,12 @@ module.exports.updateClientEndUserProfileFields = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid clientId" });
     }
     const normalized = normalizeFieldsForSave(fields);
-    const client = await Client.findByIdAndUpdate(
-      clientId,
+    // Here clientId is expected to be Client.userId (e.g. CLI...)
+    const client = await Client.findOneAndUpdate(
+      { userId: clientId },
       { $set: { endUserProfileFields: normalized } },
       { new: true, runValidators: true }
-    ).select("endUserProfileFields");
+    ).select("endUserProfileFields userId");
     if (!client) {
       return res.status(404).json({ success: false, message: "Client not found" });
     }

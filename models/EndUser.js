@@ -3,8 +3,9 @@ const mongoose = require('mongoose');
 const EndUserSchema = new mongoose.Schema(
   {
     clientId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Client',
+      // Store Client.userId (e.g. "CLI6474...") as string.
+      // This keeps "client.userId only everywhere" consistent across all user APIs.
+      type: String,
       required: true,
       index: true
     },
