@@ -1205,6 +1205,7 @@ app.use('/api/v1/telegram', telegrambotRoutes);
 app.use('/api/v1/mobile', mobileCallLogRoutes);
 app.use('/api/v1/user-info', userInfoRoutes);
 app.use('/api/v1/user-auth', endUserAuthRoutes);
+console.log('endUserAuthRoutes', endUserAuthRoutes);
 
 // const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
 // app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);
