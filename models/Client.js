@@ -121,6 +121,24 @@ const ClientSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  /** Configurable end-user (app user) profile fields for this client; email & mobileNo are always enforced in code */
+  endUserProfileFields: {
+    type: [
+      {
+        key: { type: String, required: true, trim: true },
+        label: { type: String, default: "" },
+        required: { type: Boolean, default: false },
+        locked: { type: Boolean, default: false },
+        fieldType: {
+          type: String,
+          enum: ["string", "textarea", "number"],
+          default: "string",
+        },
+        order: { type: Number, default: 0 },
+      },
+    ],
+    default: [],
+  },
   createdAt: {
     type: Date,
     default: Date.now,

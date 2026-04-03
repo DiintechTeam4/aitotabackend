@@ -1,8 +1,14 @@
 const EndUser = require('../models/EndUser');
+const Client = require('../models/Client');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const crypto = require('crypto');
+const {
+  mergeFieldsWithLocked,
+  validateProfilePayload,
+  isValidClientId
+} = require('../utils/endUserProfileFields');
 
 function getOtpSalt() {
   return (
@@ -128,10 +134,45 @@ function issueTokenForEndUser(user) {
   if (!jwtSecret) throw new Error('JWT_SECRET not configured');
 
   return jwt.sign(
-    { id: user._id, userType: 'endUser', email: user.email },
+    {
+      id: user._id,
+      userType: 'endUser',
+      email: user.email,
+      clientId: String(user.clientId)
+    },
     jwtSecret,
     { expiresIn: '7d' }
   );
+}
+
+async function getMergedFieldsForClientId(clientId) {
+  if (!isValidClientId(clientId)) return null;
+  const client = await Client.findById(clientId).select('endUserProfileFields').lean();
+  if (!client) return null;
+  return mergeFieldsWithLocked(client.endUserProfileFields);
+}
+
+async function getPublicProfileFields(req, res) {
+  try {
+    const { clientId } = req.params || {};
+    if (!isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Invalid clientId' });
+    }
+    const client = await Client.findById(clientId).select('_id businessName name').lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    const fields = await getMergedFieldsForClientId(clientId);
+    return res.json({
+      success: true,
+      clientId: String(client._id),
+      clientName: client.businessName || client.name || '',
+      fields
+    });
+  } catch (e) {
+    console.error('getPublicProfileFields:', e?.message || e);
+    return res.status(500).json({ success: false, message: 'Failed to load profile fields' });
+  }
 }
 
 function getNextStep(user) {
@@ -143,8 +184,11 @@ function getNextStep(user) {
 
 async function registerStep1(req, res) {
   try {
-    const { email, password } = req.body || {};
+    const { clientId, email, password } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !password) {
       return res.status(400).json({ success: false, message: 'email and password are required' });
     }
@@ -152,7 +196,12 @@ async function registerStep1(req, res) {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     }
 
-    const existing = await EndUser.findOne({ email: normEmail }).lean();
+    const clientExists = await Client.findById(clientId).select('_id').lean();
+    if (!clientExists) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const existing = await EndUser.findOne({ clientId, email: normEmail }).lean();
     if (existing) {
       const ok = await bcrypt.compare(String(password), existing.passwordHash);
       if (!ok) {
@@ -167,6 +216,7 @@ async function registerStep1(req, res) {
         nextStep: getNextStep(existing),
         user: {
           id: existing._id,
+          clientId: existing.clientId,
           email: existing.email,
           emailVerified: existing.emailVerified,
           mobileVerified: existing.mobileVerified,
@@ -181,6 +231,7 @@ async function registerStep1(req, res) {
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     const user = await EndUser.create({
+      clientId,
       email: normEmail,
       passwordHash,
       emailVerified: false,
@@ -199,6 +250,7 @@ async function registerStep1(req, res) {
     return res.status(201).json({
       success: true,
       message: 'Email OTP sent',
+      clientId: String(clientId),
       userId: user._id,
       emailVerified: false,
       emailOtpExpiresAt: expiresAt.toISOString()
@@ -211,13 +263,16 @@ async function registerStep1(req, res) {
 
 async function verifyEmailOtp(req, res) {
   try {
-    const { email, otp } = req.body || {};
+    const { clientId, email, otp } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !otp) {
       return res.status(400).json({ success: false, message: 'email and otp are required' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.emailOtpHash || !user.emailOtpExpiresAt) {
       return res.status(400).json({ success: false, message: 'No email OTP pending' });
@@ -243,13 +298,16 @@ async function verifyEmailOtp(req, res) {
 
 async function sendMobileOtp(req, res) {
   try {
-    const { email, mobileNumber } = req.body || {};
+    const { clientId, email, mobileNumber } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !mobileNumber) {
       return res.status(400).json({ success: false, message: 'email and mobileNumber are required' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.emailVerified) {
       return res.status(400).json({ success: false, message: 'Verify email first' });
@@ -283,13 +341,16 @@ async function sendMobileOtp(req, res) {
 
 async function verifyMobileOtp(req, res) {
   try {
-    const { email, otp } = req.body || {};
+    const { clientId, email, otp } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !otp) {
       return res.status(400).json({ success: false, message: 'email and otp are required' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.mobileOtpHash || !user.mobileOtpExpiresAt) {
       return res.status(400).json({ success: false, message: 'No mobile OTP pending' });
@@ -315,18 +376,31 @@ async function verifyMobileOtp(req, res) {
 
 async function completeProfile(req, res) {
   try {
-    const { email, profile, profileImageUrl, profileImageKey } = req.body || {};
+    const { clientId, email, profile, profileImageUrl, profileImageKey } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !profile || typeof profile !== 'object') {
       return res.status(400).json({ success: false, message: 'email and profile object are required' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const mergedFields = await getMergedFieldsForClientId(clientId);
+    if (!mergedFields) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const { errors, sanitized } = validateProfilePayload(profile, mergedFields);
+    if (errors.length) {
+      return res.status(400).json({ success: false, message: errors.join('; ') });
+    }
+
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.emailVerified) return res.status(400).json({ success: false, message: 'Verify email first' });
     if (!user.mobileVerified) return res.status(400).json({ success: false, message: 'Verify mobile first' });
 
-    user.profile = profile;
+    user.profile = sanitized;
     if (profileImageUrl) user.profileImageUrl = profileImageUrl;
     if (profileImageKey) user.profileImageKey = profileImageKey;
     user.profileCompleted = true;
@@ -341,6 +415,7 @@ async function completeProfile(req, res) {
       nextStep: 'completed',
       user: {
         id: user._id,
+        clientId: user.clientId,
         email: user.email,
         mobileNumber: user.mobileNumber,
         emailVerified: user.emailVerified,
@@ -358,19 +433,33 @@ async function completeProfile(req, res) {
 
 async function updateProfile(req, res) {
   try {
-    const { email, profile } = req.body || {};
+    const { clientId, email, profile } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !profile || typeof profile !== 'object') {
       return res.status(400).json({ success: false, message: 'email and profile are required' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const mergedFields = await getMergedFieldsForClientId(clientId);
+    if (!mergedFields) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.emailVerified || !user.mobileVerified) {
       return res.status(400).json({ success: false, message: 'Verify email and mobile first' });
     }
 
-    user.profile = profile;
+    const prev = user.profile && typeof user.profile === 'object' ? user.profile : {};
+    const { errors, sanitized } = validateProfilePayload({ ...prev, ...profile }, mergedFields);
+    if (errors.length) {
+      return res.status(400).json({ success: false, message: errors.join('; ') });
+    }
+
+    user.profile = sanitized;
     user.profileCompleted = true;
     await user.save();
 
@@ -382,6 +471,7 @@ async function updateProfile(req, res) {
       token,
       user: {
         id: user._id,
+        clientId: user.clientId,
         email: user.email,
         mobileNumber: user.mobileNumber,
         profileCompleted: user.profileCompleted,
@@ -396,13 +486,16 @@ async function updateProfile(req, res) {
 
 async function updateProfileImage(req, res) {
   try {
-    const { email, profileImageUrl, profileImageKey } = req.body || {};
+    const { clientId, email, profileImageUrl, profileImageKey } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail) {
       return res.status(400).json({ success: false, message: 'email is required' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     if (profileImageUrl) user.profileImageUrl = profileImageUrl;
@@ -427,14 +520,17 @@ async function updateProfileImage(req, res) {
 
 async function loginEmailPassword(req, res) {
   try {
-    const { email, password } = req.body || {};
+    const { clientId, email, password } = req.body || {};
     const normEmail = normalizeEmail(email);
 
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !password) {
       return res.status(400).json({ success: false, message: 'email and password are required' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(401).json({ success: false, message: 'Invalid email or password' });
 
     const ok = await bcrypt.compare(String(password), user.passwordHash);
@@ -449,6 +545,7 @@ async function loginEmailPassword(req, res) {
       nextStep: getNextStep(user),
       user: {
         id: user._id,
+        clientId: user.clientId,
         email: user.email,
         mobileNumber: user.mobileNumber,
         emailVerified: user.emailVerified,
@@ -465,11 +562,14 @@ async function loginEmailPassword(req, res) {
 
 async function requestForgotPassword(req, res) {
   try {
-    const { email } = req.body || {};
+    const { clientId, email } = req.body || {};
     const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail) return res.status(400).json({ success: false, message: 'email is required' });
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     // Don't reveal existence
     if (!user) {
       return res.json({ success: true, message: 'If the email exists, an OTP will be sent.' });
@@ -497,9 +597,12 @@ async function requestForgotPassword(req, res) {
 
 async function resetForgotPassword(req, res) {
   try {
-    const { email, otp, newPassword } = req.body || {};
+    const { clientId, email, otp, newPassword } = req.body || {};
     const normEmail = normalizeEmail(email);
 
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
     if (!normEmail || !otp || !newPassword) {
       return res.status(400).json({ success: false, message: 'email, otp and newPassword are required' });
     }
@@ -507,7 +610,7 @@ async function resetForgotPassword(req, res) {
       return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
     }
 
-    const user = await EndUser.findOne({ email: normEmail });
+    const user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.resetOtpHash || !user.resetOtpExpiresAt) {
       return res.status(400).json({ success: false, message: 'No reset OTP pending' });
@@ -543,6 +646,7 @@ module.exports = {
   updateProfileImage,
   loginEmailPassword,
   requestForgotPassword,
-  resetForgotPassword
+  resetForgotPassword,
+  getPublicProfileFields
 };
 

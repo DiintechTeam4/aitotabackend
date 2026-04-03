@@ -2,12 +2,16 @@ const mongoose = require('mongoose');
 
 const EndUserSchema = new mongoose.Schema(
   {
+    clientId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Client',
+      required: true,
+      index: true
+    },
     email: {
       type: String,
       required: true,
-      unique: true,
       lowercase: true,
-      index: true,
       trim: true
     },
     passwordHash: {
@@ -44,6 +48,8 @@ const EndUserSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+EndUserSchema.index({ clientId: 1, email: 1 }, { unique: true });
 
 module.exports = mongoose.model('EndUser', EndUserSchema);
 

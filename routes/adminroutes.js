@@ -13,6 +13,16 @@ router.post("/register", registerAdmin);
 
 // Protected routes
 router.get("/getclients", verifyAdminToken, getClients);
+router.get(
+  "/clients/:clientId/end-user-profile-fields",
+  verifyAdminToken,
+  adminCtrl.getClientEndUserProfileFields
+);
+router.put(
+  "/clients/:clientId/end-user-profile-fields",
+  verifyAdminToken,
+  adminCtrl.updateClientEndUserProfileFields
+);
 router.get("/getclient/:id", verifyAdminToken, getClientById);
 router.delete("/deleteclient/:id", verifyAdminToken, deleteclient);
 router.get("/get-client-token/:clientId", verifyAdminToken, getClientToken);

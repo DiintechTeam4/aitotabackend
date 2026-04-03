@@ -10,8 +10,12 @@ const {
   updateProfileImage,
   loginEmailPassword,
   requestForgotPassword,
-  resetForgotPassword
+  resetForgotPassword,
+  getPublicProfileFields
 } = require('../controllers/endUserAuthController');
+
+// Public: profile field schema for a client (for registration UI)
+router.get('/client/:clientId/end-user-profile-fields', getPublicProfileFields);
 
 // Step 1: email + password -> send email OTP
 router.post('/register/step1', registerStep1);

@@ -7,6 +7,11 @@ const Agent = require("../models/Agent");
 const { getobject } = require("../utils/s3");
 const DidNumber = require("../models/DidNumber");
 const Campaign = require("../models/Campaign");
+const {
+  mergeFieldsWithLocked,
+  normalizeFieldsForSave,
+  isValidClientId
+} = require("../utils/endUserProfileFields");
 
 
 // Generate JWT Token for admin
@@ -1128,6 +1133,59 @@ module.exports.updateSystemPrompt = async (req, res) => {
     if (!updated) return res.status(404).json({ success: false, message: 'SystemPrompt not found' });
     res.json({ success: true, data: updated });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.getClientEndUserProfileFields = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    if (!isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: "Invalid clientId" });
+    }
+    const client = await Client.findById(clientId)
+      .select("endUserProfileFields businessName name email")
+      .lean();
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+    const fields = mergeFieldsWithLocked(client.endUserProfileFields);
+    return res.json({
+      success: true,
+      data: {
+        clientId: String(client._id),
+        clientLabel: client.businessName || client.name || client.email || "",
+        fields,
+      },
+    });
+  } catch (error) {
+    console.error("[getClientEndUserProfileFields]", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports.updateClientEndUserProfileFields = async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { fields } = req.body || {};
+    if (!isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: "Invalid clientId" });
+    }
+    const normalized = normalizeFieldsForSave(fields);
+    const client = await Client.findByIdAndUpdate(
+      clientId,
+      { $set: { endUserProfileFields: normalized } },
+      { new: true, runValidators: true }
+    ).select("endUserProfileFields");
+    if (!client) {
+      return res.status(404).json({ success: false, message: "Client not found" });
+    }
+    return res.json({
+      success: true,
+      data: { fields: mergeFieldsWithLocked(client.endUserProfileFields) },
+    });
+  } catch (error) {
+    console.error("[updateClientEndUserProfileFields]", error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
