@@ -19,6 +19,7 @@ const AgentSettings = require('../models/AgentSettings');
 const Group = require('../models/Group');
 const Campaign = require('../models/Campaign');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 const Business = require('../models/BusinessInfo');
 const Contacts = require('../models/Contacts');
 const MyBusiness = require('../models/MyBussiness');
@@ -80,6 +81,48 @@ const extractClientId = (req, res, next) => {
     return res.status(401).json({ error: 'Token expired or invalid' });
   }
 }
+
+/** Profile POST/PUT: Bearer client JWT (optional) or email + password in body (multipart fields). */
+const extractClientIdForProfile = async (req, res, next) => {
+  try {
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      const token = req.headers.authorization.split(' ')[1];
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.userType === 'client' && decoded.id) {
+          req.clientId = decoded.id;
+          return next();
+        }
+        return res.status(401).json({ success: false, error: 'Invalid token: userType must be client' });
+      } catch (tokenError) {
+        return res.status(401).json({ success: false, error: 'Token expired or invalid' });
+      }
+    }
+
+    const email = req.body?.email != null ? String(req.body.email).trim() : '';
+    const password = req.body?.password != null ? String(req.body.password) : '';
+    if (!email || !password) {
+      return res.status(401).json({
+        success: false,
+        message: 'Send Authorization: Bearer <client JWT>, or include email and password in the form body'
+      });
+    }
+
+    const client = await Client.findOne({ email });
+    if (!client) {
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+    }
+    const ok = await bcrypt.compare(password, client.password);
+    if (!ok) {
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+    }
+    req.clientId = String(client._id);
+    return next();
+  } catch (error) {
+    console.error('Error in extractClientIdForProfile middleware:', error);
+    return res.status(500).json({ success: false, message: 'Authentication failed' });
+  }
+};
 
 // Get or create client
 router.get("/", extractClientId, async (req, res) => {
@@ -244,9 +287,9 @@ router.post('/register',verifyAdminTokenOnlyForRegister, registerClient);
 
 router.get('/profile', authMiddleware, getClientProfile);
 
-// Client app: create (first-time) / update business profile — Bearer client JWT + multipart optional
-router.post('/profile', businessLogoUploadMiddleware, extractClientId, createClientProfile);
-router.put('/profile', businessLogoUploadMiddleware, extractClientId, updateClientProfile);
+// Client app: create (first-time) / update business profile — Bearer JWT or email+password in body; multipart optional
+router.post('/profile', businessLogoUploadMiddleware, extractClientIdForProfile, createClientProfile);
+router.put('/profile', businessLogoUploadMiddleware, extractClientIdForProfile, updateClientProfile);
 
 // Knowledge Base uploads and file access
 router.get('/upload-url-knowledge-base', getUploadUrlKnowledgeBase);
