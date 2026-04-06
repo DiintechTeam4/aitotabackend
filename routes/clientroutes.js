@@ -8,7 +8,7 @@ const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
 const { generateClientApiKey, getActiveClientApiKey, copyActiveClientApiKey } = require("../controllers/clientApiKeyController")
-const { getobject, getobjectFor, getobjectForWithRegion } = require('../utils/s3')
+const { getobject, getobjectFor, getobjectForWithRegion, getObjectForAudioProxy } = require('../utils/s3')
 const Agent = require('../models/Agent');
 const HumanAgent = require('../models/HumanAgent');
 const VoiceService = require('../services/voiceService');
@@ -46,7 +46,6 @@ const {
   resetCircuitBreakers,
   getSafeLimits
 } = require('../services/campaignCallingService');
-const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
 const multer = require("multer");
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -330,32 +329,7 @@ router.get('/campaigns/:id/call-audio', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Recording not found' });
     }
 
-    let bucket = process.env.AWS_BUCKET_NAME;
-    let key;
-    let region = process.env.AWS_REGION;
-    try {
-      const u = new URL(latest.audioUrl);
-      key = decodeURIComponent(u.pathname.replace(/^\//, ''));
-      const host = String(u.hostname || '');
-      if (host.includes('.s3')) {
-        bucket = host.split('.s3')[0];
-        if (host.includes('.s3.')) {
-          region = host.split('.s3.')[1].split('.')[0] || region;
-        }
-      }
-    } catch (_) {
-      key = latest.audioUrl; // treat as raw key
-    }
-
-    const client = new S3Client({
-      region: region || process.env.AWS_REGION,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      },
-    });
-    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-    const s3Resp = await client.send(command);
+    const s3Resp = await getObjectForAudioProxy(latest.audioUrl);
 
     // Default headers for audio
     res.setHeader('Content-Type', s3Resp.ContentType || 'audio/wav');
@@ -429,32 +403,7 @@ router.get('/agents/:id/call-audio', async (req, res) => {
       }
     }
 
-    let bucket = process.env.AWS_BUCKET_NAME;
-    let key;
-    let region = process.env.AWS_REGION;
-    try {
-      const u = new URL(callLog.audioUrl);
-      key = decodeURIComponent(u.pathname.replace(/^\//, ''));
-      const host = String(u.hostname || '');
-      if (host.includes('.s3')) {
-        bucket = host.split('.s3')[0];
-        if (host.includes('.s3.')) {
-          region = host.split('.s3.')[1].split('.')[0] || region;
-        }
-      }
-    } catch (_) {
-      key = callLog.audioUrl; // treat as raw key
-    }
-
-    const client = new S3Client({
-      region: region || process.env.AWS_REGION,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-      },
-    });
-    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-    const s3Resp = await client.send(command);
+    const s3Resp = await getObjectForAudioProxy(callLog.audioUrl);
 
     // Default headers for audio
     res.setHeader('Content-Type', s3Resp.ContentType || 'audio/wav');
