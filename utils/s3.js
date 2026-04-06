@@ -111,6 +111,18 @@ const deleteObject = async (key) => {
   }
 };
 
+/** Server-side upload (e.g. multipart form) — same bucket as presigned flows */
+const uploadBuffer = async (key, buffer, contentType) => {
+  const command = new PutObjectCommand({
+    Bucket: process.env.AWS_BUCKET_NAME,
+    Key: key,
+    Body: buffer,
+    ContentType: contentType || 'application/octet-stream'
+  });
+  await s3Client.send(command);
+  return key;
+};
+
 module.exports = {
   s3Client,
   putobject,
@@ -118,4 +130,5 @@ module.exports = {
   getobjectFor,
   getobjectForWithRegion,
   deleteObject,
+  uploadBuffer,
 };

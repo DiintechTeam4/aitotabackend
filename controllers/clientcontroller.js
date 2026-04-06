@@ -2,7 +2,7 @@ const Client = require("../models/Client");
 const HumanAgent = require("../models/HumanAgent");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { getobject, putobject } = require("../utils/s3");
+const { getobject, putobject, uploadBuffer } = require("../utils/s3");
 const KnowledgeBase = require("../models/KnowledgeBase");
 const axios = require('axios');
 const { OAuth2Client } = require("google-auth-library");
@@ -463,6 +463,147 @@ const getContentUrl = async (item) => {
       
     default:
       return null;
+  }
+};
+
+function assignClientFieldIfPresent(client, field, value) {
+  if (value === undefined || value === null) return;
+  const s = String(value).trim();
+  if (s === '') return;
+  client[field] = s;
+}
+
+async function applyClientProfileFromRequest(client, req) {
+  const b = req.body || {};
+  assignClientFieldIfPresent(client, 'name', b.name);
+  assignClientFieldIfPresent(client, 'businessName', b.businessName);
+  assignClientFieldIfPresent(client, 'mobileNo', b.mobileNo);
+  assignClientFieldIfPresent(client, 'address', b.address);
+  assignClientFieldIfPresent(client, 'city', b.city);
+  assignClientFieldIfPresent(client, 'pincode', b.pincode);
+  assignClientFieldIfPresent(client, 'websiteUrl', b.websiteUrl);
+  assignClientFieldIfPresent(client, 'gstNo', b.gstNo);
+  assignClientFieldIfPresent(client, 'panNo', b.panNo);
+
+  if (req.file && req.file.buffer && req.file.buffer.length) {
+    const safeName = String(req.file.originalname || 'logo')
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .slice(0, 120);
+    const key = `businessLogo/${Date.now()}_${safeName}`;
+    await uploadBuffer(key, req.file.buffer, req.file.mimetype || 'image/jpeg');
+    client.businessLogoKey = key;
+    try {
+      client.businessLogoUrl = await getobject(key);
+    } catch (e) {
+      console.error('applyClientProfileFromRequest getobject:', e?.message || e);
+    }
+  } else if (b.businessLogoKey && String(b.businessLogoKey).trim()) {
+    client.businessLogoKey = String(b.businessLogoKey).trim();
+    try {
+      client.businessLogoUrl = await getobject(client.businessLogoKey);
+    } catch (e) {
+      console.error('applyClientProfileFromRequest getobject key:', e?.message || e);
+    }
+  }
+}
+
+/**
+ * First-time profile completion from the client app (Bearer client token).
+ * Use multipart/form-data to upload businessLogo, or send businessLogoKey in body/JSON.
+ */
+const createClientProfile = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    if (client.isprofileCompleted) {
+      return res.status(400).json({
+        success: false,
+        message: 'Profile already completed. Use PUT /api/v1/client/profile to update.'
+      });
+    }
+
+    await applyClientProfileFromRequest(client, req);
+
+    if (!client.googleId) {
+      const missing = [];
+      if (!client.name) missing.push('name');
+      if (!client.businessName) missing.push('businessName');
+      if (!client.mobileNo) missing.push('mobileNo');
+      if (!client.address) missing.push('address');
+      if (!client.city) missing.push('city');
+      if (!client.pincode) missing.push('pincode');
+      if (!client.gstNo) missing.push('gstNo');
+      if (!client.panNo) missing.push('panNo');
+      if (!client.businessLogoKey) missing.push('businessLogo or businessLogoKey');
+      if (missing.length) {
+        return res.status(400).json({
+          success: false,
+          message: `Missing required fields: ${missing.join(', ')}`
+        });
+      }
+    }
+
+    client.isprofileCompleted = true;
+    await client.save();
+
+    const fresh = await Client.findById(client._id).select('-password').lean();
+    let businessLogoUrl = fresh.businessLogoUrl;
+    if (fresh.businessLogoKey && !businessLogoUrl) {
+      try {
+        businessLogoUrl = await getobject(fresh.businessLogoKey);
+      } catch (_) {}
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: 'Profile created',
+      data: { ...fresh, businessLogoUrl }
+    });
+  } catch (error) {
+    console.error('createClientProfile error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to create profile'
+    });
+  }
+};
+
+/**
+ * Update profile from the client app (Bearer client token). Partial updates allowed.
+ */
+const updateClientProfile = async (req, res) => {
+  try {
+    const clientId = req.clientId;
+    const client = await Client.findById(clientId);
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    await applyClientProfileFromRequest(client, req);
+    await client.save();
+
+    const fresh = await Client.findById(client._id).select('-password').lean();
+    let businessLogoUrl = fresh.businessLogoUrl;
+    if (fresh.businessLogoKey) {
+      try {
+        businessLogoUrl = await getobject(fresh.businessLogoKey);
+      } catch (_) {}
+    }
+
+    return res.json({
+      success: true,
+      message: 'Profile updated',
+      data: { ...fresh, businessLogoUrl }
+    });
+  } catch (error) {
+    console.error('updateClientProfile error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to update profile'
+    });
   }
 };
 
@@ -2448,6 +2589,8 @@ module.exports = {
   loginClient, 
   googleLogin,
   registerClient,
+  createClientProfile,
+  updateClientProfile,
   getClientProfile,
   getHumanAgents,
   createHumanAgent,

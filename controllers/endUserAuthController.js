@@ -1,5 +1,6 @@
 const EndUser = require('../models/EndUser');
 const Client = require('../models/Client');
+const { getobject, uploadBuffer } = require('../utils/s3');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
@@ -184,6 +185,234 @@ function getNextStep(user) {
   return 'completed';
 }
 
+function messageForNextStep(nextStep) {
+  switch (nextStep) {
+    case 'step1_verify_email_otp':
+      return 'Verify your email using the OTP sent to your inbox.';
+    case 'step2_send_mobile_otp':
+      return 'Email verified. Continue with mobile number and WhatsApp OTP.';
+    case 'step3_complete_profile':
+      return 'Mobile verified. Complete your profile details.';
+    case 'completed':
+      return 'Registration complete.';
+    default:
+      return 'Continue registration.';
+  }
+}
+
+async function getTenantClientByUserId(clientIdStr) {
+  if (!isValidClientId(clientIdStr)) return null;
+  return Client.findOne({ userId: clientIdStr })
+    .select('isApproved userId email businessName name')
+    .lean();
+}
+
+/**
+ * End-user JWT is only issued when the tenant Client is admin-approved (`isApproved`).
+ */
+function respondClientNotApproved(res) {
+  return res.status(403).json({
+    success: false,
+    code: 'CLIENT_NOT_APPROVED',
+    message:
+      'This partner account is pending admin approval. You cannot log in until it is approved.',
+    clientApproved: false
+  });
+}
+
+/**
+ * Email-only check: login + token if user finished all steps and tenant is approved;
+ * otherwise return registration progress (no password).
+ */
+async function checkEmailAccess(req, res) {
+  try {
+    const { clientId, email } = req.body || {};
+    const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
+    if (!normEmail) {
+      return res.status(400).json({ success: false, message: 'email is required' });
+    }
+
+    const tenant = await getTenantClientByUserId(clientId);
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    if (!tenant.isApproved) {
+      return respondClientNotApproved(res);
+    }
+
+    const user = await EndUser.findOne({ clientId, email: normEmail }).lean();
+    if (!user) {
+      return res.json({
+        success: true,
+        action: 'not_registered',
+        clientApproved: true,
+        nextStep: 'step1_register',
+        message: 'No account for this email yet. Start registration with email and password.',
+        token: null,
+        user: null
+      });
+    }
+
+    const nextStep = getNextStep(user);
+    if (nextStep === 'completed') {
+      const token = issueTokenForEndUser(user);
+      return res.json({
+        success: true,
+        action: 'login',
+        message: 'Login successful',
+        clientApproved: true,
+        token,
+        nextStep: 'completed',
+        user: {
+          id: user._id,
+          clientId: user.clientId,
+          email: user.email,
+          mobileNumber: user.mobileNumber,
+          emailVerified: user.emailVerified,
+          mobileVerified: user.mobileVerified,
+          profileCompleted: user.profileCompleted,
+          profile: user.profile,
+          profileImageUrl: user.profileImageUrl
+        }
+      });
+    }
+
+    return res.json({
+      success: true,
+      action: 'continue_registration',
+      clientApproved: true,
+      nextStep,
+      message: messageForNextStep(nextStep),
+      token: null,
+      user: {
+        id: user._id,
+        clientId: user.clientId,
+        email: user.email,
+        emailVerified: user.emailVerified,
+        mobileVerified: user.mobileVerified,
+        profileCompleted: user.profileCompleted,
+        mobileNumber: user.mobileNumber
+      }
+    });
+  } catch (e) {
+    console.error('checkEmailAccess error:', e?.message || e);
+    return res.status(500).json({ success: false, message: 'Failed to check email' });
+  }
+}
+
+function assignIfNonEmptyString(doc, field, value) {
+  if (value === undefined || value === null) return;
+  const s = String(value).trim();
+  if (s === '') return;
+  doc[field] = s;
+}
+
+/**
+ * Tenant (Client) updates business/profile fields from their app before/after signup.
+ * Accepts `multipart/form-data` (recommended for logo upload) or JSON.
+ * Form fields: clientUserId, email, name, businessName, mobileNo, address, city, pincode,
+ * websiteUrl, gstNo, panNo, businessLogoKey (optional if file uploaded)
+ * File field name: **businessLogo** (single image, max ~10MB)
+ * Requires `clientUserId` + `email` to match the Client record.
+ */
+async function clientOnboardingProfile(req, res) {
+  try {
+    const {
+      clientUserId,
+      email,
+      name,
+      businessName,
+      mobileNo,
+      address,
+      city,
+      pincode,
+      websiteUrl,
+      gstNo,
+      panNo,
+      businessLogoKey
+    } = req.body || {};
+
+    const normEmail = normalizeEmail(email);
+    if (!clientUserId || !isValidClientId(clientUserId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientUserId is required' });
+    }
+    if (!normEmail) {
+      return res.status(400).json({ success: false, message: 'email is required' });
+    }
+
+    const client = await Client.findOne({ userId: clientUserId });
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    if (normalizeEmail(client.email) !== normEmail) {
+      return res.status(403).json({
+        success: false,
+        message: 'Email does not match this client account'
+      });
+    }
+
+    assignIfNonEmptyString(client, 'name', name);
+    assignIfNonEmptyString(client, 'businessName', businessName);
+    assignIfNonEmptyString(client, 'mobileNo', mobileNo);
+    assignIfNonEmptyString(client, 'address', address);
+    assignIfNonEmptyString(client, 'city', city);
+    assignIfNonEmptyString(client, 'pincode', pincode);
+    assignIfNonEmptyString(client, 'websiteUrl', websiteUrl);
+    assignIfNonEmptyString(client, 'gstNo', gstNo);
+    assignIfNonEmptyString(client, 'panNo', panNo);
+
+    if (req.file && req.file.buffer && req.file.buffer.length) {
+      const safeName = String(req.file.originalname || 'logo')
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .slice(0, 120);
+      const key = `businessLogo/${Date.now()}_${safeName}`;
+      await uploadBuffer(key, req.file.buffer, req.file.mimetype || 'image/jpeg');
+      client.businessLogoKey = key;
+      try {
+        client.businessLogoUrl = await getobject(key);
+      } catch (err) {
+        console.error('clientOnboardingProfile getobject:', err?.message || err);
+      }
+    } else if (businessLogoKey && String(businessLogoKey).trim()) {
+      client.businessLogoKey = String(businessLogoKey).trim();
+      try {
+        client.businessLogoUrl = await getobject(client.businessLogoKey);
+      } catch (err) {
+        console.error('clientOnboardingProfile getobject:', err?.message || err);
+      }
+    }
+
+    await client.save();
+
+    return res.json({
+      success: true,
+      message: 'Client profile updated',
+      clientApproved: !!client.isApproved,
+      client: {
+        userId: client.userId,
+        email: client.email,
+        name: client.name,
+        businessName: client.businessName,
+        businessLogoUrl: client.businessLogoUrl,
+        mobileNo: client.mobileNo,
+        address: client.address,
+        city: client.city,
+        pincode: client.pincode,
+        websiteUrl: client.websiteUrl,
+        gstNo: client.gstNo,
+        panNo: client.panNo,
+        isApproved: client.isApproved
+      }
+    });
+  } catch (e) {
+    console.error('clientOnboardingProfile error:', e?.message || e);
+    return res.status(500).json({ success: false, message: 'Failed to update client profile' });
+  }
+}
+
 async function registerStep1(req, res) {
   try {
     const { clientId, email, password } = req.body || {};
@@ -208,6 +437,14 @@ async function registerStep1(req, res) {
       const ok = await bcrypt.compare(String(password), existing.passwordHash);
       if (!ok) {
         return res.status(401).json({ success: false, message: 'Invalid email or password' });
+      }
+
+      const tenant = await getTenantClientByUserId(clientId);
+      if (!tenant) {
+        return res.status(404).json({ success: false, message: 'Client not found' });
+      }
+      if (!tenant.isApproved) {
+        return respondClientNotApproved(res);
       }
 
       const token = issueTokenForEndUser(existing);
@@ -408,12 +645,25 @@ async function completeProfile(req, res) {
     user.profileCompleted = true;
     await user.save();
 
-    const token = issueTokenForEndUser(user);
+    const tenant = await getTenantClientByUserId(clientId);
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    let token = null;
+    let message = 'Registration completed';
+    if (tenant.isApproved) {
+      token = issueTokenForEndUser(user);
+    } else {
+      message =
+        'Profile saved. Login will be available after admin approves this partner account.';
+    }
 
     return res.json({
       success: true,
-      message: 'Registration completed',
+      message,
       token,
+      pendingAdminApproval: !tenant.isApproved,
       nextStep: 'completed',
       user: {
         id: user._id,
@@ -465,12 +715,25 @@ async function updateProfile(req, res) {
     user.profileCompleted = true;
     await user.save();
 
-    const token = issueTokenForEndUser(user);
+    const tenant = await getTenantClientByUserId(clientId);
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    let token = null;
+    let message = 'Profile updated';
+    if (tenant.isApproved) {
+      token = issueTokenForEndUser(user);
+    } else {
+      message =
+        'Profile updated. Login will be available after admin approves this partner account.';
+    }
 
     return res.json({
       success: true,
-      message: 'Profile updated',
+      message,
       token,
+      pendingAdminApproval: !tenant.isApproved,
       user: {
         id: user._id,
         clientId: user.clientId,
@@ -530,6 +793,14 @@ async function loginEmailPassword(req, res) {
     }
     if (!normEmail || !password) {
       return res.status(400).json({ success: false, message: 'email and password are required' });
+    }
+
+    const tenant = await getTenantClientByUserId(clientId);
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    if (!tenant.isApproved) {
+      return respondClientNotApproved(res);
     }
 
     const user = await EndUser.findOne({ clientId, email: normEmail });
@@ -629,6 +900,14 @@ async function resetForgotPassword(req, res) {
     user.resetOtpExpiresAt = null;
     await user.save();
 
+    const tenant = await getTenantClientByUserId(clientId);
+    if (!tenant) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+    if (!tenant.isApproved) {
+      return respondClientNotApproved(res);
+    }
+
     const token = issueTokenForEndUser(user);
 
     return res.json({ success: true, message: 'Password reset successful', token });
@@ -649,6 +928,8 @@ module.exports = {
   loginEmailPassword,
   requestForgotPassword,
   resetForgotPassword,
-  getPublicProfileFields
+  getPublicProfileFields,
+  checkEmailAccess,
+  clientOnboardingProfile
 };
 

@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require("mongoose");
-const { loginClient, registerClient, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl, switchProfile,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem, embedKnowledgeItem ,assignCampaignHistoryContactsToHumanAgents} = require('../controllers/clientcontroller');
+const { loginClient, registerClient, createClientProfile, updateClientProfile, getClientProfile, getAllUsers, getUploadUrlCustomization, getUploadUrl, switchProfile,getUploadUrlMyBusiness, googleLogin, getHumanAgents, createHumanAgent, updateHumanAgent, deleteHumanAgent, getHumanAgentById, loginHumanAgent, getUploadUrlKnowledgeBase, getFileUrlByKey, createKnowledgeItem, getKnowledgeItems, updateKnowledgeItem, deleteKnowledgeItem, embedKnowledgeItem ,assignCampaignHistoryContactsToHumanAgents} = require('../controllers/clientcontroller');
 const { authMiddleware, verifyAdminTokenOnlyForRegister, verifyAdminToken, verifyClientToken, verifyClientOrHumanAgentToken, verifyClientOrAdminAndExtractClientId } = require('../middlewares/authmiddleware');
+const { businessLogoUploadMiddleware } = require('../middlewares/businessLogoUpload');
 const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
@@ -242,6 +243,10 @@ router.post('/google-login',verifyGoogleToken, googleLogin);
 router.post('/register',verifyAdminTokenOnlyForRegister, registerClient);
 
 router.get('/profile', authMiddleware, getClientProfile);
+
+// Client app: create (first-time) / update business profile — Bearer client JWT + multipart optional
+router.post('/profile', businessLogoUploadMiddleware, extractClientId, createClientProfile);
+router.put('/profile', businessLogoUploadMiddleware, extractClientId, updateClientProfile);
 
 // Knowledge Base uploads and file access
 router.get('/upload-url-knowledge-base', getUploadUrlKnowledgeBase);
