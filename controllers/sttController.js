@@ -1,6 +1,6 @@
 const STTProject = require('../models/STTProject');
 const axios = require('axios');
-const { putobject, getobject, s3Client } = require('../utils/s3');
+const { putobject, getobject } = require('../utils/r2');
 
 // Create project
 exports.createProject = async (req, res) => {
@@ -36,7 +36,7 @@ exports.getProject = async (req, res) => {
   }
 };
 
-// Presign upload for an audio file to S3
+// Presign upload for an audio file to R2
 exports.presignAudioUpload = async (req, res) => {
   try {
     const { id } = req.params; // project id
@@ -201,15 +201,15 @@ async function processItem(projectIdOrNull, itemId) {
     }
     if (!transcriptText) throw new Error('No transcript returned');
     item.logs.push({ level: 'info', message: 'Transcript generated', meta: { length: transcriptText.length } });
-    // 3) Save transcript to S3 as txt
+    // 3) Save transcript to R2 as txt
     const transcriptKey = `stt/${project._id}/${item._id}-transcript.txt`;
-    await uploadTextToS3(transcriptKey, transcriptText);
-    item.logs.push({ level: 'info', message: 'Transcript uploaded to S3', meta: { key: transcriptKey } });
+    await uploadTextToR2(transcriptKey, transcriptText);
+    item.logs.push({ level: 'info', message: 'Transcript uploaded to R2', meta: { key: transcriptKey } });
     // 4) Generate Q&A with OpenAI
     const qaText = await generateQA(transcriptText, detectedLang);
     const qaKey = `stt/${project._id}/${item._id}-qa.txt`;
-    await uploadTextToS3(qaKey, qaText);
-    item.logs.push({ level: 'info', message: 'Q&A uploaded to S3', meta: { key: qaKey } });
+    await uploadTextToR2(qaKey, qaText);
+    item.logs.push({ level: 'info', message: 'Q&A uploaded to R2', meta: { key: qaKey } });
     // 5) Update item
     item.transcriptKey = transcriptKey;
     item.qaKey = qaKey;
@@ -225,7 +225,7 @@ async function processItem(projectIdOrNull, itemId) {
   }
 }
 
-async function uploadTextToS3(key, content) {
+async function uploadTextToR2(key, content) {
   // Prepend UTF-8 BOM to help Windows editors detect encoding
   const bom = '\uFEFF';
   const body = `${bom}${content}`;

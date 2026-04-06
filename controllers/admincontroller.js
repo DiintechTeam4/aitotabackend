@@ -4,7 +4,7 @@ const bcrypt=require("bcrypt");
 const jwt = require('jsonwebtoken');
 const Client = require("../models/Client");
 const Agent = require("../models/Agent");
-const { getobject } = require("../utils/s3");
+const { getobject } = require("../utils/r2");
 const DidNumber = require("../models/DidNumber");
 const Campaign = require("../models/Campaign");
 const {

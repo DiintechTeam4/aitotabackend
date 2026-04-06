@@ -1243,7 +1243,7 @@ app.get('/api/v1/public/business/:identifier', async (req, res) => {
     }
 
     // Generate fresh URLs for images using getobject
-    const { getobject } = require('./utils/s3');
+    const { getobject } = require('./utils/r2');
     let imageWithUrl = business.image;
     let documentsWithUrl = business.documents;
 
@@ -1259,9 +1259,9 @@ app.get('/api/v1/public/business/:identifier', async (req, res) => {
         const documentsUrl = await getobject(business.documents.key);
         documentsWithUrl = { ...business.documents, url: documentsUrl };
       }
-    } catch (s3Error) {
-      console.error('Error generating S3 URLs:', s3Error);
-      // Keep original URLs if S3 fails
+    } catch (r2Error) {
+      console.error('Error generating R2 URLs:', r2Error);
+      // Keep original URLs if R2 signing fails
       imageWithUrl = business.image;
       documentsWithUrl = business.documents;
     }

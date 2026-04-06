@@ -2,7 +2,7 @@ const Client = require("../models/Client");
 const HumanAgent = require("../models/HumanAgent");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { getobject, putobject, uploadBuffer } = require("../utils/s3");
+const { getobject, putobject, uploadBuffer } = require("../utils/r2");
 const KnowledgeBase = require("../models/KnowledgeBase");
 const axios = require('axios');
 const { OAuth2Client } = require("google-auth-library");
@@ -75,7 +75,7 @@ const getUploadUrlKnowledgeBase = async (req, res) => {
   }
 };
 
-// Generic: Generate presigned GET URL for a given S3 key
+// Generic: Generate presigned GET URL for a given R2 object key
 const getFileUrlByKey = async (req, res) => {
   try {
     const { key } = req.query;
@@ -113,18 +113,18 @@ const createKnowledgeItem = async (req, res) => {
         if (!content.s3Key) {
           return res.status(400).json({ 
             success: false, 
-            message: 'S3 key is required for PDF files' 
+            message: 'Object key is required for PDF files' 
           });
         }
         validatedContent = { s3Key: content.s3Key };
         break;
         
       case 'text':
-        // Enforce S3 storage for text as .txt
+        // Enforce R2 storage for text as .txt
         if (!content.s3Key) {
-          return res.status(400).json({ 
-            success: false, 
-            message: 'S3 key is required for text files' 
+          return res.status(400).json({
+            success: false,
+            message: 'Object key is required for text files'
           });
         }
         validatedContent = { s3Key: content.s3Key };
@@ -134,7 +134,7 @@ const createKnowledgeItem = async (req, res) => {
         if (!content.imageKey) {
           return res.status(400).json({ 
             success: false, 
-            message: 'S3 key is required for images' 
+            message: 'Object key is required for images' 
           });
         }
         validatedContent = { imageKey: content.imageKey };
@@ -224,11 +224,11 @@ const embedKnowledgeItem = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Knowledge item not found' });
     }
 
-    // Only PDF and image types currently rely on S3; links/websites/youtube could also be supported if URL exists
+    // Only PDF and image types currently rely on R2; links/websites/youtube could also be supported if URL exists
     let url = null;
     if (item.type === 'pdf' || item.type === 'image') {
       if (!item.content?.s3Key) {
-        return res.status(400).json({ success: false, message: 'Missing S3 key for this item' });
+        return res.status(400).json({ success: false, message: 'Missing object key for this item' });
       }
       // Generate a temporary GET URL
       try {
@@ -239,7 +239,7 @@ const embedKnowledgeItem = async (req, res) => {
     } else if (item.type === 'text' || item.type === 'link' || item.type === 'website' || item.type === 'youtube') {
       if (item.type === 'text') {
         if (!item.content?.s3Key) {
-          return res.status(400).json({ success: false, message: 'Missing S3 key for this text item' });
+          return res.status(400).json({ success: false, message: 'Missing object key for this text item' });
         }
         try {
           url = await getobject(item.content.s3Key);
@@ -449,7 +449,7 @@ const getContentUrl = async (item) => {
         try {
           return await getobject(item.content.s3Key);
         } catch (error) {
-          console.error('Error generating S3 URL:', error);
+          console.error('Error generating R2 URL:', error);
           return null;
         }
       }
@@ -972,12 +972,12 @@ const registerClient = async (req, res) => {
 
     // ── Logo handling ──────────────────────────────────────────────────────────
     // Priority 1: file uploaded via multipart/form-data (field name: "businessLogo")
-    // Priority 2: pre-uploaded S3 key sent as JSON/form field "businessLogoKey"
+    // Priority 2: pre-uploaded R2 key sent as JSON/form field "businessLogoKey"
     let resolvedLogoKey = "";
     let businessLogoUrl  = "";
 
     if (req.file && req.file.buffer && req.file.buffer.length) {
-      // Direct file upload — push to S3
+      // Direct file upload — push to R2
       const safeName = String(req.file.originalname || "logo")
         .replace(/[^a-zA-Z0-9._-]/g, "_")
         .slice(0, 120);
@@ -989,7 +989,7 @@ const registerClient = async (req, res) => {
         console.error("registerClient: getobject after upload failed:", e?.message);
       }
     } else if (businessLogoKey && String(businessLogoKey).trim()) {
-      // Pre-uploaded S3 key (existing flow)
+      // Pre-uploaded R2 key (existing flow)
       resolvedLogoKey = String(businessLogoKey).trim();
       try {
         businessLogoUrl = await getobject(resolvedLogoKey);

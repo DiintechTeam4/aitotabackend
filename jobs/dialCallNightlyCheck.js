@@ -87,7 +87,7 @@ const checkDialCallAPI = async () => {
         <h2>Dial Call API Health Check Failed</h2>
         <p><b>Time (IST):</b> ${getISTTime()}</p>
         <p><b>Error:</b> ${error.message}</p>
-        <p><b>Environment:</b> AWS</p>
+        <p><b>Environment:</b> Production</p>
         <p>Please investigate immediately.</p>
       `
     );

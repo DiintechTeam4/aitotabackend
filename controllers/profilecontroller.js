@@ -1,7 +1,7 @@
 const Profile = require('../models/Profile');
 const Client = require('../models/Client');
 const HumanAgent = require('../models/HumanAgent');
-const { getobject } = require('../utils/s3');
+const { getobject } = require('../utils/r2');
 
 // Helper to construct address from city, state, pincode
 function constructAddress(data) {

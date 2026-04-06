@@ -1,6 +1,6 @@
 const EndUser = require('../models/EndUser');
 const Client = require('../models/Client');
-const { getobject, uploadBuffer } = require('../utils/s3');
+const { getobject, uploadBuffer } = require('../utils/r2');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');

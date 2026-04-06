@@ -8,7 +8,7 @@ const { verifyGoogleToken } = require('../middlewares/googleAuth');
 const Client = require("../models/Client")
 const ClientApiService = require("../services/ClientApiService")
 const { generateClientApiKey, getActiveClientApiKey, copyActiveClientApiKey } = require("../controllers/clientApiKeyController")
-const { getobject, getobjectFor, getobjectForWithRegion, getObjectForAudioProxy } = require('../utils/s3')
+const { getobject, getobjectFor, getobjectForWithRegion, getObjectForAudioProxy } = require('../utils/r2')
 const Agent = require('../models/Agent');
 const HumanAgent = require('../models/HumanAgent');
 const VoiceService = require('../services/voiceService');
@@ -46,9 +46,6 @@ const {
   resetCircuitBreakers,
   getSafeLimits
 } = require('../services/campaignCallingService');
-const multer = require("multer");
-const upload = multer({ storage: multer.memoryStorage() });
-
 const clientApiService = new ClientApiService()
 
 // Middleware to extract client ID from token or fallback to headers/query
@@ -283,7 +280,7 @@ router.post('/human-agent/login', loginHumanAgent);
 
 router.post('/google-login',verifyGoogleToken, googleLogin);
 
-router.post('/register', verifyAdminTokenOnlyForRegister, upload.single("businessLogo"), registerClient);
+router.post('/register', verifyAdminTokenOnlyForRegister, businessLogoUploadMiddleware, registerClient);
 
 router.get('/profile', authMiddleware, getClientProfile);
 
@@ -295,7 +292,7 @@ router.put('/profile', businessLogoUploadMiddleware, extractClientIdForProfile, 
 router.get('/upload-url-knowledge-base', getUploadUrlKnowledgeBase);
 router.get('/file-url', getFileUrlByKey);
 
-// Stream call audio via backend proxy to avoid S3 CORS/signature issues
+// Stream call audio via backend proxy to avoid R2 CORS/signature issues
 router.get('/campaigns/:id/call-audio', async (req, res) => {
   try {
     const { id } = req.params;
@@ -329,17 +326,17 @@ router.get('/campaigns/:id/call-audio', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Recording not found' });
     }
 
-    const s3Resp = await getObjectForAudioProxy(latest.audioUrl);
+    const r2Resp = await getObjectForAudioProxy(latest.audioUrl);
 
     // Default headers for audio
-    res.setHeader('Content-Type', s3Resp.ContentType || 'audio/wav');
-    if (s3Resp.ContentLength) res.setHeader('Content-Length', String(s3Resp.ContentLength));
+    res.setHeader('Content-Type', r2Resp.ContentType || 'audio/wav');
+    if (r2Resp.ContentLength) res.setHeader('Content-Length', String(r2Resp.ContentLength));
     // Allow range requests for audio seeking
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'private, max-age=0, no-cache, no-store');
 
-    if (s3Resp.Body && typeof s3Resp.Body.pipe === 'function') {
-      s3Resp.Body.pipe(res);
+    if (r2Resp.Body && typeof r2Resp.Body.pipe === 'function') {
+      r2Resp.Body.pipe(res);
     } else {
       res.status(500).json({ success: false, error: 'Failed to stream audio' });
     }
@@ -349,7 +346,7 @@ router.get('/campaigns/:id/call-audio', async (req, res) => {
   }
 });
 
-// Stream agent call audio via backend proxy to avoid S3 CORS/signature issues
+// Stream agent call audio via backend proxy to avoid R2 CORS/signature issues
 // Note: This route accepts token from query parameter for audio element compatibility
 router.get('/agents/:id/call-audio', async (req, res) => {
   try {
@@ -403,17 +400,17 @@ router.get('/agents/:id/call-audio', async (req, res) => {
       }
     }
 
-    const s3Resp = await getObjectForAudioProxy(callLog.audioUrl);
+    const r2Resp = await getObjectForAudioProxy(callLog.audioUrl);
 
     // Default headers for audio
-    res.setHeader('Content-Type', s3Resp.ContentType || 'audio/wav');
-    if (s3Resp.ContentLength) res.setHeader('Content-Length', String(s3Resp.ContentLength));
+    res.setHeader('Content-Type', r2Resp.ContentType || 'audio/wav');
+    if (r2Resp.ContentLength) res.setHeader('Content-Length', String(r2Resp.ContentLength));
     // Allow range requests for audio seeking
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'private, max-age=0, no-cache, no-store');
 
-    if (s3Resp.Body && typeof s3Resp.Body.pipe === 'function') {
-      s3Resp.Body.pipe(res);
+    if (r2Resp.Body && typeof r2Resp.Body.pipe === 'function') {
+      r2Resp.Body.pipe(res);
     } else {
       res.status(500).json({ success: false, error: 'Failed to stream audio' });
     }
@@ -3429,7 +3426,7 @@ router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, re
         .populate('agentId', 'agentName')
         .lean();
 
-      // Replace with backend proxy URL to avoid S3 CORS/signature issues
+      // Replace with backend proxy URL to avoid R2 CORS/signature issues
       try {
         const base = `${req.protocol}://${req.get('host')}`;
         logsByDoc = (logsByDoc || []).map((l) => {
@@ -3505,7 +3502,7 @@ router.get('/campaigns/:id/call-logs-dashboard', extractClientId, async (req, re
 
     let allLogs = [...logs, ...placeholderLogs];
 
-    // Use backend proxy URL to avoid S3 CORS/signature issues
+    // Use backend proxy URL to avoid R2 CORS/signature issues
     try {
       const base = `${req.protocol}://${req.get('host')}`;
       allLogs = (allLogs || []).map((l) => {
@@ -4185,7 +4182,7 @@ router.get('/campaigns/:id/merged-calls', extractClientId, async (req, res) => {
     const skip = (page - 1) * limit;
     let pagedCalls = mergedCalls.slice(skip, skip + limit);
 
-    // Use backend proxy URL to avoid S3 CORS/signature issues
+    // Use backend proxy URL to avoid R2 CORS/signature issues
     try {
       const base = `${req.protocol}://${req.get('host')}`;
       pagedCalls = (pagedCalls || []).map((c) => {
@@ -5084,7 +5081,7 @@ router.post('/campaigns/:id/stop-calling', extractClientId, async (req, res) => 
           };
         });
 
-        // Replace with backend proxy URL to avoid S3 CORS/signature issues
+        // Replace with backend proxy URL to avoid R2 CORS/signature issues
         try {
           const base = `${req.protocol}://${req.get('host')}`;
           contacts = (contacts || []).map((c) => {
@@ -5702,9 +5699,7 @@ router.post('/business', extractClientId, async(req, res)=>{
       return res.status(400).json({success: false, message: "mrp and offerPrice must be numbers."});
     }
 
-     // Generate S3 URLs using getobject function
-     const { getobject } = require('../utils/s3');
-    
+     // Generate R2 URLs using getobject (module import)
      let imageWithUrl = { ...image };
      let documentsWithUrl = documents ? { ...documents } : undefined;
      
@@ -5718,8 +5713,8 @@ router.post('/business', extractClientId, async(req, res)=>{
          const documentsUrl = await getobject(documents.key);
          documentsWithUrl.url = documentsUrl;
        }
-     } catch (s3Error) {
-       console.error('Error generating S3 URLs:', s3Error);
+     } catch (r2Error) {
+       console.error('Error generating R2 URLs:', r2Error);
        return res.status(500).json({success: false, message: "Error generating file URLs"});
      }
  
@@ -5778,9 +5773,6 @@ router.get('/business', extractClientId, async (req, res) => {
     const clientId = req.clientId;
     let businesses = await MyBusiness.find({ clientId }).sort({ createdAt: -1 }); // Sort by creation date, most recent first
     
-    // Import S3 utility for generating fresh URLs
-    const { getobject } = require('../utils/s3');
-    
     // Ensure image and documents always have fresh url and key fields
     businesses = await Promise.all(businesses.map(async (business) => {
       let imageUrl = '';
@@ -5835,9 +5827,6 @@ router.get('/business/:id', extractClientId, async (req, res) => {
     if (!business) {
       return res.status(404).json({ success: false, message: 'Business not found' });
     }
-    
-    // Import S3 utility for generating fresh URLs
-    const { getobject } = require('../utils/s3');
     
     let imageUrl = '';
     let documentsUrl = '';
@@ -6616,7 +6605,7 @@ router.get('/agents/:id/call-logs', extractClientId, async (req, res) => {
       .populate('campaignId', 'name description')
       .lean();
     
-    // Replace with backend proxy URL to avoid S3 CORS/signature issues
+    // Replace with backend proxy URL to avoid R2 CORS/signature issues
     // Always generate proxy URL if we have a callLogId, even if audioUrl is empty (audio might be available)
     try {
       const base = `${req.protocol}://${req.get('host')}`;

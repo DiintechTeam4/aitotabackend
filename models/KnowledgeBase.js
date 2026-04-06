@@ -38,13 +38,13 @@ const knowledgeBaseSchema = new mongoose.Schema({
   
   // Content based on type
   content: {
-    // For PDF files - S3 key
+    // For PDF files - R2 object key (stored as s3Key for compatibility)
     s3Key: { type: String },
     
     // For text content
     text: { type: String },
     
-    // For images - S3 key
+    // For images - R2 object key
     imageKey: { type: String },
     
     // For YouTube videos
@@ -100,7 +100,7 @@ knowledgeBaseSchema.pre("save", function (next) {
 
 // Method to get the appropriate URL based on content type
 knowledgeBaseSchema.methods.getContentUrl = async function() {
-  const { getobject } = require('../utils/s3');
+  const { getobject } = require('../utils/r2');
   
   switch (this.type) {
     case 'pdf':
@@ -109,7 +109,7 @@ knowledgeBaseSchema.methods.getContentUrl = async function() {
         try {
           return await getobject(this.content.s3Key);
         } catch (error) {
-          console.error('Error generating S3 URL:', error);
+          console.error('Error generating R2 URL:', error);
           return null;
         }
       }
