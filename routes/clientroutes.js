@@ -47,7 +47,8 @@ const {
   getSafeLimits
 } = require('../services/campaignCallingService');
 const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
-
+const multer = require("multer");
+const upload = multer({ storage: multer.memoryStorage() });
 
 const clientApiService = new ClientApiService()
 
@@ -283,7 +284,7 @@ router.post('/human-agent/login', loginHumanAgent);
 
 router.post('/google-login',verifyGoogleToken, googleLogin);
 
-router.post('/register',verifyAdminTokenOnlyForRegister, registerClient);
+router.post('/register', verifyAdminTokenOnlyForRegister, upload.single("businessLogo"), registerClient);
 
 router.get('/profile', authMiddleware, getClientProfile);
 

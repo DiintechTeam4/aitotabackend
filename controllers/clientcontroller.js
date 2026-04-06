@@ -956,11 +956,7 @@ const registerClient = async (req, res) => {
 
     // Check if client already exists with the same GST/PAN/MobileNo
     const existingBusinessClient = await Client.findOne({
-      $or: [
-        { gstNo },
-        { panNo },
-        { mobileNo }
-      ]
+      $or: [{ gstNo }, { panNo }, { mobileNo }]
     });
 
     if (existingBusinessClient) {
@@ -974,142 +970,100 @@ const registerClient = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    let businessLogoUrl = "";
-    if(businessLogoKey) {
-      businessLogoUrl = await getobject(businessLogoKey);
-    }
+    // ── Logo handling ──────────────────────────────────────────────────────────
+    // Priority 1: file uploaded via multipart/form-data (field name: "businessLogo")
+    // Priority 2: pre-uploaded S3 key sent as JSON/form field "businessLogoKey"
+    let resolvedLogoKey = "";
+    let businessLogoUrl  = "";
 
-    // Check if the token is from admin
-    if (req.admin) {
-      // Admin is creating the client - auto approve
-      const client = await Client.create({
-        name,
-        email,
-        password: hashedPassword,
-        businessName,
-        businessLogoKey,
-        businessLogoUrl,
-        gstNo,
-        panNo,
-        mobileNo,
-        address,
-        city,
-        pincode,
-        websiteUrl,
-        isprofileCompleted: true,
-        isApproved: true
-      });
-
-      // Initialize default credits (100) for new client
+    if (req.file && req.file.buffer && req.file.buffer.length) {
+      // Direct file upload — push to S3
+      const safeName = String(req.file.originalname || "logo")
+        .replace(/[^a-zA-Z0-9._-]/g, "_")
+        .slice(0, 120);
+      resolvedLogoKey = `businessLogo/${Date.now()}_${safeName}`;
+      await uploadBuffer(resolvedLogoKey, req.file.buffer, req.file.mimetype || "image/jpeg");
       try {
-        const Credit = require("../models/Credit");
-        const creditRecord = await Credit.getOrCreateCreditRecord(client._id);
-        if ((creditRecord?.currentBalance || 0) === 0) {
-          await creditRecord.addCredits(100, 'bonus', 'Welcome bonus credits');
-        }
+        businessLogoUrl = await getobject(resolvedLogoKey);
       } catch (e) {
-        console.error('Failed to initialize default credits for client:', e.message);
+        console.error("registerClient: getobject after upload failed:", e?.message);
       }
-
-      // Telegram alert: client created by admin
+    } else if (businessLogoKey && String(businessLogoKey).trim()) {
+      // Pre-uploaded S3 key (existing flow)
+      resolvedLogoKey = String(businessLogoKey).trim();
       try {
-        const { sendTelegramAlert } = require('../utils/telegramAlert');
-        const when = new Date().toLocaleString('en-IN', { hour12: false });
-        await sendTelegramAlert(`Client "${client.name || client.businessName || client.email}" is joined on ${when}.`);
-      } catch (_) {}
-
-      // Generate token
-      const token = generateToken(client._id);
-
-      res.status(201).json({
-        success: true,
-        token,
-        client: {
-          _id: client._id,
-          name: client.name,
-          email: client.email,
-          businessName: client.businessName,
-          businesslogoKey: client.businessLogoKey,
-          businessLogoUrl: client.businessLogoUrl,
-          gstNo: client.gstNo,
-          panNo: client.panNo,
-          mobileNo: client.mobileNo,
-          address: client.address,
-          city: client.city,
-          pincode: client.pincode,
-          websiteUrl: client.websiteUrl,
-          isprofileCompleted: true,
-          isApproved: true
-        }
-      });
-    } else {
-      // Non-admin registration - requires approval
-      const client = await Client.create({
-        name,
-        email,
-        password: hashedPassword,
-        businessName,
-        businessLogoKey,
-        businessLogoUrl,
-        gstNo,
-        panNo,
-        mobileNo,
-        address,
-        city,
-        pincode,
-        websiteUrl,
-        isprofileCompleted: true,
-        isApproved: false
-      });
-
-      // Initialize default credits (100) for new client
-      try {
-        const Credit = require("../models/Credit");
-        const creditRecord = await Credit.getOrCreateCreditRecord(client._id);
-        if ((creditRecord?.currentBalance || 0) === 0) {
-          await creditRecord.addCredits(100, 'bonus', 'Welcome bonus credits');
-        }
+        businessLogoUrl = await getobject(resolvedLogoKey);
       } catch (e) {
-        console.error('Failed to initialize default credits for client:', e.message);
+        console.error("registerClient: getobject for key failed:", e?.message);
       }
-
-      // Telegram alert: client self-registered
-      try {
-        const { sendTelegramAlert } = require('../utils/telegramAlert');
-        const when = new Date().toLocaleString('en-IN', { hour12: false });
-        await sendTelegramAlert(`Client "${client.name || client.businessName || client.email}" is joined on ${when}.`);
-      } catch (_) {}
-
-      // Generate token
-      const token = generateToken(client._id);
-
-      res.status(201).json({
-        success: true,
-        token,
-        client: {
-          _id: client._id,
-          name: client.name,
-          email: client.email,
-          businessName: client.businessName,
-          businesslogoKey: client.businessLogoKey,
-          businessLogoUrl: client.businessLogoUrl,
-          gstNo: client.gstNo,
-          panNo: client.panNo,
-          mobileNo: client.mobileNo,
-          address: client.address,
-          city: client.city,
-          pincode: client.pincode,
-          websiteUrl: client.websiteUrl,
-          isprofileCompleted: true,
-          isApproved: false
-        }
-      });
     }
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
+    // ──────────────────────────────────────────────────────────────────────────
+
+    const isAdminCreating = !!req.admin;
+
+    const client = await Client.create({
+      name,
+      email,
+      password: hashedPassword,
+      businessName,
+      businessLogoKey: resolvedLogoKey,
+      businessLogoUrl,
+      gstNo,
+      panNo,
+      mobileNo,
+      address,
+      city,
+      pincode,
+      websiteUrl,
+      isprofileCompleted: true,
+      isApproved: isAdminCreating   // auto-approve only when admin creates
     });
+
+    // Initialize default credits (100) for new client
+    try {
+      const Credit = require("../models/Credit");
+      const creditRecord = await Credit.getOrCreateCreditRecord(client._id);
+      if ((creditRecord?.currentBalance || 0) === 0) {
+        await creditRecord.addCredits(100, "bonus", "Welcome bonus credits");
+      }
+    } catch (e) {
+      console.error("Failed to initialize default credits for client:", e.message);
+    }
+
+    // Telegram alert
+    try {
+      const { sendTelegramAlert } = require("../utils/telegramAlert");
+      const when = new Date().toLocaleString("en-IN", { hour12: false });
+      await sendTelegramAlert(
+        `Client "${client.name || client.businessName || client.email}" joined on ${when}.`
+      );
+    } catch (_) {}
+
+    const token = generateToken(client._id);
+
+    return res.status(201).json({
+      success: true,
+      token,
+      client: {
+        _id: client._id,
+        name: client.name,
+        email: client.email,
+        businessName: client.businessName,
+        businessLogoKey: client.businessLogoKey,
+        businessLogoUrl: client.businessLogoUrl,
+        gstNo: client.gstNo,
+        panNo: client.panNo,
+        mobileNo: client.mobileNo,
+        address: client.address,
+        city: client.city,
+        pincode: client.pincode,
+        websiteUrl: client.websiteUrl,
+        isprofileCompleted: true,
+        isApproved: isAdminCreating
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
