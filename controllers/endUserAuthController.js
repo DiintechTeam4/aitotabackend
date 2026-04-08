@@ -71,6 +71,11 @@ function normalizePhoneToE164(mobileNumber) {
   return '';
 }
 
+function toWhatsAppRecipient(phoneE164) {
+  // WhatsApp Cloud API expects recipient in international format digits (wa_id), usually without '+'.
+  return String(phoneE164 || '').replace(/\D/g, '');
+}
+
 async function sendBrevoEmailOtp({ toEmail, otp, subject }) {
   const BREVO_API_KEY = process.env.BREVO_API_KEY;
   const BREVO_FROM_EMAIL = process.env.BREVO_FROM_EMAIL;
@@ -118,11 +123,16 @@ async function sendWhatsAppOtpTemplate({ phoneE164, otp }) {
     throw new Error('WhatsApp is not configured (missing WHATSAPP_TOKEN/WHATSAPP_PHONE_ID/WHATSAPP_TEMPLATE_NAME)');
   }
 
+  const recipientWaId = toWhatsAppRecipient(phoneE164);
+  if (!recipientWaId) {
+    throw new Error('Invalid WhatsApp recipient (empty wa_id after normalization)');
+  }
+
   // Many templates expect OTP in a "body" text parameter.
   // If your template uses a different component (header vs body), adjust components below.
   const payload = {
     messaging_product: 'whatsapp',
-    to: phoneE164,
+    to: recipientWaId,
     type: 'template',
     template: {
       name: WHATSAPP_TEMPLATE_NAME,
@@ -654,6 +664,14 @@ async function sendMobileOtp(req, res) {
       code: error?.code || null,
       responseStatus: error?.response?.status || null,
       responseData: error?.response?.data || null,
+      responseErrorData: error?.response?.data?.error?.error_data || null,
+      requestSummary: {
+        whatsappEnabled: String(process.env.WHATSAPP_ENABLED || '').toLowerCase() === 'true',
+        phoneIdConfigured: !!process.env.WHATSAPP_PHONE_ID,
+        templateName: process.env.WHATSAPP_TEMPLATE_NAME || null,
+        templateLanguage: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
+        waRecipient: maskPhone(toWhatsAppRecipient(normalizedPhone || mobileNumber))
+      },
       stack: error?.stack
     });
     return res.status(500).json({
@@ -718,6 +736,14 @@ async function resendMobileOtp(req, res) {
       code: error?.code || null,
       responseStatus: error?.response?.status || null,
       responseData: error?.response?.data || null,
+      responseErrorData: error?.response?.data?.error?.error_data || null,
+      requestSummary: {
+        whatsappEnabled: String(process.env.WHATSAPP_ENABLED || '').toLowerCase() === 'true',
+        phoneIdConfigured: !!process.env.WHATSAPP_PHONE_ID,
+        templateName: process.env.WHATSAPP_TEMPLATE_NAME || null,
+        templateLanguage: process.env.WHATSAPP_TEMPLATE_LANGUAGE || 'en_US',
+        waRecipient: maskPhone(toWhatsAppRecipient(normalizedPhone || mobileNumber))
+      },
       stack: error?.stack
     });
     return res.status(500).json({
