@@ -32,6 +32,21 @@ function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
+function maskEmail(email) {
+  const e = normalizeEmail(email);
+  const [name, domain] = e.split('@');
+  if (!name || !domain) return '***';
+  if (name.length <= 2) return `${name[0] || '*'}***@${domain}`;
+  return `${name.slice(0, 2)}***@${domain}`;
+}
+
+function maskPhone(phone) {
+  const p = String(phone || '');
+  if (!p) return '***';
+  if (p.length <= 4) return '***';
+  return `${p.slice(0, 3)}****${p.slice(-3)}`;
+}
+
 function normalizePhoneToE164(mobileNumber) {
   // Keep digits only
   let digits = String(mobileNumber || '').replace(/\D/g, '');
@@ -535,6 +550,58 @@ async function verifyEmailOtp(req, res) {
   }
 }
 
+async function resendEmailOtp(req, res) {
+  try {
+    const { clientId, email } = req.body || {};
+    const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
+    if (!normEmail) {
+      return res.status(400).json({ success: false, message: 'email is required' });
+    }
+
+    const user = await EndUser.findOne({ clientId, email: normEmail });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (user.emailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is already verified. Continue with mobile verification.'
+      });
+    }
+
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    user.emailOtpHash = hashOtp(otp);
+    user.emailOtpExpiresAt = expiresAt;
+    await user.save();
+
+    await sendBrevoEmailOtp({
+      toEmail: normEmail,
+      otp,
+      subject: 'AITOTA verification OTP'
+    });
+
+    return res.json({
+      success: true,
+      message: 'A new verification OTP has been sent to your email.',
+      nextStep: 'step1_verify_email_otp',
+      emailOtpExpiresAt: expiresAt.toISOString()
+    });
+  } catch (error) {
+    console.error('resendEmailOtp error:', {
+      message: error?.message || 'unknown_error',
+      stack: error?.stack
+    });
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to resend email OTP at the moment. Please try again shortly.'
+    });
+  }
+}
+
 async function sendMobileOtp(req, res) {
   try {
     const { clientId, email, mobileNumber } = req.body || {};
@@ -569,12 +636,91 @@ async function sendMobileOtp(req, res) {
 
     return res.json({
       success: true,
-      message: 'WhatsApp OTP sent',
+      message: 'WhatsApp OTP has been sent to your mobile number.',
+      nextStep: 'step2_send_mobile_otp',
       mobileOtpExpiresAt: expiresAt.toISOString()
     });
   } catch (error) {
-    console.error('sendMobileOtp error:', error?.message || error);
-    return res.status(500).json({ success: false, message: 'Failed to send mobile OTP' });
+    const { clientId, email, mobileNumber } = req.body || {};
+    const normalizedPhone = normalizePhoneToE164(mobileNumber);
+    console.error('sendMobileOtp error:', {
+      clientId: clientId || null,
+      email: maskEmail(email),
+      mobile: maskPhone(normalizedPhone || mobileNumber),
+      message: error?.message || 'unknown_error',
+      code: error?.code || null,
+      responseStatus: error?.response?.status || null,
+      responseData: error?.response?.data || null,
+      stack: error?.stack
+    });
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to send mobile OTP right now. Please try again in a moment.'
+    });
+  }
+}
+
+async function resendMobileOtp(req, res) {
+  try {
+    const { clientId, email, mobileNumber } = req.body || {};
+    const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
+    if (!normEmail || !mobileNumber) {
+      return res.status(400).json({ success: false, message: 'email and mobileNumber are required' });
+    }
+
+    const user = await EndUser.findOne({ clientId, email: normEmail });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user.emailVerified) {
+      return res.status(400).json({ success: false, message: 'Verify email first' });
+    }
+    if (user.mobileVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mobile is already verified. Continue with profile completion.'
+      });
+    }
+
+    const phoneE164 = normalizePhoneToE164(mobileNumber);
+    if (!phoneE164) {
+      return res.status(400).json({ success: false, message: 'Invalid mobile number format' });
+    }
+
+    user.mobileNumber = phoneE164;
+
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    user.mobileOtpHash = hashOtp(otp);
+    user.mobileOtpExpiresAt = expiresAt;
+    await user.save();
+
+    await sendWhatsAppOtpTemplate({ phoneE164, otp });
+
+    return res.json({
+      success: true,
+      message: 'A new WhatsApp OTP has been sent to your mobile number.',
+      nextStep: 'step2_send_mobile_otp',
+      mobileOtpExpiresAt: expiresAt.toISOString()
+    });
+  } catch (error) {
+    const { clientId, email, mobileNumber } = req.body || {};
+    const normalizedPhone = normalizePhoneToE164(mobileNumber);
+    console.error('resendMobileOtp error:', {
+      clientId: clientId || null,
+      email: maskEmail(email),
+      mobile: maskPhone(normalizedPhone || mobileNumber),
+      message: error?.message || 'unknown_error',
+      code: error?.code || null,
+      responseStatus: error?.response?.status || null,
+      responseData: error?.response?.data || null,
+      stack: error?.stack
+    });
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to resend mobile OTP right now. Please try again in a moment.'
+    });
   }
 }
 
@@ -868,6 +1014,54 @@ async function requestForgotPassword(req, res) {
   }
 }
 
+async function resendForgotPasswordOtp(req, res) {
+  try {
+    const { clientId, email } = req.body || {};
+    const normEmail = normalizeEmail(email);
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
+    if (!normEmail) return res.status(400).json({ success: false, message: 'email is required' });
+
+    const user = await EndUser.findOne({ clientId, email: normEmail });
+    // Keep account existence private.
+    if (!user) {
+      return res.json({
+        success: true,
+        message: 'If the email is registered, a new OTP will be sent for password reset.'
+      });
+    }
+
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    user.resetOtpHash = hashOtp(otp);
+    user.resetOtpExpiresAt = expiresAt;
+    await user.save();
+
+    await sendBrevoEmailOtp({
+      toEmail: normEmail,
+      otp,
+      subject: 'Your password reset OTP'
+    });
+
+    return res.json({
+      success: true,
+      message: 'A new OTP has been sent for password reset.',
+      resetOtpExpiresAt: expiresAt.toISOString()
+    });
+  } catch (error) {
+    console.error('resendForgotPasswordOtp error:', {
+      message: error?.message || 'unknown_error',
+      stack: error?.stack
+    });
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to resend reset OTP at the moment. Please try again shortly.'
+    });
+  }
+}
+
 async function resetForgotPassword(req, res) {
   try {
     const { clientId, email, otp, newPassword } = req.body || {};
@@ -920,13 +1114,16 @@ async function resetForgotPassword(req, res) {
 module.exports = {
   registerStep1,
   verifyEmailOtp,
+  resendEmailOtp,
   sendMobileOtp,
+  resendMobileOtp,
   verifyMobileOtp,
   completeProfile,
   updateProfile,
   updateProfileImage,
   loginEmailPassword,
   requestForgotPassword,
+  resendForgotPasswordOtp,
   resetForgotPassword,
   getPublicProfileFields,
   checkEmailAccess,
