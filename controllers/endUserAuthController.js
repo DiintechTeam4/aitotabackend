@@ -138,7 +138,10 @@ async function sendWhatsAppOtpTemplate({ phoneE164, otp }) {
 
   const url = `https://graph.facebook.com/v20.0/${WHATSAPP_PHONE_ID}/messages`;
   const resp = await axios.post(url, payload, {
-    params: { access_token: WHATSAPP_TOKEN },
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
     timeout: 20000
   });
 
