@@ -128,8 +128,30 @@ async function sendWhatsAppOtpTemplate({ phoneE164, otp }) {
     throw new Error('Invalid WhatsApp recipient (empty wa_id after normalization)');
   }
 
-  // Many templates expect OTP in a "body" text parameter.
-  // If your template uses a different component (header vs body), adjust components below.
+  // Many templates expect OTP in body and/or URL button parameter.
+  // This supports both with env-based control to avoid hardcoding template internals.
+  const includeBodyParam = String(process.env.WHATSAPP_INCLUDE_BODY_PARAM || 'true').toLowerCase() === 'true';
+  const includeUrlButtonParam =
+    String(process.env.WHATSAPP_INCLUDE_URL_BUTTON_PARAM || 'true').toLowerCase() === 'true';
+  const buttonIndex = Number(process.env.WHATSAPP_URL_BUTTON_INDEX || 0);
+  const buttonValue = String(process.env.WHATSAPP_URL_BUTTON_VALUE || otp);
+
+  const components = [];
+  if (includeBodyParam) {
+    components.push({
+      type: 'body',
+      parameters: [{ type: 'text', text: otp }]
+    });
+  }
+  if (includeUrlButtonParam) {
+    components.push({
+      type: 'button',
+      sub_type: 'url',
+      index: String(Number.isNaN(buttonIndex) ? 0 : buttonIndex),
+      parameters: [{ type: 'text', text: buttonValue }]
+    });
+  }
+
   const payload = {
     messaging_product: 'whatsapp',
     to: recipientWaId,
@@ -137,12 +159,7 @@ async function sendWhatsAppOtpTemplate({ phoneE164, otp }) {
     template: {
       name: WHATSAPP_TEMPLATE_NAME,
       language: { code: WHATSAPP_TEMPLATE_LANGUAGE },
-      components: [
-        {
-          type: 'body',
-          parameters: [{ type: 'text', text: otp }]
-        }
-      ]
+      components
     }
   };
 
