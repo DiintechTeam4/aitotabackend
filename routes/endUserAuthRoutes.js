@@ -4,13 +4,16 @@ const { businessLogoUploadMiddleware } = require('../middlewares/businessLogoUpl
 const {
   registerStep1,
   verifyEmailOtp,
+  resendEmailOtp,
   sendMobileOtp,
+  resendMobileOtp,
   verifyMobileOtp,
   completeProfile,
   updateProfile,
   updateProfileImage,
   loginEmailPassword,
   requestForgotPassword,
+  resendForgotPasswordOtp,
   resetForgotPassword,
   getPublicProfileFields,
   checkEmailAccess,
@@ -35,9 +38,11 @@ router.post('/register/step1', registerStep1);
 
 // Verify email OTP
 router.post('/register/step1/verify-email-otp', verifyEmailOtp);
+router.post('/register/step1/resend-email-otp', resendEmailOtp);
 
 // Step 2: send WhatsApp OTP to mobile number
 router.post('/register/step2/send-mobile-otp', sendMobileOtp);
+router.post('/register/step2/resend-mobile-otp', resendMobileOtp);
 
 // Verify WhatsApp OTP
 router.post('/register/step2/verify-mobile-otp', verifyMobileOtp);
@@ -59,6 +64,7 @@ router.post('/login/email-password', loginEmailPassword);
 
 // Forget password (email OTP)
 router.post('/forgot-password/request', requestForgotPassword);
+router.post('/forgot-password/resend-otp', resendForgotPasswordOtp);
 router.post('/forgot-password/reset', resetForgotPassword);
 
 module.exports = router;
