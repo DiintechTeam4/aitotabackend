@@ -484,6 +484,37 @@ async function registerStep1(req, res) {
         return res.status(401).json({ success: false, message: 'Invalid email or password' });
       }
 
+      const nextStep = getNextStep(existing);
+
+      // If registration not complete, resend the appropriate OTP and return next step
+      if (nextStep !== 'completed') {
+        // Resend email OTP if email not verified
+        if (!existing.emailVerified) {
+          const otp = generateOtp();
+          const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+          await EndUser.findByIdAndUpdate(existing._id, {
+            emailOtpHash: hashOtp(otp),
+            emailOtpExpiresAt: expiresAt
+          });
+          await sendBrevoEmailOtp({ toEmail: normEmail, otp, subject: 'AITOTA verification OTP' });
+        }
+        return res.status(200).json({
+          success: true,
+          message: messageForNextStep(nextStep),
+          token: null,
+          nextStep,
+          user: {
+            id: existing._id,
+            clientId: existing.clientId,
+            email: existing.email,
+            emailVerified: existing.emailVerified,
+            mobileVerified: existing.mobileVerified,
+            profileCompleted: existing.profileCompleted,
+            mobileNumber: existing.mobileNumber
+          }
+        });
+      }
+
       const tenant = await getTenantClientByUserId(clientId);
       if (!tenant) {
         return res.status(404).json({ success: false, message: 'Client not found' });
@@ -497,7 +528,7 @@ async function registerStep1(req, res) {
         success: true,
         message: 'Login successful',
         token,
-        nextStep: getNextStep(existing),
+        nextStep,
         user: {
           id: existing._id,
           clientId: existing.clientId,
