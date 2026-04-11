@@ -60,6 +60,13 @@ const authMiddleware = async (req, res, next) => {
       next();
     } catch (error) {
       console.error('Token verification error:', error);
+      if (error.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          success: false,
+          message: 'Token expired',
+          code: 'TOKEN_EXPIRED',
+        });
+      }
       return res.status(401).json({
         success: false,
         message: 'Not authorized to access this route',
@@ -137,28 +144,29 @@ const verifyAdminToken = async (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Invalid token' });
   }
 };
-// Verify admin token
+// Verify admin token (optional - allows non-admin to proceed without req.admin)
 const verifyAdminTokenOnlyForRegister = async (req, res, next) => {
   try {
-    // Get token from header
     const authHeader = req.headers.authorization;
-    
-    const token = authHeader.split(' ')[1];
-    
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Find admin by id
-    const admin = await Admin.findById(decoded.id).select('-password');
-    if (!admin) {
-      return res.status(401).json({ success: false, message: 'Invalid token' });
+    // No header or not Bearer - allow as non-admin (public registration)
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return next();
     }
-    
-    // Add admin to request object
-    req.admin = admin;
-    req.adminId = String(decoded.id); // Also set adminId for consistency
+    const token = authHeader.split(' ')[1];
+    if (!token) return next();
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // Only set req.admin if the token actually belongs to an admin
+    if (decoded && decoded.userType === 'admin') {
+      const admin = await Admin.findById(decoded.id).select('-password');
+      if (admin) {
+        req.admin = admin;
+        req.adminId = String(decoded.id);
+      }
+    }
     next();
   } catch (error) {
+    // Token invalid/expired - allow as non-admin
     next();
   }
 };

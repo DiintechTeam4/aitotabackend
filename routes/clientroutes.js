@@ -105,12 +105,11 @@ const extractClientIdForProfile = async (req, res, next) => {
       });
     }
 
-    const client = await Client.findOne({ email });
-    if (!client) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
-    }
-    const ok = await bcrypt.compare(password, client.password);
-    if (!ok) {
+    const client = await Client.findOne({ email: email.toLowerCase() });
+    // Always run bcrypt to prevent timing-based email enumeration
+    const dummyHash = '$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
+    const ok = await bcrypt.compare(password, client ? client.password : dummyHash);
+    if (!client || !ok) {
       return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
     req.clientId = String(client._id);

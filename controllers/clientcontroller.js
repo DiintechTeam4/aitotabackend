@@ -475,15 +475,26 @@ function assignClientFieldIfPresent(client, field, value) {
 
 async function applyClientProfileFromRequest(client, req) {
   const b = req.body || {};
-  assignClientFieldIfPresent(client, 'name', b.name);
+  // Support nested profile object: { profile: { firstName, lastName, dateOfBirth } }
+  const profile = b.profile && typeof b.profile === 'object' ? b.profile : {};
+  // Derive name from profile.firstName + profile.lastName if top-level name not provided
+  const derivedName = b.name ||
+    ([profile.firstName, profile.lastName].filter(Boolean).join(' ').trim() || undefined);
+  assignClientFieldIfPresent(client, 'name', derivedName);
   assignClientFieldIfPresent(client, 'businessName', b.businessName);
-  assignClientFieldIfPresent(client, 'mobileNo', b.mobileNo);
+  // Accept both mobileNo and mobileNumber
+  assignClientFieldIfPresent(client, 'mobileNo', b.mobileNo || b.mobileNumber);
   assignClientFieldIfPresent(client, 'address', b.address);
   assignClientFieldIfPresent(client, 'city', b.city);
   assignClientFieldIfPresent(client, 'pincode', b.pincode);
   assignClientFieldIfPresent(client, 'websiteUrl', b.websiteUrl);
   assignClientFieldIfPresent(client, 'gstNo', b.gstNo);
   assignClientFieldIfPresent(client, 'panNo', b.panNo);
+  // Profile image from top-level fields
+  if (b.profileImageKey && String(b.profileImageKey).trim()) {
+    client.businessLogoKey = String(b.profileImageKey).trim();
+    try { client.businessLogoUrl = b.profileImageUrl || await getobject(client.businessLogoKey); } catch (_) {}
+  }
 
   if (req.file && req.file.buffer && req.file.buffer.length) {
     const safeName = String(req.file.originalname || 'logo')
@@ -609,7 +620,7 @@ const updateClientProfile = async (req, res) => {
 
 const getClientProfile = async (req, res) => {
   try {
-    const clientId = req.user.id;
+    const clientId = req.user?.id || req.clientId;
     const client = await Client.findById(clientId).select('-password');
     if (!client) {
       return res.status(404).json({
@@ -655,9 +666,8 @@ const loginClient = async (req, res) => {
     }
 
     // Check if client exists
-    const client = await Client.findOne({ email });
+    const client = await Client.findOne({ email: email.toLowerCase() });
     if (!client) {
-      console.log('Client not found for email:', email);
       return res.status(401).json({ 
         success: false, 
         message: "Invalid email or password" 
@@ -668,7 +678,6 @@ const loginClient = async (req, res) => {
 
     // Check if password matches
     const isPasswordValid = await bcrypt.compare(password, client.password);
-    console.log(isPasswordValid);
     if (!isPasswordValid) {
       console.log('Invalid password for client email:', email);
       return res.status(401).json({ 
@@ -680,26 +689,18 @@ const loginClient = async (req, res) => {
     console.log('Password verified, generating token');
 
     // Generate token with userType
-    const jwtToken = jwt.sign(
-      { 
-        id: client._id,
-        userType: 'client'
-      }, 
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
+    const jwtToken = generateToken(client._id);
 
     console.log('Login successful for client email:', email);
 
     // Get profile ID for client
     let profileId = await Profile.findOne({clientId: client._id});
 
-    let code; 
-    
+    let code = 200;
     if (client.isprofileCompleted && client.isApproved) {
-      code = 202;  
+      code = 202;
     } else if (client.isprofileCompleted && !client.isApproved) {
-      code = 203; 
+      code = 203;
     }
 
     res.status(200).json({
@@ -855,46 +856,30 @@ const googleLogin = async (req, res) => {
       // Existing client
       const token = generateToken(client._id);
       let profileId = await Profile.findOne({clientId: client._id});
-      if (client.isprofileCompleted === true || client.isprofileCompleted === "true") {
-        // Profile completed, proceed with login
-        return res.status(200).json({
-          success: true,
-          message: "Profile incomplete",
-          token,
-          userType: "client",
-          profileId: profileId ? profileId._id : null,
-          isprofileCompleted: true,
-          id: client._id,
-          email: client.email,
-          name: client.name,
-          isApproved: client.isApproved || false
-        });
-      } else {
-        // Profile not completed - return in exact format you specified
-        return res.status(200).json({
-          success: true,
-          message: "Profile incomplete",
-          token,
-          userType: "client",
-          profileId: profileId ? profileId._id : null,
-          isprofileCompleted: false,
-          id: client._id,
-          email: client.email,
-          name: client.name,
-          isApproved: client.isApproved || false
-        });
-      }
+      const isCompleted = client.isprofileCompleted === true || client.isprofileCompleted === 'true';
+      return res.status(200).json({
+        success: true,
+        message: isCompleted ? 'Login successful' : 'Profile incomplete',
+        token,
+        userType: "client",
+        profileId: profileId ? profileId._id : null,
+        isprofileCompleted: isCompleted,
+        id: client._id,
+        email: client.email,
+        name: client.name,
+        isApproved: client.isApproved || false
+      });
     } else {
       // Step 3: New client, create with Google info
       console.log('Creating new client for email:', userEmail);
       const newClient = await Client.create({
         name,
-        email,
-        password: "", // No password for Google user
+        email: userEmail,
+        password: "",
         isGoogleUser: true,
-        googleId,
-        googlePicture: picture,
-        emailVerified,
+        googleId: googleId || '',
+        googlePicture: picture || '',
+        emailVerified: emailVerified || false,
         isprofileCompleted: false,
         isApproved: false
       });
@@ -946,7 +931,7 @@ const registerClient = async (req, res) => {
     } = req.body;
 
     // Check if client email already exists
-    const existingClient = await Client.findOne({ email });
+    const existingClient = await Client.findOne({ email: email ? email.toLowerCase() : email });
     if (existingClient) {
       return res.status(400).json({
         success: false,
@@ -955,15 +940,19 @@ const registerClient = async (req, res) => {
     }
 
     // Check if client already exists with the same GST/PAN/MobileNo
-    const existingBusinessClient = await Client.findOne({
-      $or: [{ gstNo }, { panNo }, { mobileNo }]
-    });
+    const orConditions = [];
+    if (gstNo && String(gstNo).trim()) orConditions.push({ gstNo });
+    if (panNo && String(panNo).trim()) orConditions.push({ panNo });
+    if (mobileNo && String(mobileNo).trim()) orConditions.push({ mobileNo });
 
-    if (existingBusinessClient) {
-      return res.status(400).json({
-        success: false,
-        message: "Client already exists with the same GST, PAN, or Mobile number"
-      });
+    if (orConditions.length > 0) {
+      const existingBusinessClient = await Client.findOne({ $or: orConditions });
+      if (existingBusinessClient) {
+        return res.status(400).json({
+          success: false,
+          message: "Client already exists with the same GST, PAN, or Mobile number"
+        });
+      }
     }
 
     // Hash password

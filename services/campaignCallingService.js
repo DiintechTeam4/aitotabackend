@@ -2402,8 +2402,7 @@ async function migrateMissedToCompleted() {
   }
 }
 
-// AUTOMATIC: Start the background status update service after all functions are defined
-console.log('🚀 Starting automatic campaign call status update service...');
+// Start background services on load
 
 // Run migrations first, then fix stuck calls, then start automatic updates
 migrateMissedToCompleted().then(() => {

@@ -119,7 +119,7 @@ app.post('/api/v1/client/payments/initiate/cashfree', async (req, res) => {
       'Content-Type': 'application/json'
     };
 
-    console.log('🏦 Creating Cashfree order:', orderId);
+
     
     const cashfreeResponse = await axios.post(
       `${BASE_URL}/pg/orders`,
@@ -387,8 +387,7 @@ app.post('/api/v1/payments/cashfree/create-order', cors({
 }), express.json(), async (req, res) => {
   try {
     const { amount, planKey } = req.body || {};
-    console.log('🧾 [CREATE-ORDER] headers:', req.headers);
-    console.log('🧾 [CREATE-ORDER] body:', req.body);
+
 
     // Require auth header
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -415,7 +414,7 @@ app.post('/api/v1/payments/cashfree/create-order', cors({
       if (base) {
         const gst = Math.round(base * 0.18 * 100) / 100;
         orderAmount = Math.round((base + gst) * 100) / 100;
-        console.log('🧮 [CREATE-ORDER] computed amount from planKey:', { planKey: key, base, orderAmount });
+
       } else {
         return res.status(400).json({ success: false, message: 'Missing required field: amount', details: { received: req.body } });
       }
@@ -647,7 +646,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
       return res.redirect(`${FRONTEND_URL}${SUCCESS_PATH}?status=FAILED&error=Missing order ID`);
     }
 
-    console.log('🔔 Cashfree callback received:', { order_id, payment_status, cf_payment_id });
+
 
     // Verify payment status with Cashfree API
     let status = 'FAILED';
@@ -676,7 +675,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
       
       transactionId = data.cf_payment_id || data.reference_id || cf_payment_id;
       
-      console.log('✅ Payment status verified:', { status, transactionId, orderStatus: data.order_status });
+
       
     } catch (e) {
       console.error('❌ Cashfree status fetch failed:', e.message);
@@ -701,11 +700,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
         { new: true }
       );
       
-      if (paymentDoc) {
-        console.log('✅ Payment record updated:', { orderId: order_id, status, transactionId });
-      } else {
-        console.error('❌ Payment record not found for order:', order_id);
-      }
+
       
     } catch (e) {
       console.error('❌ Payment update failed:', e.message);
@@ -729,7 +724,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
             { credited: true, creditsAdded: creditsToAdd }
           );
           
-          console.log('✅ Credits added successfully:', { clientId: paymentDoc.clientId, creditsAdded: creditsToAdd });
+
         }
       } catch (e) {
         console.error('❌ Auto-credit failed:', e.message);
@@ -738,7 +733,7 @@ app.get('/api/v1/cashfree/callback', async (req, res) => {
 
     // Redirect to frontend with status
     const redirectUrl = `${FRONTEND_URL}${SUCCESS_PATH}?orderId=${encodeURIComponent(order_id)}&status=${encodeURIComponent(status)}&transactionId=${encodeURIComponent(transactionId || '')}`;
-    console.log('🔄 Redirecting to frontend:', redirectUrl);
+
     
     return res.redirect(redirectUrl);
     
@@ -885,9 +880,41 @@ app.use(cors());
 // Initialize WebSocket server
 const wsServer = new VoiceChatWebSocketServer(server);
 
-app.get('/', (req,res)=>{
-    res.send("hello world")
-})
+app.get('/', (req, res) => {
+    res.json({
+        success: true,
+        name: 'Aitota Backend API',
+        version: '1.0.0',
+        status: 'running',
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/api/v1', (req, res) => {
+    res.json({
+        success: true,
+        name: 'Aitota Backend API',
+        version: '1.0.0',
+        status: 'running',
+        environment: process.env.NODE_ENV || 'development',
+        timestamp: new Date().toISOString(),
+        endpoints: {
+            superadmin : '/api/v1/superadmin',
+            admin      : '/api/v1/admin',
+            client     : '/api/v1/client',
+            humanAgent : '/api/v1/human-agent',
+            chat       : '/api/v1/chat',
+            templates  : '/api/v1/templates',
+            stt        : '/api/v1/stt',
+            logs       : '/api/v1/logs',
+            mobile     : '/api/v1/mobile',
+            userAuth   : '/api/v1/user-auth',
+            userInfo   : '/api/v1/user-info',
+            payments   : '/api/v1/payments',
+            websocket  : '/ws/status'
+        }
+    });
+});
 
 // WebSocket server status endpoint
 app.get('/ws/status', (req, res) => {
@@ -1162,8 +1189,6 @@ app.post("/api/v1/logs/cleanup", async (req, res) => {
 app.post('/api/v1/client/proxy/clicktobot', async (req, res) => {
     try {
       const { apiKey, payload } = req.body;
-      console.log(req.body)
-      
       const response = await axios.post(
         'https://3neysomt18.execute-api.us-east-1.amazonaws.com/dev/clicktobot',
         payload,
@@ -1317,8 +1342,6 @@ app.post("/api/v1/debug/fix-specific-call", async (req, res) => {
     const CallLog = require('./models/CallLog');
     const Campaign = require('./models/Campaign');
     
-    console.log(`🔧 MANUAL: Fixing specific stuck call: ${uniqueId}`);
-    
     // Find the CallLog
     const callLog = await CallLog.findOne({
       'metadata.customParams.uniqueid': uniqueId
@@ -1395,18 +1418,13 @@ app.get('/api/v1/client/agent-config/:agentId', async (req, res) => {
     const AgentConfig = require('./models/AgentConfig');
     const { agentId } = req.params;
     
-    console.log(`🔧 BACKEND: Fetching agent config for agentId: ${agentId}`);
     
     if (!agentId) {
       return res.status(400).json({ success: false, message: 'Agent ID is required' });
     }
 
     const config = await AgentConfig.findOne({ agentId }).lean();
-    console.log(`🔧 BACKEND: Found config:`, config);
-    
     if (!config) {
-      // Return default serial mode if no config exists
-      console.log(`🔧 BACKEND: No config found, returning default serial mode`);
       return res.json({ 
         success: true, 
         data: { 
@@ -1418,10 +1436,8 @@ app.get('/api/v1/client/agent-config/:agentId', async (req, res) => {
       });
     }
 
-    console.log(`🔧 BACKEND: Returning config with mode: ${config.mode}`);
     res.json({ success: true, data: config });
   } catch (e) {
-    console.error(`🔧 BACKEND: Error fetching agent config:`, e);
     res.status(500).json({ success: false, message: e.message });
   }
 });
@@ -1529,7 +1545,6 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       clientId = decoded.id || decoded.clientId;
-      console.log(clientId)
     } catch {
       return res.status(401).json({
         success: false,
@@ -1585,9 +1600,6 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
         message: "Payment gateway not configured",
       });
     }
-    console.log(CLIENT_ID)
-    console.log(CLIENT_SECRET)
-
     // ✅ Create Cashfree order payload
     const orderData = {
       order_id: orderId,
@@ -1639,8 +1651,7 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
       orderStatus: result.order_status,
       rawResponse: result,
     });
-    console.log(result.payment_session_id)
-    const cleanSessionId = result.payment_session_id.replace(/paymentpayment$/, "");
+
 
     // ✅ Return session ID & order details
     return res.json({
@@ -1665,8 +1676,6 @@ app.post("/api/v1/payments/process", express.json(), async (req, res) => {
 app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
   try {
     const event = req.body || {};
-    console.log("📩 [CASHFREE-WEBHOOK]", JSON.stringify(event, null, 2));
-
     const { order_id, cf_payment_id, payment_status, order_amount } = event || {};
 
     if (!order_id || !payment_status) {
@@ -1703,7 +1712,6 @@ app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
       payment.creditsAdded = Math.floor(order_amount);
       await payment.save();
 
-      console.log("✅ Credits added for order", order_id);
     }
 
     res.json({ success: true });
@@ -1717,26 +1725,31 @@ app.post('/api/v1/cashfree/webhook', express.json(), async (req, res) => {
 const PORT = process.env.PORT || 4000;
 
 connectDB().then(async () => {
-    // Always run maintenance on startup
     try {
         const { fixStuckCalls, cleanupStaleActiveCalls, cleanupStuckCampaignsOnRestart } = require('./services/campaignCallingService');
         await fixStuckCalls();
-        console.log('✅ SERVER RESTART: Stuck calls check completed');
         await cleanupStaleActiveCalls();
-        console.log('✅ SERVER RESTART: Stale calls cleanup completed');
         await cleanupStuckCampaignsOnRestart();
-        console.log('✅ SERVER RESTART: Stuck campaigns cleanup completed');
     } catch (error) {
-        console.error('❌ SERVER RESTART: Error during stuck call check:', error);
+        console.error('  ✗ Startup maintenance failed:', error.message);
     }
     startDialCallCron();
     server.listen(PORT, () => {
-        console.log(`🚀 Server is running on http://localhost:${PORT}`);
-        console.log(`🔌 WebSocket server is ready on ws://localhost:${PORT}`);
-        console.log(`📊 WebSocket status: http://localhost:${PORT}/ws/status`);
+        const env = process.env.NODE_ENV || 'development';
+        console.log('');
+        console.log('  ╔══════════════════════════════════════════╗');
+        console.log('  ║           AITOTA BACKEND SERVER          ║');
+        console.log('  ╚══════════════════════════════════════════╝');
+        console.log(`  ✓ Environment  : ${env}`);
+        console.log(`  ✓ HTTP Server  : http://localhost:${PORT}`);
+        console.log(`  ✓ WebSocket    : ws://localhost:${PORT}`);
+        console.log(`  ✓ Payment GW   : Cashfree (sandbox)`);
+        console.log(`  ✓ Cron Job     : Dial-call check @ 12:00 AM IST`);
+        console.log('  ──────────────────────────────────────────');
+        console.log('');
     });
 }).catch(err => {
-    console.error('❌ Database connection failed:', err);
+    console.error('  ✗ Database connection failed:', err.message);
     process.exit(1);
 });
 

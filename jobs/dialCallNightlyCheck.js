@@ -104,7 +104,7 @@ const startDialCallCron = () => {
     { timezone: "Asia/Kolkata" }
   );
 
-  console.log("⏰ Dial Call Cron scheduled (12:00 AM IST)");
+  console.log("  ✓ Cron job scheduled  [12:00 AM IST]");
 };
 
 module.exports = {

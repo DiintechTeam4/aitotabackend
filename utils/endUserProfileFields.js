@@ -151,7 +151,15 @@ function isNonEmpty(val) {
 
 function validateProfilePayload(profile, mergedFields) {
   const err = [];
-  const prof = profile && typeof profile === 'object' ? { ...profile } : {};
+  const raw = profile && typeof profile === 'object' ? { ...profile } : {};
+  // Normalize common aliases before validation
+  const prof = { ...raw };
+  if (prof.mobileNumber !== undefined && prof.mobileNo === undefined) prof.mobileNo = prof.mobileNumber;
+  if (prof.firstName !== undefined || prof.lastName !== undefined) {
+    if (prof.name === undefined) {
+      prof.name = [prof.firstName, prof.lastName].filter(Boolean).join(' ').trim() || undefined;
+    }
+  }
   const allowed = new Set(getProfilePayloadKeys(mergedFields));
 
   const sanitized = {};
