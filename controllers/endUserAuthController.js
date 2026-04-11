@@ -848,32 +848,17 @@ async function verifyMobileOtp(req, res) {
 
 async function completeProfile(req, res) {
   try {
-    const { clientId, email, profile, profileImageUrl, profileImageKey, mobileNumber } = req.body || {};
+    const {
+      clientId, email, profile, profileImageUrl, profileImageKey, mobileNumber,
+      businessName, businessType, contactNumber, contactName,
+      pincode, city, state, website, pancard, gst, annualTurnover
+    } = req.body || {};
     const normEmail = normalizeEmail(email);
     if (!clientId || !isValidClientId(clientId)) {
       return res.status(400).json({ success: false, message: 'Valid clientId is required' });
     }
-    if (!normEmail || !profile || typeof profile !== 'object') {
-      return res.status(400).json({ success: false, message: 'email and profile object are required' });
-    }
-
-    const mergedFields = await getMergedFieldsForClientId(clientId);
-    if (!mergedFields) {
-      return res.status(404).json({ success: false, message: 'Client not found' });
-    }
-
-    // Merge top-level aliases into profile before validation
-    const normalizedProfile = { ...profile };
-    if (mobileNumber !== undefined && normalizedProfile.mobileNo === undefined) {
-      normalizedProfile.mobileNo = mobileNumber;
-    }
-    if (normalizedProfile.mobileNumber !== undefined && normalizedProfile.mobileNo === undefined) {
-      normalizedProfile.mobileNo = normalizedProfile.mobileNumber;
-    }
-
-    const { errors, sanitized } = validateProfilePayload(normalizedProfile, mergedFields);
-    if (errors.length) {
-      return res.status(400).json({ success: false, message: errors.join('; ') });
+    if (!normEmail) {
+      return res.status(400).json({ success: false, message: 'email is required' });
     }
 
     const user = await EndUser.findOne({ clientId, email: normEmail });
@@ -881,10 +866,36 @@ async function completeProfile(req, res) {
     if (!user.emailVerified) return res.status(400).json({ success: false, message: 'Verify email first' });
     if (!user.mobileVerified) return res.status(400).json({ success: false, message: 'Verify mobile first' });
 
-    user.profile = sanitized;
+    // Save business profile fields directly
+    if (businessName !== undefined) user.businessName = businessName;
+    if (businessType !== undefined) user.businessType = businessType;
+    if (contactNumber !== undefined) user.contactNumber = contactNumber;
+    if (contactName !== undefined) user.contactName = contactName;
+    if (pincode !== undefined) user.pincode = pincode;
+    if (city !== undefined) user.city = city;
+    if (state !== undefined) user.state = state;
+    if (website !== undefined) user.website = website;
+    if (pancard !== undefined) user.pancard = pancard;
+    if (gst !== undefined) user.gst = gst;
+    if (annualTurnover !== undefined) user.annualTurnover = annualTurnover;
     if (profileImageUrl) user.profileImageUrl = profileImageUrl;
     if (profileImageKey) user.profileImageKey = profileImageKey;
+
+    // Also handle legacy profile object if sent
+    if (profile && typeof profile === 'object') {
+      const mergedFields = await getMergedFieldsForClientId(clientId);
+      if (mergedFields) {
+        const normalizedProfile = { ...profile };
+        if (mobileNumber !== undefined && normalizedProfile.mobileNo === undefined) {
+          normalizedProfile.mobileNo = mobileNumber;
+        }
+        const { sanitized } = validateProfilePayload(normalizedProfile, mergedFields);
+        user.profile = sanitized;
+      }
+    }
+
     user.profileCompleted = true;
+    user.isProfileCompleted = true;
     await user.save();
 
     const tenant = await getTenantClientByUserId(clientId);
@@ -915,8 +926,20 @@ async function completeProfile(req, res) {
         emailVerified: user.emailVerified,
         mobileVerified: user.mobileVerified,
         profileCompleted: user.profileCompleted,
+        isProfileCompleted: user.isProfileCompleted,
         profile: user.profile,
-        profileImageUrl: user.profileImageUrl
+        profileImageUrl: user.profileImageUrl,
+        businessName: user.businessName,
+        businessType: user.businessType,
+        contactNumber: user.contactNumber,
+        contactName: user.contactName,
+        pincode: user.pincode,
+        city: user.city,
+        state: user.state,
+        website: user.website,
+        pancard: user.pancard,
+        gst: user.gst,
+        annualTurnover: user.annualTurnover
       }
     });
   } catch (error) {

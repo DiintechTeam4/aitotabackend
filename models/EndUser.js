@@ -45,7 +45,21 @@ const EndUserSchema = new mongoose.Schema(
       default: {}
     },
     profileImageUrl: { type: String, default: null },
-    profileImageKey: { type: String, default: null }
+    profileImageKey: { type: String, default: null },
+
+    // Business profile fields
+    businessName: { type: String, default: null },
+    businessType: { type: String, default: null },
+    contactNumber: { type: String, default: null },
+    contactName: { type: String, default: null },
+    pincode: { type: String, default: null },
+    city: { type: String, default: null },
+    state: { type: String, default: null },
+    website: { type: String, default: null },
+    pancard: { type: String, default: null },
+    gst: { type: String, default: null },
+    annualTurnover: { type: String, default: null },
+    isProfileCompleted: { type: Boolean, default: false }
   },
   { timestamps: true }
 );
