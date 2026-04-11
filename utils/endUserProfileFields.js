@@ -161,6 +161,8 @@ function validateProfilePayload(profile, mergedFields) {
     }
   }
   const allowed = new Set(getProfilePayloadKeys(mergedFields));
+  // Also allow mobileNo even if it's treated as locked key — some clients add it as custom field
+  allowed.add('mobileNo');
 
   const sanitized = {};
   for (const k of allowed) {
@@ -172,7 +174,11 @@ function validateProfilePayload(profile, mergedFields) {
   for (const f of mergedFields) {
     if (isLockedKey(f.key)) continue;
     if (f.required && !isNonEmpty(sanitized[f.key])) {
-      err.push(`Missing or empty required field: ${f.label || f.key}`);
+      // Check alias too: mobileNo field might be satisfied by mobileNumber
+      const aliasVal = f.key === 'mobileNo' ? prof.mobileNumber : undefined;
+      if (!isNonEmpty(aliasVal)) {
+        err.push(`Missing or empty required field: ${f.label || f.key}`);
+      }
     }
   }
 

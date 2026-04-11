@@ -807,7 +807,7 @@ async function verifyMobileOtp(req, res) {
 
 async function completeProfile(req, res) {
   try {
-    const { clientId, email, profile, profileImageUrl, profileImageKey } = req.body || {};
+    const { clientId, email, profile, profileImageUrl, profileImageKey, mobileNumber } = req.body || {};
     const normEmail = normalizeEmail(email);
     if (!clientId || !isValidClientId(clientId)) {
       return res.status(400).json({ success: false, message: 'Valid clientId is required' });
@@ -821,7 +821,16 @@ async function completeProfile(req, res) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const { errors, sanitized } = validateProfilePayload(profile, mergedFields);
+    // Merge top-level aliases into profile before validation
+    const normalizedProfile = { ...profile };
+    if (mobileNumber !== undefined && normalizedProfile.mobileNo === undefined) {
+      normalizedProfile.mobileNo = mobileNumber;
+    }
+    if (normalizedProfile.mobileNumber !== undefined && normalizedProfile.mobileNo === undefined) {
+      normalizedProfile.mobileNo = normalizedProfile.mobileNumber;
+    }
+
+    const { errors, sanitized } = validateProfilePayload(normalizedProfile, mergedFields);
     if (errors.length) {
       return res.status(400).json({ success: false, message: errors.join('; ') });
     }
