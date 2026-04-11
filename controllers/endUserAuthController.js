@@ -1225,37 +1225,36 @@ async function verifyForgotPasswordOtp(req, res) {
 
 async function resetForgotPassword(req, res) {
   try {
-    const { clientId, email, otp, newPassword } = req.body || {};
-    const normEmail = normalizeEmail(email);
+    const { resetToken, newPassword } = req.body || {};
 
-    if (!clientId || !isValidClientId(clientId)) {
-      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    if (!resetToken) {
+      return res.status(400).json({ success: false, message: 'resetToken is required' });
     }
-    if (!normEmail || !otp || !newPassword) {
-      return res.status(400).json({ success: false, message: 'email, otp and newPassword are required' });
-    }
-    if (String(newPassword).length < 6) {
-      return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+    if (!newPassword || String(newPassword).length < 6) {
+      return res.status(400).json({ success: false, message: 'newPassword must be at least 6 characters' });
     }
 
-    const user = await EndUser.findOne({ clientId, email: normEmail });
+    // Verify resetToken issued by verifyForgotPasswordOtp
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, process.env.JWT_SECRET);
+    } catch (e) {
+      return res.status(401).json({ success: false, message: 'Reset token is invalid or expired. Request a new OTP.' });
+    }
+
+    if (decoded.purpose !== 'password_reset') {
+      return res.status(401).json({ success: false, message: 'Invalid reset token' });
+    }
+
+    const user = await EndUser.findById(decoded.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    if (!user.resetOtpHash || !user.resetOtpExpiresAt) {
-      return res.status(400).json({ success: false, message: 'No reset OTP pending' });
-    }
-    if (user.resetOtpExpiresAt.getTime() < Date.now()) {
-      return res.status(400).json({ success: false, message: 'Reset OTP expired' });
-    }
-
-    const ok = hashOtp(otp) === user.resetOtpHash;
-    if (!ok) return res.status(401).json({ success: false, message: 'Invalid OTP' });
 
     user.passwordHash = await bcrypt.hash(String(newPassword), 10);
     user.resetOtpHash = null;
     user.resetOtpExpiresAt = null;
     await user.save();
 
-    const tenant = await getTenantClientByUserId(clientId);
+    const tenant = await getTenantClientByUserId(user.clientId);
     if (!tenant) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
@@ -1264,7 +1263,6 @@ async function resetForgotPassword(req, res) {
     }
 
     const token = issueTokenForEndUser(user);
-
     return res.json({ success: true, message: 'Password reset successful', token });
   } catch (error) {
     console.error('resetForgotPassword error:', error?.message || error);
