@@ -1254,16 +1254,7 @@ async function resetForgotPassword(req, res) {
     user.resetOtpExpiresAt = null;
     await user.save();
 
-    const tenant = await getTenantClientByUserId(user.clientId);
-    if (!tenant) {
-      return res.status(404).json({ success: false, message: 'Client not found' });
-    }
-    if (!tenant.isApproved) {
-      return respondClientNotApproved(res);
-    }
-
-    const token = issueTokenForEndUser(user);
-    return res.json({ success: true, message: 'Password reset successful', token });
+    return res.json({ success: true, message: 'Password reset successful' });
   } catch (error) {
     console.error('resetForgotPassword error:', error?.message || error);
     return res.status(500).json({ success: false, message: 'Failed to reset password' });
