@@ -288,7 +288,7 @@ async function checkEmailAccess(req, res) {
       return respondClientNotApproved(res);
     }
 
-    const user = await EndUser.findOne({ clientId, email: normEmail }).lean();
+    let user = await EndUser.findOne({ clientId, email: normEmail }).lean();
     if (!user) {
       return res.json({
         success: true,
@@ -299,6 +299,16 @@ async function checkEmailAccess(req, res) {
         token: null,
         user: null
       });
+    }
+
+    // Google login: email is already verified by Google, skip email OTP step
+    if (!user.emailVerified) {
+      await EndUser.findByIdAndUpdate(user._id, {
+        emailVerified: true,
+        emailOtpHash: null,
+        emailOtpExpiresAt: null
+      });
+      user = { ...user, emailVerified: true };
     }
 
     const nextStep = getNextStep(user);
