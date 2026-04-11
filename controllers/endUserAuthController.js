@@ -1181,6 +1181,48 @@ async function resendForgotPasswordOtp(req, res) {
   }
 }
 
+async function verifyForgotPasswordOtp(req, res) {
+  try {
+    const { clientId, email, otp } = req.body || {};
+    const normEmail = normalizeEmail(email);
+
+    if (!clientId || !isValidClientId(clientId)) {
+      return res.status(400).json({ success: false, message: 'Valid clientId is required' });
+    }
+    if (!normEmail || !otp) {
+      return res.status(400).json({ success: false, message: 'email and otp are required' });
+    }
+
+    const user = await EndUser.findOne({ clientId, email: normEmail });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user.resetOtpHash || !user.resetOtpExpiresAt) {
+      return res.status(400).json({ success: false, message: 'No reset OTP pending. Request a new one.' });
+    }
+    if (user.resetOtpExpiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ success: false, message: 'Reset OTP expired. Request a new one.' });
+    }
+
+    const ok = hashOtp(otp) === user.resetOtpHash;
+    if (!ok) return res.status(401).json({ success: false, message: 'Invalid OTP' });
+
+    // OTP verified — issue a short-lived reset token (do NOT clear hash yet, cleared on password reset)
+    const resetToken = jwt.sign(
+      { id: user._id, email: user.email, clientId: user.clientId, purpose: 'password_reset' },
+      process.env.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+
+    return res.json({
+      success: true,
+      message: 'OTP verified. You can now reset your password.',
+      resetToken
+    });
+  } catch (error) {
+    console.error('verifyForgotPasswordOtp error:', error?.message || error);
+    return res.status(500).json({ success: false, message: 'Failed to verify OTP' });
+  }
+}
+
 async function resetForgotPassword(req, res) {
   try {
     const { clientId, email, otp, newPassword } = req.body || {};
@@ -1243,6 +1285,7 @@ module.exports = {
   loginEmailPassword,
   requestForgotPassword,
   resendForgotPasswordOtp,
+  verifyForgotPasswordOtp,
   resetForgotPassword,
   getPublicProfileFields,
   checkEmailAccess,

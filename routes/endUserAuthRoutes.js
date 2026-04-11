@@ -14,6 +14,7 @@ const {
   loginEmailPassword,
   requestForgotPassword,
   resendForgotPasswordOtp,
+  verifyForgotPasswordOtp,
   resetForgotPassword,
   getPublicProfileFields,
   checkEmailAccess,
@@ -65,6 +66,7 @@ router.post('/login/email-password', loginEmailPassword);
 // Forget password (email OTP)
 router.post('/forgot-password/request', requestForgotPassword);
 router.post('/forgot-password/resend-otp', resendForgotPasswordOtp);
+router.post('/forgot-password/verify-otp', verifyForgotPasswordOtp);
 router.post('/forgot-password/reset', resetForgotPassword);
 
 module.exports = router;
