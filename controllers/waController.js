@@ -325,14 +325,35 @@ exports.sendCampaign = async (req, res) => {
     const campaign = await WaCampaign.findOne({ _id: req.params.id, userId: req.clientId });
     if (!campaign) return fail(res, 'Campaign not found', 404);
     if (campaign.status === 'running') return fail(res, 'Campaign is already running');
-    const [groupExists, templateExists, totalEligibleContacts] = await Promise.all([
+    const [groupExists, templateExists, totalEligibleContacts, totalContactsInGroup, optedOutInGroup] = await Promise.all([
       WaContactGroup.exists({ _id: campaign.targetGroup, userId: req.clientId }),
       WaTemplate.exists({ _id: campaign.template, userId: req.clientId }),
       WaContact.countDocuments({ userId: req.clientId, group: campaign.targetGroup, optedOut: false }),
+      WaContact.countDocuments({ userId: req.clientId, group: campaign.targetGroup }),
+      WaContact.countDocuments({ userId: req.clientId, group: campaign.targetGroup, optedOut: true }),
     ]);
     if (!groupExists) return fail(res, 'Campaign group not found', 404);
     if (!templateExists) return fail(res, 'Campaign template not found', 404);
-    if (!totalEligibleContacts) return fail(res, 'No contacts assigned to selected group', 400);
+    if (!totalEligibleContacts) {
+      return res.status(400).json({
+        success: false,
+        message:
+          totalContactsInGroup > 0
+            ? 'All contacts in this group are opted-out. Enable at least one contact.'
+            : 'No contacts assigned to selected group',
+        data: {
+          campaignId: String(campaign._id),
+          groupId: String(campaign.targetGroup),
+          eligibleContacts: totalEligibleContacts,
+          totalContactsInGroup,
+          optedOutInGroup,
+          hint:
+            totalContactsInGroup > 0
+              ? 'Contacts table me Opt-out = No karo, fir campaign send karo.'
+              : 'Contacts page me contact assign karo is group me, fir campaign send karo.',
+        },
+      });
+    }
     campaign.status = 'running'; campaign.scheduledAt = null; await campaign.save();
     setImmediate(() => runCampaignSendJob(campaign._id, req.clientId).catch(console.error));
     return ok(res, { campaign }, 'Campaign send started');
