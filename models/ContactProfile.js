@@ -30,7 +30,6 @@ const ContactProfileSchema = new mongoose.Schema(
     },
     normalizedPhoneNumber: {
       type: String,
-      index: true,
       default: "",
     },
     contactName: {

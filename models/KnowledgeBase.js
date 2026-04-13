@@ -70,7 +70,7 @@ const knowledgeBaseSchema = new mongoose.Schema({
   // Status
   isActive: { type: Boolean, default: true },
   // Embedding status
-  isEmbedded: { type: Boolean, default: false, index: true },
+  isEmbedded: { type: Boolean, default: false },
   embeddedAt: { type: Date },
   embedMeta: {
     message: { type: String },

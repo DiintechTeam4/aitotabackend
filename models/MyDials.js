@@ -41,7 +41,6 @@ const MyDialSchema = new mongoose.Schema({
   },
   normalizedPhoneNumber: {
     type: String,
-    index: true,
     default: ""
   },
   contactName:{
