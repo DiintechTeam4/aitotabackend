@@ -20,6 +20,8 @@ const telegrambotRoutes = require('./routes/telegrambot')
 const mobileCallLogRoutes = require('./routes/mobileCallLogRoutes')
 const userInfoRoutes = require('./routes/userInfoRoute')
 const endUserAuthRoutes = require('./routes/endUserAuthRoutes')
+const waRoutes = require('./routes/waRoutes');
+const waWebhookRoute = require('./routes/waWebhookRoute');
 const Business = require('./models/MyBussiness');
 const humanAgentRoutes = require('./routes/humanAgentRoutes');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
@@ -1230,6 +1232,8 @@ app.use('/api/v1/telegram', telegrambotRoutes);
 app.use('/api/v1/mobile', mobileCallLogRoutes);
 app.use('/api/v1/user-info', userInfoRoutes);
 app.use('/api/v1/user-auth', endUserAuthRoutes);
+app.use('/api/v1/whatsai/webhook', waWebhookRoute);
+app.use('/api/v1/whatsai', waRoutes);
 
 // const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
 // app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);

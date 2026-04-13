@@ -92,6 +92,9 @@ const ClientSchema = new mongoose.Schema({
   websiteUrl: {
     type: String,
   },
+  // WhatsAi - WhatsApp Automation fields
+  waPhoneNumberId: { type: String, default: '' },
+  waAccessToken: { type: String, default: '', select: false },
   // Auto-generated user ID for clients
   userId: {
     type: String,
