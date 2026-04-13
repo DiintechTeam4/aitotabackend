@@ -8,7 +8,8 @@ const wa = require('../controllers/waController');
 // All routes require client JWT — set req.clientId from req.client
 router.use(verifyClientToken);
 router.use((req, res, next) => {
-  req.clientId = req.client?._id;
+  if (!req.client) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  req.clientId = req.client._id;
   next();
 });
 

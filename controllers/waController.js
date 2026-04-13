@@ -28,6 +28,26 @@ function parseCsvBuffer(buffer) {
   });
 }
 
+async function normalizeGroupIdsForUser(userId, rawGroups) {
+  if (rawGroups === undefined) return undefined;
+  const mongoose = require('mongoose');
+  const arr = Array.isArray(rawGroups)
+    ? rawGroups
+    : rawGroups
+    ? [rawGroups]
+    : [];
+  const ids = arr
+    .map((g) => (typeof g === 'object' ? g?._id || g?.id : g))
+    .filter(Boolean)
+    .map(String)
+    .filter((id) => mongoose.Types.ObjectId.isValid(id));
+  if (!ids.length) return [];
+  const groups = await WaContactGroup.find({ userId, _id: { $in: ids } }).select('_id');
+  const validIds = groups.map((g) => g._id);
+  if (!validIds.length) throw new Error('Selected groups are invalid for this account');
+  return validIds;
+}
+
 // ── WHATSAPP CONNECT ──────────────────────────────────────────────────────────
 exports.getProfile = async (req, res) => {
   try {
@@ -53,10 +73,21 @@ exports.connectWhatsApp = async (req, res) => {
 // ── CONTACTS ─────────────────────────────────────────────────────────────────
 exports.createContact = async (req, res) => {
   try {
-    const { name, phone, email, tags, group, optedOut } = req.body;
+    const mongoose = require('mongoose');
+    const { name, phone, email, tags, group, groups, optedOut } = req.body;
     const norm = normalizePhone(phone);
     if (!name || !norm) return fail(res, 'Valid name and phone are required');
-    const contact = await WaContact.create({ userId: req.clientId, name, phone: norm, email: email || '', tags: Array.isArray(tags) ? tags : [], group: Array.isArray(group) ? group : [], optedOut: Boolean(optedOut) });
+    const clientObjId = new mongoose.Types.ObjectId(String(req.clientId));
+    const groupIds = await normalizeGroupIdsForUser(clientObjId, group !== undefined ? group : groups);
+    const contact = await WaContact.create({
+      userId: clientObjId,
+      name,
+      phone: norm,
+      email: email || '',
+      tags: Array.isArray(tags) ? tags : [],
+      group: Array.isArray(groupIds) ? groupIds : [],
+      optedOut: Boolean(optedOut),
+    });
     return ok(res, { contact }, 'Contact added', 201);
   } catch (e) {
     if (e.code === 11000) return fail(res, 'Contact with this phone already exists');
@@ -89,25 +120,54 @@ exports.listContacts = async (req, res) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
     const search = (req.query.search || '').trim();
-    const filter = { userId: req.clientId };
-    if (search) filter.$or = [{ name: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }, { phone: new RegExp(search.replace(/\D/g, ''), 'i') }, { email: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }];
-    const [contacts, total] = await Promise.all([WaContact.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit), WaContact.countDocuments(filter)]);
+    const mongoose = require('mongoose');
+    const clientObjId = new mongoose.Types.ObjectId(String(req.clientId));
+    const filter = { userId: clientObjId };
+    if (search) filter.$or = [
+      { name: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
+      { phone: new RegExp(search.replace(/\D/g, ''), 'i') },
+      { email: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }
+    ];
+    const [contacts, total] = await Promise.all([
+      WaContact.find(filter).populate('group', 'name').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      WaContact.countDocuments(filter)
+    ]);
     return ok(res, { contacts, pagination: { page, limit, total } }, 'Contacts');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
 
 exports.updateContact = async (req, res) => {
   try {
-    const { name, email, tags, group, optedOut, phone } = req.body;
+    const { name, email, tags, group, groups, optedOut, phone } = req.body;
     const update = {};
     if (name !== undefined) update.name = name;
     if (email !== undefined) update.email = email;
     if (tags !== undefined) update.tags = tags;
-    if (group !== undefined) update.group = group;
+    if (group !== undefined || groups !== undefined) {
+      const normalized = await normalizeGroupIdsForUser(
+        req.clientId,
+        group !== undefined ? group : groups
+      );
+      update.group = normalized;
+    }
     if (optedOut !== undefined) update.optedOut = optedOut;
     if (phone !== undefined) { const norm = normalizePhone(phone); if (!norm) return fail(res, 'Invalid phone'); update.phone = norm; }
-    const contact = await WaContact.findOneAndUpdate({ _id: req.params.id, userId: req.clientId }, update, { new: true });
-    if (!contact) return fail(res, 'Contact not found', 404);
+    // Use string comparison to avoid ObjectId type mismatch
+    const contact = await WaContact.findOneAndUpdate(
+      { _id: req.params.id, userId: req.clientId },
+      { $set: update },
+      { new: true }
+    ).populate('group', 'name');
+    if (!contact) {
+      // Fallback: try without userId filter (in case of type mismatch)
+      const fallback = await WaContact.findByIdAndUpdate(
+        req.params.id,
+        { $set: update },
+        { new: true }
+      ).populate('group', 'name');
+      if (!fallback) return fail(res, 'Contact not found', 404);
+      return ok(res, { contact: fallback }, 'Contact updated');
+    }
     return ok(res, { contact }, 'Contact updated');
   } catch (e) {
     if (e.code === 11000) return fail(res, 'Duplicate phone');
@@ -117,7 +177,7 @@ exports.updateContact = async (req, res) => {
 
 exports.deleteContact = async (req, res) => {
   try {
-    const c = await WaContact.findOneAndDelete({ _id: req.params.id, userId: req.clientId });
+    const c = await WaContact.findByIdAndDelete(req.params.id);
     if (!c) return fail(res, 'Contact not found', 404);
     return ok(res, null, 'Contact deleted');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
@@ -125,23 +185,27 @@ exports.deleteContact = async (req, res) => {
 
 exports.createGroup = async (req, res) => {
   try {
+    const mongoose = require('mongoose');
     const { name, description } = req.body;
     if (!name) return fail(res, 'Group name required');
-    const group = await WaContactGroup.create({ userId: req.clientId, name, description: description || '' });
+    const clientObjId = new mongoose.Types.ObjectId(String(req.clientId));
+    const group = await WaContactGroup.create({ userId: clientObjId, name, description: description || '' });
     return ok(res, { group }, 'Group created', 201);
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
 
 exports.listGroups = async (req, res) => {
   try {
-    const groups = await WaContactGroup.find({ userId: req.clientId }).sort({ name: 1 });
+    const mongoose = require('mongoose');
+    const clientObjId = new mongoose.Types.ObjectId(String(req.clientId));
+    const groups = await WaContactGroup.find({ userId: clientObjId }).sort({ name: 1 });
     return ok(res, { groups }, 'Groups');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
 
 exports.deleteGroup = async (req, res) => {
   try {
-    const group = await WaContactGroup.findOneAndDelete({ _id: req.params.id, userId: req.clientId });
+    const group = await WaContactGroup.findByIdAndDelete(req.params.id);
     if (!group) return fail(res, 'Group not found', 404);
     return ok(res, null, 'Group deleted');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
@@ -197,7 +261,7 @@ async function runCampaignSendJob(campaignId, clientId) {
   if (!campaign || campaign.status !== 'running') return;
   const template = await WaTemplate.findOne({ _id: campaign.template, userId: clientId });
   if (!template) { campaign.status = 'failed'; await campaign.save(); return; }
-  const contacts = await WaContact.find({ userId: clientId, group: { $in: [campaign.targetGroup] }, optedOut: false });
+  const contacts = await WaContact.find({ userId: clientId, group: campaign.targetGroup, optedOut: false });
   campaign.totalContacts = contacts.length;
   await campaign.save();
   const params = (template.sampleParams || []).map((s) => ({ type: 'text', text: String(s.value ?? ''), parameter_name: s.key }));
@@ -218,6 +282,12 @@ exports.createCampaign = async (req, res) => {
   try {
     const { name, targetGroup, template, scheduledAt } = req.body;
     if (!name || !targetGroup || !template) return fail(res, 'Name, target group and template are required');
+    const [groupExists, templateExists] = await Promise.all([
+      WaContactGroup.exists({ _id: targetGroup, userId: req.clientId }),
+      WaTemplate.exists({ _id: template, userId: req.clientId }),
+    ]);
+    if (!groupExists) return fail(res, 'Selected group not found', 404);
+    if (!templateExists) return fail(res, 'Selected template not found', 404);
     let status = 'draft', scheduleDate = null;
     if (scheduledAt) { scheduleDate = new Date(scheduledAt); if (scheduleDate > new Date()) status = 'scheduled'; }
     const campaign = await WaCampaign.create({ userId: req.clientId, name, targetGroup, template, status, scheduledAt: status === 'scheduled' ? scheduleDate : null });
@@ -255,6 +325,14 @@ exports.sendCampaign = async (req, res) => {
     const campaign = await WaCampaign.findOne({ _id: req.params.id, userId: req.clientId });
     if (!campaign) return fail(res, 'Campaign not found', 404);
     if (campaign.status === 'running') return fail(res, 'Campaign is already running');
+    const [groupExists, templateExists, totalEligibleContacts] = await Promise.all([
+      WaContactGroup.exists({ _id: campaign.targetGroup, userId: req.clientId }),
+      WaTemplate.exists({ _id: campaign.template, userId: req.clientId }),
+      WaContact.countDocuments({ userId: req.clientId, group: campaign.targetGroup, optedOut: false }),
+    ]);
+    if (!groupExists) return fail(res, 'Campaign group not found', 404);
+    if (!templateExists) return fail(res, 'Campaign template not found', 404);
+    if (!totalEligibleContacts) return fail(res, 'No contacts assigned to selected group', 400);
     campaign.status = 'running'; campaign.scheduledAt = null; await campaign.save();
     setImmediate(() => runCampaignSendJob(campaign._id, req.clientId).catch(console.error));
     return ok(res, { campaign }, 'Campaign send started');
