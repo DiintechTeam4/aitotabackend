@@ -706,11 +706,15 @@ const loginClient = async (req, res) => {
     res.status(200).json({
       success: true,
       token: jwtToken,
+      userType: 'client',
+      role: 'client',
       client: {
         _id: client._id,
         name: client.name,
         email: client.email,
         code: code,
+        userType: 'client',
+        role: 'client',
         businessName: client.businessName,
         gstNo: client.gstNo,
         panNo: client.panNo,
@@ -1420,6 +1424,8 @@ const loginHumanAgent = async (req, res) => {
       success: true,
       message: "Human agent login successful",
       token,
+      userType: 'humanAgent',
+      role: 'humanAgent',
       humanAgent: {
         _id: humanAgent._id,
         humanAgentName: humanAgent.humanAgentName,
