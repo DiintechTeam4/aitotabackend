@@ -574,23 +574,15 @@ async function registerStep1(req, res) {
 
       const nextStep = getNextStep(existing);
 
-      // If registration not complete, resend the appropriate OTP and return next step
-      if (nextStep !== 'completed') {
-        // Resend email OTP if email not verified
-        if (!existing.emailVerified) {
-          const otp = generateOtp();
-          const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-          await EndUser.findByIdAndUpdate(existing._id, {
-            emailOtpHash: hashOtp(otp),
-            emailOtpExpiresAt: expiresAt
-          });
-          await sendBrevoEmailOtp({ toEmail: normEmail, otp, subject: 'AITOTA verification OTP' });
-        }
+      // IMPORTANT: Step1 is registration start/continue only.
+      // Completed users should be redirected to login, not issued a token here.
+      if (nextStep === 'completed') {
         return res.status(200).json({
           success: true,
-          message: messageForNextStep(nextStep),
+          action: 'already_registered',
+          message: 'Account already exists. Please login.',
           token: null,
-          nextStep,
+          nextStep: 'completed',
           user: {
             id: existing._id,
             clientId: existing.clientId,
@@ -603,28 +595,26 @@ async function registerStep1(req, res) {
         });
       }
 
-      const tenant = await getTenantClientByUserId(clientId);
-      if (!tenant) {
-        return res.status(404).json({ success: false, message: 'Client not found' });
-      }
-      if (!tenant.isApproved) {
-        return respondClientNotApproved(res);
+      // If registration not complete, resend the appropriate OTP and return next step
+      if (!existing.emailVerified) {
+        const otp = generateOtp();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+        existing.emailOtpHash = hashOtp(otp);
+        existing.emailOtpExpiresAt = expiresAt;
+        await existing.save();
+        await sendBrevoEmailOtp({ toEmail: normEmail, otp, subject: 'AITOTA verification OTP' });
       }
 
-      const token = issueTokenForEndUser(existing);
       return res.status(200).json({
         success: true,
-        message: 'Login successful',
-        token,
-        userType: 'client',
-        role: 'client',
+        action: 'continue_registration',
+        message: messageForNextStep(nextStep),
+        token: null,
         nextStep,
         user: {
           id: existing._id,
           clientId: existing.clientId,
           email: existing.email,
-          userType: 'client',
-          role: 'client',
           emailVerified: existing.emailVerified,
           mobileVerified: existing.mobileVerified,
           profileCompleted: existing.profileCompleted,
@@ -1161,15 +1151,43 @@ async function loginEmailPassword(req, res) {
     if (!ok) return res.status(401).json({ success: false, message: 'Invalid email or password' });
 
     user = await normalizeEndUserProgress(user);
+    const nextStep = getNextStep(user);
+
+    // Only issue token when registration is complete.
+    if (nextStep !== 'completed') {
+      return res.json({
+        success: true,
+        action: 'continue_registration',
+        message: messageForNextStep(nextStep),
+        token: null,
+        userType: 'client',
+        role: 'client',
+        nextStep,
+        user: {
+          id: user._id,
+          clientId: user.clientId,
+          email: user.email,
+          userType: 'client',
+          role: 'client',
+          mobileNumber: user.mobileNumber,
+          emailVerified: user.emailVerified,
+          mobileVerified: user.mobileVerified,
+          profileCompleted: user.profileCompleted,
+          profile: user.profile
+        }
+      });
+    }
+
     const token = issueTokenForEndUser(user);
 
     return res.json({
       success: true,
+      action: 'login',
       message: 'Login successful',
       token,
       userType: 'client',
       role: 'client',
-      nextStep: getNextStep(user),
+      nextStep,
       user: {
         id: user._id,
         clientId: user.clientId,
