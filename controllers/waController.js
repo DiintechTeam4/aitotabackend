@@ -20,6 +20,21 @@ function normalizePhone(raw) {
   return (d.length >= 10 && d.length <= 15) ? d : null;
 }
 
+function normalizeTemplateLanguageCode(languageCode) {
+  const raw = String(languageCode || '').trim();
+  if (!raw) return 'en_US';
+  const lower = raw.toLowerCase();
+  if (lower === 'en' || lower === 'en-us' || lower === 'en_us') return 'en_US';
+  return raw;
+}
+
+function normalizeTemplateMetaName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_');
+}
+
 function parseCsvBuffer(buffer) {
   return new Promise((resolve, reject) => {
     const rows = [];
@@ -239,7 +254,14 @@ exports.createTemplate = async (req, res) => {
   try {
     const { name, whatsappTemplateName, languageCode, bodyPreview, sampleParams } = req.body;
     if (!name || !whatsappTemplateName) return fail(res, 'Name and WhatsApp template name are required');
-    const template = await WaTemplate.create({ userId: req.clientId, name, whatsappTemplateName, languageCode: languageCode || 'en', bodyPreview: bodyPreview || '', sampleParams: Array.isArray(sampleParams) ? sampleParams : [] });
+    const template = await WaTemplate.create({
+      userId: req.clientId,
+      name: String(name).trim(),
+      whatsappTemplateName: normalizeTemplateMetaName(whatsappTemplateName),
+      languageCode: normalizeTemplateLanguageCode(languageCode),
+      bodyPreview: bodyPreview || '',
+      sampleParams: Array.isArray(sampleParams) ? sampleParams : [],
+    });
     return ok(res, { template }, 'Template saved', 201);
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
@@ -264,6 +286,13 @@ exports.updateTemplate = async (req, res) => {
     const allowed = ['name', 'whatsappTemplateName', 'languageCode', 'bodyPreview', 'sampleParams'];
     const update = {};
     for (const k of allowed) { if (req.body[k] !== undefined) update[k] = req.body[k]; }
+    if (update.name !== undefined) update.name = String(update.name).trim();
+    if (update.whatsappTemplateName !== undefined) {
+      update.whatsappTemplateName = normalizeTemplateMetaName(update.whatsappTemplateName);
+    }
+    if (update.languageCode !== undefined) {
+      update.languageCode = normalizeTemplateLanguageCode(update.languageCode);
+    }
     const template = await WaTemplate.findOneAndUpdate({ _id: req.params.id, userId: req.clientId }, update, { new: true });
     if (!template) return fail(res, 'Template not found', 404);
     return ok(res, { template }, 'Template updated');
@@ -283,9 +312,20 @@ async function runCampaignSendJob(campaignId, clientId) {
   const campaign = await WaCampaign.findOne({ _id: campaignId, userId: clientId });
   if (!campaign || campaign.status !== 'running') return;
   const template = await WaTemplate.findOne({ _id: campaign.template, userId: clientId });
-  if (!template) { campaign.status = 'failed'; await campaign.save(); return; }
+  if (!template) {
+    campaign.status = 'failed';
+    campaign.lastError = 'Template not found for this campaign';
+    await campaign.save();
+    console.error('[WA_CAMPAIGN_FAIL]', {
+      campaignId: String(campaign._id),
+      userId: String(clientId),
+      reason: campaign.lastError,
+    });
+    return;
+  }
   const contacts = await WaContact.find({ userId: clientId, group: campaign.targetGroup, optedOut: false });
   campaign.totalContacts = contacts.length;
+  campaign.lastError = '';
   await campaign.save();
   const params = (template.sampleParams || []).map((s) => ({ type: 'text', text: String(s.value ?? ''), parameter_name: s.key }));
   let sent = 0, failed = 0;
@@ -295,22 +335,45 @@ async function runCampaignSendJob(campaignId, clientId) {
     try {
       const apiRes = await waService.sendTemplateMessage(clientId, phone, template.whatsappTemplateName, template.languageCode || 'en', params);
       msgDoc.status = 'sent'; msgDoc.whatsappMessageId = apiRes?.messages?.[0]?.id || ''; await msgDoc.save(); sent++;
-    } catch (err) { msgDoc.status = 'failed'; msgDoc.errorReason = err.response?.data?.error?.message || err.message; await msgDoc.save(); failed++; }
+    } catch (err) {
+      const errorReason = err.response?.data?.error?.message || err.message || 'Unknown WhatsApp API error';
+      msgDoc.status = 'failed';
+      msgDoc.errorReason = errorReason;
+      await msgDoc.save();
+      failed++;
+      campaign.lastError = errorReason;
+      console.error('[WA_CAMPAIGN_SEND_ERROR]', {
+        campaignId: String(campaign._id),
+        userId: String(clientId),
+        contactId: String(contacts[i]._id),
+        phone,
+        templateName: template.whatsappTemplateName,
+        reason: errorReason,
+        meta: err.response?.data?.error || null,
+      });
+    }
     campaign.sent = sent; campaign.failed = failed; await campaign.save();
   }
-  campaign.status = 'completed'; await campaign.save();
+  if (failed > 0 && !campaign.lastError) {
+    campaign.lastError = 'Message send failed, but detailed WhatsApp error was not returned.';
+  }
+  campaign.status = sent === 0 && failed > 0 ? 'failed' : 'completed';
+  await campaign.save();
 }
 
 exports.createCampaign = async (req, res) => {
   try {
     const { name, targetGroup, template, scheduledAt } = req.body;
     if (!name || !targetGroup || !template) return fail(res, 'Name, target group and template are required');
-    const [groupExists, templateExists] = await Promise.all([
+    const [groupExists, templateDoc] = await Promise.all([
       WaContactGroup.exists({ _id: targetGroup, userId: req.clientId }),
-      WaTemplate.exists({ _id: template, userId: req.clientId }),
+      WaTemplate.findOne({ _id: template, userId: req.clientId }).select('whatsappTemplateName languageCode'),
     ]);
     if (!groupExists) return fail(res, 'Selected group not found', 404);
-    if (!templateExists) return fail(res, 'Selected template not found', 404);
+    if (!templateDoc) return fail(res, 'Selected template not found', 404);
+    if (!String(templateDoc.whatsappTemplateName || '').trim()) {
+      return fail(res, 'Selected template is invalid. Please set a valid Meta template name.', 400);
+    }
     let status = 'draft', scheduleDate = null;
     if (scheduledAt) { scheduleDate = new Date(scheduledAt); if (scheduleDate > new Date()) status = 'scheduled'; }
     const campaign = await WaCampaign.create({ userId: req.clientId, name, targetGroup, template, status, scheduledAt: status === 'scheduled' ? scheduleDate : null });
@@ -320,7 +383,31 @@ exports.createCampaign = async (req, res) => {
 
 exports.listCampaigns = async (req, res) => {
   try {
-    const campaigns = await WaCampaign.find({ userId: req.clientId }).sort({ createdAt: -1 });
+    const campaigns = await WaCampaign.find({ userId: req.clientId }).sort({ createdAt: -1 }).lean();
+    const missingErrorCampaignIds = campaigns
+      .filter((c) => Number(c.failed || 0) > 0 && !c.lastError)
+      .map((c) => c._id);
+
+    if (missingErrorCampaignIds.length) {
+      const latestFailedMessages = await WaMessage.aggregate([
+        { $match: { campaignId: { $in: missingErrorCampaignIds }, status: 'failed' } },
+        { $sort: { createdAt: -1 } },
+        {
+          $group: {
+            _id: '$campaignId',
+            lastReason: { $first: '$errorReason' },
+          },
+        },
+      ]);
+      const reasonMap = new Map(latestFailedMessages.map((m) => [String(m._id), m.lastReason]));
+      for (const campaign of campaigns) {
+        if (Number(campaign.failed || 0) > 0 && !campaign.lastError) {
+          campaign.lastError =
+            reasonMap.get(String(campaign._id)) ||
+            'Campaign failed but exact reason was not captured. Please deploy latest backend.';
+        }
+      }
+    }
     return ok(res, { campaigns }, 'Campaigns');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
@@ -348,15 +435,18 @@ exports.sendCampaign = async (req, res) => {
     const campaign = await WaCampaign.findOne({ _id: req.params.id, userId: req.clientId });
     if (!campaign) return fail(res, 'Campaign not found', 404);
     if (campaign.status === 'running') return fail(res, 'Campaign is already running');
-    const [groupExists, templateExists, totalEligibleContacts, totalContactsInGroup, optedOutInGroup] = await Promise.all([
+    const [groupExists, templateDoc, totalEligibleContacts, totalContactsInGroup, optedOutInGroup] = await Promise.all([
       WaContactGroup.exists({ _id: campaign.targetGroup, userId: req.clientId }),
-      WaTemplate.exists({ _id: campaign.template, userId: req.clientId }),
+      WaTemplate.findOne({ _id: campaign.template, userId: req.clientId }).select('whatsappTemplateName languageCode'),
       WaContact.countDocuments({ userId: req.clientId, group: campaign.targetGroup, optedOut: false }),
       WaContact.countDocuments({ userId: req.clientId, group: campaign.targetGroup }),
       WaContact.countDocuments({ userId: req.clientId, group: campaign.targetGroup, optedOut: true }),
     ]);
     if (!groupExists) return fail(res, 'Campaign group not found', 404);
-    if (!templateExists) return fail(res, 'Campaign template not found', 404);
+    if (!templateDoc) return fail(res, 'Campaign template not found', 404);
+    if (!String(templateDoc.whatsappTemplateName || '').trim()) {
+      return fail(res, 'Campaign template is invalid. Please update template name in Templates page.', 400);
+    }
     if (!totalEligibleContacts) {
       return res.status(400).json({
         success: false,
@@ -377,7 +467,13 @@ exports.sendCampaign = async (req, res) => {
         },
       });
     }
-    campaign.status = 'running'; campaign.scheduledAt = null; await campaign.save();
+    campaign.status = 'running';
+    campaign.scheduledAt = null;
+    campaign.sent = 0;
+    campaign.failed = 0;
+    campaign.totalContacts = 0;
+    campaign.lastError = '';
+    await campaign.save();
     setImmediate(() => runCampaignSendJob(campaign._id, req.clientId).catch(console.error));
     return ok(res, { campaign }, 'Campaign send started');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }

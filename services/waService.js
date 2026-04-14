@@ -38,18 +38,47 @@ function buildTemplateComponents(params) {
   return [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: String(p.text ?? p.value ?? ''), parameter_name: p.parameter_name || p.key })) }];
 }
 
+function normalizeLanguageCode(languageCode) {
+  const raw = String(languageCode || '').trim();
+  if (!raw) return 'en_US';
+  const lower = raw.toLowerCase();
+  if (lower === 'en' || lower === 'en-us' || lower === 'en_us') return 'en_US';
+  return raw;
+}
+
 async function sendTemplateMessage(clientId, to, templateName, languageCode, params) {
   const { phoneNumberId, token } = await getCreds(clientId);
   const toNum = String(to).replace(/\D/g, '');
   const bodyParams = buildTemplateComponents(params);
-  const templatePayload = { name: templateName, language: { code: languageCode || 'en' } };
-  if (bodyParams[0]?.parameters?.length) templatePayload.components = bodyParams;
-  const { data } = await axios.post(
-    graphUrl(phoneNumberId, 'messages'),
-    { messaging_product: 'whatsapp', to: toNum, type: 'template', template: templatePayload },
-    { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
-  );
-  return data;
+  const primaryLanguage = normalizeLanguageCode(languageCode);
+  const fallbackLanguages = primaryLanguage === 'en_US' ? ['en'] : ['en_US', 'en'];
+
+  const trySend = async (langCode) => {
+    const templatePayload = { name: templateName, language: { code: langCode } };
+    if (bodyParams[0]?.parameters?.length) templatePayload.components = bodyParams;
+    const { data } = await axios.post(
+      graphUrl(phoneNumberId, 'messages'),
+      { messaging_product: 'whatsapp', to: toNum, type: 'template', template: templatePayload },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+    return data;
+  };
+
+  try {
+    return await trySend(primaryLanguage);
+  } catch (err) {
+    const code = err.response?.data?.error?.code;
+    if (code !== 132001) throw err;
+    for (const lang of fallbackLanguages) {
+      if (lang === primaryLanguage) continue;
+      try {
+        return await trySend(lang);
+      } catch (retryErr) {
+        if (retryErr.response?.data?.error?.code !== 132001) throw retryErr;
+      }
+    }
+    throw err;
+  }
 }
 
 async function sendInteractiveMessage(clientId, to, buttons, bodyText) {

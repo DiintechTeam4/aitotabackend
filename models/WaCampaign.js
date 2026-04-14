@@ -17,6 +17,7 @@ const campaignSchema = new mongoose.Schema(
     delivered: { type: Number, default: 0 },
     read: { type: Number, default: 0 },
     failed: { type: Number, default: 0 },
+    lastError: { type: String, default: '' },
   },
   { timestamps: true }
 );
