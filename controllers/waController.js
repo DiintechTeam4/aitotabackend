@@ -61,10 +61,33 @@ exports.connectWhatsApp = async (req, res) => {
   try {
     const { whatsappPhoneNumberId, whatsappAccessToken } = req.body;
     if (!whatsappPhoneNumberId || !whatsappAccessToken) return fail(res, 'Phone Number ID and Access Token required');
+    const phoneId = String(whatsappPhoneNumberId).trim();
+    const accessToken = String(whatsappAccessToken).trim();
+    if (!/^\d{8,20}$/.test(phoneId)) {
+      return fail(res, 'Invalid Phone Number ID. Numeric value required (example: 790783224112773)');
+    }
+    if (accessToken.length < 20) {
+      return fail(res, 'Invalid Access Token');
+    }
+
+    // Validate connection with Meta Graph before saving.
+    try {
+      const axios = require('axios');
+      await axios.get(`https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION || 'v19.0'}/${phoneId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params: { fields: 'id,display_phone_number,verified_name' },
+        timeout: 15000,
+      });
+    } catch (verifyErr) {
+      const metaError = verifyErr.response?.data?.error;
+      const msg = metaError?.message || verifyErr.message || 'Meta API validation failed';
+      return fail(res, `WhatsApp connection failed: ${msg}`, 400);
+    }
+
     const client = await Client.findById(req.clientId);
     if (!client) return fail(res, 'Client not found', 404);
-    client.waPhoneNumberId = whatsappPhoneNumberId.trim();
-    client.waAccessToken = whatsappAccessToken.trim();
+    client.waPhoneNumberId = phoneId;
+    client.waAccessToken = accessToken;
     await client.save();
     return ok(res, null, 'WhatsApp connected');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
