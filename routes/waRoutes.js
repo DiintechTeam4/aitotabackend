@@ -28,6 +28,8 @@ router.post('/contacts/groups', wa.createGroup);
 router.delete('/contacts/groups/:id', wa.deleteGroup);
 
 // Templates
+router.get('/templates/meta-approved', wa.listMetaApprovedTemplates);
+router.post('/templates/from-meta', wa.cloneTemplateFromMeta);
 router.get('/templates', wa.listTemplates);
 router.get('/templates/:id', wa.getTemplate);
 router.post('/templates', wa.createTemplate);

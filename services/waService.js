@@ -29,32 +29,97 @@ async function sendTextMessage(clientId, to, message) {
   return data;
 }
 
-function buildTemplateComponents(params) {
+function buildTemplateComponents(params, parameterFormat = 'NAMED') {
   if (!params || !params.length) return [{ type: 'body', parameters: [] }];
   const first = params[0];
   if (typeof first === 'string') {
     return [{ type: 'body', parameters: params.map((text) => ({ type: 'text', text: String(text) })) }];
+  }
+  const fmt = String(parameterFormat || 'NAMED').toUpperCase() === 'POSITIONAL' ? 'POSITIONAL' : 'NAMED';
+  if (fmt === 'POSITIONAL') {
+    return [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: String(p.text ?? p.value ?? '') })) }];
   }
   return [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: String(p.text ?? p.value ?? ''), parameter_name: p.parameter_name || p.key })) }];
 }
 
 function normalizeLanguageCode(languageCode) {
   const raw = String(languageCode || '').trim();
-  if (!raw) return 'en_US';
-  const lower = raw.toLowerCase();
-  if (lower === 'en' || lower === 'en-us' || lower === 'en_us') return 'en_US';
-  return raw;
+  if (!raw) return 'en';
+  return raw.replace(/-/g, '_');
 }
 
-async function sendTemplateMessage(clientId, to, templateName, languageCode, params) {
+/**
+ * Resolve canonical template name + APPROVED language codes from Meta (fixes #132001:
+ * wrong locale like en_US vs en, or local name test1 vs Meta test_1).
+ */
+async function resolveMetaTemplateForSend(clientId, templateName) {
+  const wanted = String(templateName || '').trim();
+  if (!wanted) return { metaName: wanted, languages: [] };
+  try {
+    const { phoneNumberId, token } = await getCreds(clientId);
+    const ver = apiVersion();
+    const { data: phoneData } = await axios.get(`https://graph.facebook.com/${ver}/${phoneNumberId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { fields: 'whatsapp_business_account' },
+      timeout: 15000,
+    });
+    const waba = phoneData?.whatsapp_business_account;
+    const wabaId = waba?.id || waba;
+    if (!wabaId) return { metaName: wanted, languages: [] };
+
+    const { data } = await axios.get(`https://graph.facebook.com/${ver}/${wabaId}/message_templates`, {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { limit: 200, fields: 'name,language,status' },
+      timeout: 25000,
+    });
+    const list = (data?.data || []).filter((t) => t.status === 'APPROVED');
+
+    let matches = list.filter(
+      (t) => t.name === wanted || String(t.name).toLowerCase() === wanted.toLowerCase()
+    );
+    if (!matches.length) {
+      const wNorm = wanted.toLowerCase().replace(/_/g, '');
+      matches = list.filter((t) => String(t.name || '').toLowerCase().replace(/_/g, '') === wNorm);
+    }
+
+    if (!matches.length) return { metaName: wanted, languages: [] };
+
+    const metaName = matches[0].name;
+    const languages = [
+      ...new Set(matches.map((t) => String(t.language || '').replace(/-/g, '_'))),
+    ];
+    return { metaName, languages };
+  } catch (e) {
+    console.warn('[WA_SEND] resolveMetaTemplateForSend:', e.response?.data?.error?.message || e.message);
+    return { metaName: wanted, languages: [] };
+  }
+}
+
+async function sendTemplateMessage(clientId, to, templateName, languageCode, params, parameterFormat = 'NAMED') {
   const { phoneNumberId, token } = await getCreds(clientId);
   const toNum = String(to).replace(/\D/g, '');
-  const bodyParams = buildTemplateComponents(params);
+  const bodyParams = buildTemplateComponents(params, parameterFormat);
+
+  const { metaName, languages: metaLangs } = await resolveMetaTemplateForSend(clientId, templateName);
   const primaryLanguage = normalizeLanguageCode(languageCode);
-  const fallbackLanguages = primaryLanguage === 'en_US' ? ['en'] : ['en_US', 'en'];
+  const fallbackLanguages =
+    primaryLanguage === 'en_US' ? ['en', 'en_GB'] : ['en_US', 'en', 'en_GB'];
+
+  const tryOrder = [];
+  for (const l of metaLangs) tryOrder.push(l);
+  tryOrder.push(primaryLanguage);
+  for (const l of fallbackLanguages) tryOrder.push(l);
+
+  const seen = new Set();
+  const uniqueLangs = [];
+  for (const l of tryOrder) {
+    if (!l || seen.has(l)) continue;
+    seen.add(l);
+    uniqueLangs.push(l);
+  }
 
   const trySend = async (langCode) => {
-    const templatePayload = { name: templateName, language: { code: langCode } };
+    const templatePayload = { name: metaName, language: { code: langCode } };
     if (bodyParams[0]?.parameters?.length) templatePayload.components = bodyParams;
     const { data } = await axios.post(
       graphUrl(phoneNumberId, 'messages'),
@@ -64,21 +129,17 @@ async function sendTemplateMessage(clientId, to, templateName, languageCode, par
     return data;
   };
 
-  try {
-    return await trySend(primaryLanguage);
-  } catch (err) {
-    const code = err.response?.data?.error?.code;
-    if (code !== 132001) throw err;
-    for (const lang of fallbackLanguages) {
-      if (lang === primaryLanguage) continue;
-      try {
-        return await trySend(lang);
-      } catch (retryErr) {
-        if (retryErr.response?.data?.error?.code !== 132001) throw retryErr;
-      }
+  let lastErr;
+  for (const lang of uniqueLangs) {
+    try {
+      return await trySend(lang);
+    } catch (err) {
+      lastErr = err;
+      if (err.response?.data?.error?.code !== 132001) throw err;
     }
-    throw err;
   }
+  if (lastErr) throw lastErr;
+  throw new Error('No language candidates for template send');
 }
 
 async function sendInteractiveMessage(clientId, to, buttons, bodyText) {

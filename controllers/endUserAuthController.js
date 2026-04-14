@@ -225,10 +225,83 @@ async function getPublicProfileFields(req, res) {
 }
 
 function getNextStep(user) {
-  if (!user.emailVerified) return 'step1_verify_email_otp';
-  if (!user.mobileVerified) return 'step2_send_mobile_otp';
-  if (!user.profileCompleted) return 'step3_complete_profile';
+  const emailVerified = Boolean(user?.emailVerified);
+  const hasMobile = Boolean(normalizePhoneToE164(user?.mobileNumber));
+  const mobileVerified = Boolean(user?.mobileVerified || hasMobile);
+  const hasProfileObject =
+    user?.profile &&
+    typeof user.profile === 'object' &&
+    Object.keys(user.profile).length > 0;
+  const hasBusinessProfileFields = [
+    'businessName',
+    'businessType',
+    'contactNumber',
+    'contactName',
+    'pincode',
+    'city',
+    'state',
+    'website',
+    'pancard',
+    'gst',
+    'annualTurnover'
+  ].some((k) => {
+    const v = user?.[k];
+    return v !== undefined && v !== null && String(v).trim() !== '';
+  });
+  const profileCompleted = Boolean(
+    user?.profileCompleted || user?.isProfileCompleted || hasProfileObject || hasBusinessProfileFields
+  );
+
+  if (!emailVerified) return 'step1_verify_email_otp';
+  if (!mobileVerified) return 'step2_send_mobile_otp';
+  if (!profileCompleted) return 'step3_complete_profile';
   return 'completed';
+}
+
+async function normalizeEndUserProgress(userDoc) {
+  if (!userDoc) return null;
+
+  const hasMobile = Boolean(normalizePhoneToE164(userDoc.mobileNumber));
+  const hasProfileObject =
+    userDoc.profile &&
+    typeof userDoc.profile === 'object' &&
+    Object.keys(userDoc.profile).length > 0;
+  const hasBusinessProfileFields = [
+    'businessName',
+    'businessType',
+    'contactNumber',
+    'contactName',
+    'pincode',
+    'city',
+    'state',
+    'website',
+    'pancard',
+    'gst',
+    'annualTurnover'
+  ].some((k) => {
+    const v = userDoc[k];
+    return v !== undefined && v !== null && String(v).trim() !== '';
+  });
+
+  const nextMobileVerified = Boolean(userDoc.mobileVerified || hasMobile);
+  const nextProfileCompleted = Boolean(
+    userDoc.profileCompleted || userDoc.isProfileCompleted || hasProfileObject || hasBusinessProfileFields
+  );
+  const nextIsProfileCompleted = Boolean(userDoc.isProfileCompleted || nextProfileCompleted);
+
+  const changed =
+    Boolean(userDoc.mobileVerified) !== nextMobileVerified ||
+    Boolean(userDoc.profileCompleted) !== nextProfileCompleted ||
+    Boolean(userDoc.isProfileCompleted) !== nextIsProfileCompleted;
+
+  if (changed) {
+    userDoc.mobileVerified = nextMobileVerified;
+    userDoc.profileCompleted = nextProfileCompleted;
+    userDoc.isProfileCompleted = nextIsProfileCompleted;
+    await userDoc.save();
+  }
+
+  return userDoc;
 }
 
 function messageForNextStep(nextStep) {
@@ -289,7 +362,7 @@ async function checkEmailAccess(req, res) {
       return respondClientNotApproved(res);
     }
 
-    let user = await EndUser.findOne({ clientId, email: normEmail }).lean();
+    let user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) {
       return res.json({
         success: true,
@@ -304,13 +377,12 @@ async function checkEmailAccess(req, res) {
 
     // Google login: email is already verified by Google, skip email OTP step
     if (!user.emailVerified) {
-      await EndUser.findByIdAndUpdate(user._id, {
-        emailVerified: true,
-        emailOtpHash: null,
-        emailOtpExpiresAt: null
-      });
-      user = { ...user, emailVerified: true };
+      user.emailVerified = true;
+      user.emailOtpHash = null;
+      user.emailOtpExpiresAt = null;
+      await user.save();
     }
+    user = await normalizeEndUserProgress(user);
 
     const nextStep = getNextStep(user);
     if (nextStep === 'completed') {
@@ -492,12 +564,13 @@ async function registerStep1(req, res) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const existing = await EndUser.findOne({ clientId, email: normEmail }).lean();
+    let existing = await EndUser.findOne({ clientId, email: normEmail });
     if (existing) {
       const ok = await bcrypt.compare(String(password), existing.passwordHash);
       if (!ok) {
         return res.status(401).json({ success: false, message: 'Invalid email or password' });
       }
+      existing = await normalizeEndUserProgress(existing);
 
       const nextStep = getNextStep(existing);
 
@@ -1081,12 +1154,13 @@ async function loginEmailPassword(req, res) {
       return respondClientNotApproved(res);
     }
 
-    const user = await EndUser.findOne({ clientId, email: normEmail });
+    let user = await EndUser.findOne({ clientId, email: normEmail });
     if (!user) return res.status(401).json({ success: false, message: 'Invalid email or password' });
 
     const ok = await bcrypt.compare(String(password), user.passwordHash);
     if (!ok) return res.status(401).json({ success: false, message: 'Invalid email or password' });
 
+    user = await normalizeEndUserProgress(user);
     const token = issueTokenForEndUser(user);
 
     return res.json({

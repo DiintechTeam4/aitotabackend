@@ -20,19 +20,98 @@ function normalizePhone(raw) {
   return (d.length >= 10 && d.length <= 15) ? d : null;
 }
 
+/** Keep locale as in Meta (e.g. `en` vs `en_US`); do not rewrite `en` → `en_US` or sends get #132001. */
 function normalizeTemplateLanguageCode(languageCode) {
   const raw = String(languageCode || '').trim();
-  if (!raw) return 'en_US';
-  const lower = raw.toLowerCase();
-  if (lower === 'en' || lower === 'en-us' || lower === 'en_us') return 'en_US';
-  return raw;
+  if (!raw) return 'en';
+  return raw.replace(/-/g, '_');
 }
 
+/** Match Meta naming: trim + spaces→underscore; keep case (copy from WhatsApp Manager). */
 function normalizeTemplateMetaName(name) {
   return String(name || '')
     .trim()
-    .toLowerCase()
     .replace(/\s+/g, '_');
+}
+
+function sanitizeSampleParams(raw, parameterFormat) {
+  if (!Array.isArray(raw)) return [];
+  const fmt = String(parameterFormat || 'NAMED').toUpperCase() === 'POSITIONAL' ? 'POSITIONAL' : 'NAMED';
+  const rows = raw
+    .map((p) => ({
+      key: String(p?.key ?? '').trim(),
+      value: String(p?.value ?? '').trim(),
+    }))
+    .filter((p) => p.key.length > 0 || p.value.length > 0);
+  if (fmt === 'NAMED') {
+    return rows.filter((p) => p.key.length > 0 && p.value.length > 0);
+  }
+  return rows.filter((p) => p.value.length > 0);
+}
+
+async function getMetaWabaIdForClient(clientId) {
+  const axios = require('axios');
+  const client = await Client.findById(clientId).select('+waAccessToken');
+  if (!client?.waPhoneNumberId || !client?.waAccessToken) return null;
+  const ver = process.env.WHATSAPP_API_VERSION || 'v19.0';
+  const { data } = await axios.get(`https://graph.facebook.com/${ver}/${client.waPhoneNumberId}`, {
+    headers: { Authorization: `Bearer ${client.waAccessToken}` },
+    params: { fields: 'whatsapp_business_account' },
+    timeout: 15000,
+  });
+  const waba = data?.whatsapp_business_account;
+  return waba?.id || waba || null;
+}
+
+async function fetchApprovedMetaTemplates(clientId) {
+  try {
+    const axios = require('axios');
+    const wabaId = await getMetaWabaIdForClient(clientId);
+    if (!wabaId) return { templates: [], notConnected: true };
+    const ver = process.env.WHATSAPP_API_VERSION || 'v19.0';
+    const client = await Client.findById(clientId).select('+waAccessToken');
+    const { data } = await axios.get(`https://graph.facebook.com/${ver}/${wabaId}/message_templates`, {
+      headers: { Authorization: `Bearer ${client.waAccessToken}` },
+      params: { limit: 200, fields: 'name,language,status,category' },
+      timeout: 25000,
+    });
+    const list = data?.data || [];
+    return { templates: list.filter((t) => t.status === 'APPROVED'), notConnected: false };
+  } catch (e) {
+    const msg = e.response?.data?.error?.message || e.message || 'Meta API error';
+    return { templates: [], notConnected: false, fetchError: msg };
+  }
+}
+
+function metaLanguageMatches(templateLang, wantedLang) {
+  const a = String(templateLang || '').replace(/-/g, '_');
+  const b = String(wantedLang || '').replace(/-/g, '_');
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.toLowerCase() === b.toLowerCase()) return true;
+  if ((b === 'en_US' && a === 'en') || (b === 'en' && a === 'en_US')) return true;
+  return false;
+}
+
+async function assertTemplateApprovedOnMeta(clientId, whatsappTemplateName, languageCode) {
+  const { templates, notConnected, fetchError } = await fetchApprovedMetaTemplates(clientId);
+  if (notConnected) return { ok: true, skipped: true };
+  if (fetchError) {
+    console.warn('[WA_TEMPLATE_VERIFY_SKIP] Could not load Meta templates:', fetchError);
+    return { ok: true, skipped: true };
+  }
+  const nameWanted = String(whatsappTemplateName || '').trim();
+  const langWanted = normalizeTemplateLanguageCode(languageCode);
+  const nameMatches = (metaName) =>
+    metaName === nameWanted || String(metaName || '').toLowerCase() === nameWanted.toLowerCase();
+  const hit = templates.find((t) => nameMatches(t.name) && metaLanguageMatches(t.language, langWanted));
+  if (hit) return { ok: true };
+  const examples = templates.slice(0, 25).map((t) => `${t.name} (${t.language})`).join(', ');
+  return {
+    ok: false,
+    message: `Template "${nameWanted}" is not APPROVED for language "${langWanted}" on this WhatsApp number. Use exact name + language from WhatsApp Manager.`,
+    hint: examples ? `Approved examples: ${examples}` : 'No APPROVED templates returned for this account.',
+  };
 }
 
 function parseCsvBuffer(buffer) {
@@ -252,17 +331,78 @@ exports.deleteGroup = async (req, res) => {
 // ── TEMPLATES ─────────────────────────────────────────────────────────────────
 exports.createTemplate = async (req, res) => {
   try {
-    const { name, whatsappTemplateName, languageCode, bodyPreview, sampleParams } = req.body;
+    const { name, whatsappTemplateName, languageCode, bodyPreview, sampleParams, parameterFormat } = req.body;
     if (!name || !whatsappTemplateName) return fail(res, 'Name and WhatsApp template name are required');
+    const fmt = String(parameterFormat || 'NAMED').toUpperCase() === 'POSITIONAL' ? 'POSITIONAL' : 'NAMED';
+    const cleanedParams = sanitizeSampleParams(sampleParams, fmt);
+    const waName = normalizeTemplateMetaName(whatsappTemplateName);
+    const lang = normalizeTemplateLanguageCode(languageCode);
+
+    const check = await assertTemplateApprovedOnMeta(req.clientId, waName, lang);
+    if (!check.ok) {
+      return res.status(400).json({ success: false, message: check.message, data: { hint: check.hint } });
+    }
+
     const template = await WaTemplate.create({
       userId: req.clientId,
       name: String(name).trim(),
-      whatsappTemplateName: normalizeTemplateMetaName(whatsappTemplateName),
-      languageCode: normalizeTemplateLanguageCode(languageCode),
+      whatsappTemplateName: waName,
+      languageCode: lang,
       bodyPreview: bodyPreview || '',
-      sampleParams: Array.isArray(sampleParams) ? sampleParams : [],
+      parameterFormat: fmt,
+      sampleParams: cleanedParams,
     });
     return ok(res, { template }, 'Template saved', 201);
+  } catch (e) { return fail(res, e.message || 'Failed', 500); }
+};
+
+exports.listMetaApprovedTemplates = async (req, res) => {
+  try {
+    const { templates, notConnected, fetchError } = await fetchApprovedMetaTemplates(req.clientId);
+    if (notConnected) return fail(res, 'Connect WhatsApp in Settings to load Meta-approved templates.', 400);
+    if (fetchError) return fail(res, fetchError, 502);
+    return ok(res, { templates }, 'Approved Meta templates');
+  } catch (e) { return fail(res, e.message || 'Failed', 500); }
+};
+
+/** Save one template to Mongo using exact Meta `name` + `language` (recommended path for campaigns). */
+exports.cloneTemplateFromMeta = async (req, res) => {
+  try {
+    const { displayName, metaName, language } = req.body || {};
+    if (metaName === undefined || metaName === '' || language === undefined || language === '') {
+      return fail(res, 'metaName and language are required — copy from Meta sync list (exact).', 400);
+    }
+    const { templates, notConnected, fetchError } = await fetchApprovedMetaTemplates(req.clientId);
+    if (notConnected) return fail(res, 'Connect WhatsApp in Settings first.', 400);
+    if (fetchError) return fail(res, fetchError, 502);
+    const nameTrim = String(metaName).trim();
+    const langRaw = String(language).trim();
+    const hit = templates.find((t) => t.name === nameTrim && String(t.language) === langRaw);
+    if (!hit) {
+      return res.status(400).json({
+        success: false,
+        message: `No APPROVED template "${nameTrim}" with language "${langRaw}". Open sync list and use exact values.`,
+      });
+    }
+    const langStore = String(hit.language).replace(/-/g, '_');
+    const dup = await WaTemplate.findOne({
+      userId: req.clientId,
+      whatsappTemplateName: hit.name,
+      languageCode: langStore,
+    });
+    if (dup) {
+      return ok(res, { template: dup, existed: true }, 'Already saved in database');
+    }
+    const template = await WaTemplate.create({
+      userId: req.clientId,
+      name: String(displayName || hit.name).trim(),
+      whatsappTemplateName: hit.name,
+      languageCode: langStore,
+      bodyPreview: '',
+      parameterFormat: 'NAMED',
+      sampleParams: [],
+    });
+    return ok(res, { template, existed: false }, 'Template saved from Meta', 201);
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
 
@@ -283,9 +423,12 @@ exports.getTemplate = async (req, res) => {
 
 exports.updateTemplate = async (req, res) => {
   try {
-    const allowed = ['name', 'whatsappTemplateName', 'languageCode', 'bodyPreview', 'sampleParams'];
+    const allowed = ['name', 'whatsappTemplateName', 'languageCode', 'bodyPreview', 'sampleParams', 'parameterFormat'];
     const update = {};
     for (const k of allowed) { if (req.body[k] !== undefined) update[k] = req.body[k]; }
+    const existing = await WaTemplate.findOne({ _id: req.params.id, userId: req.clientId });
+    if (!existing) return fail(res, 'Template not found', 404);
+
     if (update.name !== undefined) update.name = String(update.name).trim();
     if (update.whatsappTemplateName !== undefined) {
       update.whatsappTemplateName = normalizeTemplateMetaName(update.whatsappTemplateName);
@@ -293,7 +436,27 @@ exports.updateTemplate = async (req, res) => {
     if (update.languageCode !== undefined) {
       update.languageCode = normalizeTemplateLanguageCode(update.languageCode);
     }
-    const template = await WaTemplate.findOneAndUpdate({ _id: req.params.id, userId: req.clientId }, update, { new: true });
+    if (update.parameterFormat !== undefined) {
+      update.parameterFormat = String(update.parameterFormat).toUpperCase() === 'POSITIONAL' ? 'POSITIONAL' : 'NAMED';
+    }
+
+    const nextFmt = update.parameterFormat !== undefined ? update.parameterFormat : existing.parameterFormat;
+    if (update.sampleParams !== undefined) {
+      update.sampleParams = sanitizeSampleParams(update.sampleParams, nextFmt);
+    } else if (update.parameterFormat !== undefined) {
+      update.sampleParams = sanitizeSampleParams(existing.sampleParams, nextFmt);
+    }
+
+    const waName = update.whatsappTemplateName !== undefined ? update.whatsappTemplateName : existing.whatsappTemplateName;
+    const lang = update.languageCode !== undefined ? update.languageCode : existing.languageCode;
+    if (update.whatsappTemplateName !== undefined || update.languageCode !== undefined) {
+      const check = await assertTemplateApprovedOnMeta(req.clientId, waName, lang);
+      if (!check.ok) {
+        return res.status(400).json({ success: false, message: check.message, data: { hint: check.hint } });
+      }
+    }
+
+    const template = await WaTemplate.findOneAndUpdate({ _id: req.params.id, userId: req.clientId }, { $set: update }, { new: true });
     if (!template) return fail(res, 'Template not found', 404);
     return ok(res, { template }, 'Template updated');
   } catch (e) { return fail(res, e.message || 'Update failed', 500); }
@@ -327,13 +490,26 @@ async function runCampaignSendJob(campaignId, clientId) {
   campaign.totalContacts = contacts.length;
   campaign.lastError = '';
   await campaign.save();
-  const params = (template.sampleParams || []).map((s) => ({ type: 'text', text: String(s.value ?? ''), parameter_name: s.key }));
+  const paramFmt = String(template.parameterFormat || 'NAMED').toUpperCase() === 'POSITIONAL' ? 'POSITIONAL' : 'NAMED';
+  let params;
+  if (paramFmt === 'POSITIONAL') {
+    params = (template.sampleParams || []).map((s) => String(s.value ?? ''));
+  } else {
+    params = (template.sampleParams || []).map((s) => ({ type: 'text', text: String(s.value ?? ''), parameter_name: s.key }));
+  }
   let sent = 0, failed = 0;
   for (let i = 0; i < contacts.length; i++) {
     const phone = contacts[i].phone.replace(/\D/g, '');
     const msgDoc = await WaMessage.create({ userId: clientId, campaignId: campaign._id, direction: 'outbound', from: 'business', to: phone, body: `${template.whatsappTemplateName} (${template.name})`, type: 'template', status: 'pending' });
     try {
-      const apiRes = await waService.sendTemplateMessage(clientId, phone, template.whatsappTemplateName, template.languageCode || 'en', params);
+      const apiRes = await waService.sendTemplateMessage(
+        clientId,
+        phone,
+        template.whatsappTemplateName,
+        template.languageCode || 'en',
+        params,
+        paramFmt
+      );
       msgDoc.status = 'sent'; msgDoc.whatsappMessageId = apiRes?.messages?.[0]?.id || ''; await msgDoc.save(); sent++;
     } catch (err) {
       const errorReason = err.response?.data?.error?.message || err.message || 'Unknown WhatsApp API error';
@@ -373,6 +549,14 @@ exports.createCampaign = async (req, res) => {
     if (!templateDoc) return fail(res, 'Selected template not found', 404);
     if (!String(templateDoc.whatsappTemplateName || '').trim()) {
       return fail(res, 'Selected template is invalid. Please set a valid Meta template name.', 400);
+    }
+    const metaCheck = await assertTemplateApprovedOnMeta(
+      req.clientId,
+      templateDoc.whatsappTemplateName,
+      templateDoc.languageCode
+    );
+    if (!metaCheck.ok) {
+      return res.status(400).json({ success: false, message: metaCheck.message, data: { hint: metaCheck.hint } });
     }
     let status = 'draft', scheduleDate = null;
     if (scheduledAt) { scheduleDate = new Date(scheduledAt); if (scheduleDate > new Date()) status = 'scheduled'; }
@@ -446,6 +630,14 @@ exports.sendCampaign = async (req, res) => {
     if (!templateDoc) return fail(res, 'Campaign template not found', 404);
     if (!String(templateDoc.whatsappTemplateName || '').trim()) {
       return fail(res, 'Campaign template is invalid. Please update template name in Templates page.', 400);
+    }
+    const metaCheck = await assertTemplateApprovedOnMeta(
+      req.clientId,
+      templateDoc.whatsappTemplateName,
+      templateDoc.languageCode
+    );
+    if (!metaCheck.ok) {
+      return res.status(400).json({ success: false, message: metaCheck.message, data: { hint: metaCheck.hint } });
     }
     if (!totalEligibleContacts) {
       return res.status(400).json({

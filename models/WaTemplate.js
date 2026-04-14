@@ -7,7 +7,7 @@ const templateSchema = new mongoose.Schema(
     whatsappTemplateName: { type: String, required: true, trim: true },
     languageCode: { type: String, default: 'en' },
     bodyPreview: { type: String, default: '' },
-    parameterFormat: { type: String, default: 'NAMED' },
+    parameterFormat: { type: String, enum: ['NAMED', 'POSITIONAL'], default: 'NAMED' },
     sampleParams: [{ key: String, value: String }],
   },
   { timestamps: true }
