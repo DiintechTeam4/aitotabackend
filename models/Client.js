@@ -146,6 +146,11 @@ const ClientSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  workspaceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace',
+    default: null
+  }
 });
 
 // Generate unique user ID for clients

@@ -24,6 +24,7 @@ const waRoutes = require('./routes/waRoutes');
 const waWebhookRoute = require('./routes/waWebhookRoute');
 const Business = require('./models/MyBussiness');
 const humanAgentRoutes = require('./routes/humanAgentRoutes');
+const workspaceRoutes = require('./routes/workspaceroutes');
 const { CLIENT_ID, CLIENT_SECRET, BASE_URL } = require('./config/cashfree');
 const jwt = require('jsonwebtoken');
 const app = express();
@@ -1234,6 +1235,7 @@ app.use('/api/v1/user-info', userInfoRoutes);
 app.use('/api/v1/user-auth', endUserAuthRoutes);
 app.use('/api/v1/whatsai/webhook', waWebhookRoute);
 app.use('/api/v1/whatsai', waRoutes);
+app.use('/api/v1/workspaces', workspaceRoutes);
 
 // const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
 // app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);

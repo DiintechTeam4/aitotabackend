@@ -211,3 +211,61 @@ exports.deleteClient = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 }
+
+exports.accessAdmin = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const admin = await Admin.findById(id);
+        if (!admin) {
+            return res.status(404).json({ message: "Admin not found" });
+        }
+
+        const token = jwt.sign(
+            { id: admin._id, userType: 'admin' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1d' }
+        );
+
+        res.status(200).json({
+            success: true,
+            token,
+            user: {
+                _id: admin._id,
+                name: admin.name,
+                email: admin.email
+            }
+        });
+    } catch (error) {
+        console.error('Access admin error:', error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+}
+
+exports.accessClient = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const client = await Client.findById(id);
+        if (!client) {
+            return res.status(404).json({ message: "Client not found" });
+        }
+
+        const token = jwt.sign(
+            { id: client._id, userType: 'client' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1d' }
+        );
+
+        res.status(200).json({
+            success: true,
+            token,
+            user: {
+                _id: client._id,
+                name: client.name || client.businessName,
+                email: client.email
+            }
+        });
+    } catch (error) {
+        console.error('Access client error:', error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+}
