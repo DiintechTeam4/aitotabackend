@@ -7,7 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "migrate:indexes": "node scripts/dropDuplicateIndexes.js"
+    "migrate:indexes": "node scripts/dropDuplicateIndexes.js",
+    "create-superadmin": "node scripts/addSuperadmin.js"
   },
   "keywords": [],
   "author": "",

@@ -3,6 +3,7 @@ const Admin = require('../models/Admin');
 const Client = require('../models/Client');
 const User = require('../models/User');
 const HumanAgent = require('../models/HumanAgent');
+const Superadmin = require('../models/Superadmin');
 
 const authMiddleware = async (req, res, next) => {
   try {
@@ -172,6 +173,8 @@ const verifyAdminTokenOnlyForRegister = async (req, res, next) => {
 };
 
 // Verify admin token
+
+// Verify user token
 const verifyUserToken = async (req, res, next) => {
   try {
     // Get token from header
@@ -198,6 +201,31 @@ const verifyUserToken = async (req, res, next) => {
     console.error('User token verification error:', error);
     return res.status(401).json({ success: false, message: 'Invalid token' });
   }
+};
+
+// Verify superadmin token
+const verifySuperadminToken = async (req, res, next) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ success: false, message: 'No token provided' });
+        }
+        const token = authHeader.split(' ')[1];
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        if (decoded.userType !== 'superadmin') {
+            return res.status(401).json({ success: false, message: 'Not authorized as superadmin' });
+        }
+        const superadmin = await Superadmin.findById(decoded.id).select('-password');
+        if (!superadmin) {
+            return res.status(401).json({ success: false, message: 'Superadmin not found' });
+        }
+        req.superadmin = superadmin;
+        req.user = { id: superadmin._id, userType: 'superadmin', email: superadmin.email };
+        next();
+    } catch (error) {
+        console.error('Superadmin token verification error:', error);
+        return res.status(401).json({ success: false, message: 'Invalid token' });
+    }
 };
 
 // Check client access middleware
@@ -482,7 +510,8 @@ module.exports = {
   ensureUserBelongsToClient,
   verifyHumanAgentToken,
   verifyClientOrHumanAgentToken,
-  verifyAgentOrClientToken
+  verifyAgentOrClientToken,
+  verifySuperadminToken
 }; 
 
 // Accepts either a client or admin token. If admin, requires a clientId in query/body/params.
