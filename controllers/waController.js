@@ -226,7 +226,7 @@ exports.importContacts = async (req, res) => {
       const norm = normalizePhone(phoneRaw);
       if (!norm) { skipped.push({ row, reason: 'Invalid phone' }); continue; }
       try {
-        const c = await WaContact.create({ userId: req.clientId, name: String(nameRaw).trim() || 'Unknown', phone: norm, email: String(row.email || '').trim(), tags: [], group: [], optedOut: false });
+        const c = await WaContact.create({ userId: new mongoose.Types.ObjectId(String(req.clientId)), name: String(nameRaw).trim() || 'Unknown', phone: norm, email: String(row.email || '').trim(), tags: [], group: [], optedOut: false });
         created.push(c);
       } catch (err) { skipped.push({ phone: norm, reason: err.code === 11000 ? 'Duplicate' : err.message }); }
     }
@@ -296,7 +296,8 @@ exports.updateContact = async (req, res) => {
 
 exports.deleteContact = async (req, res) => {
   try {
-    const c = await WaContact.findByIdAndDelete(req.params.id);
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
+    const c = await WaContact.findOneAndDelete({ _id: req.params.id, userId: uid });
     if (!c) return fail(res, 'Contact not found', 404);
     return ok(res, null, 'Contact deleted');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
@@ -324,7 +325,8 @@ exports.listGroups = async (req, res) => {
 
 exports.deleteGroup = async (req, res) => {
   try {
-    const group = await WaContactGroup.findByIdAndDelete(req.params.id);
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
+    const group = await WaContactGroup.findOneAndDelete({ _id: req.params.id, userId: uid });
     if (!group) return fail(res, 'Group not found', 404);
     return ok(res, null, 'Group deleted');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
@@ -569,7 +571,8 @@ exports.createCampaign = async (req, res) => {
 
 exports.listCampaigns = async (req, res) => {
   try {
-    const campaigns = await WaCampaign.find({ userId: req.clientId }).sort({ createdAt: -1 }).lean();
+    const campUid = new mongoose.Types.ObjectId(String(req.clientId));
+    const campaigns = await WaCampaign.find({ userId: campUidId }).sort({ createdAt: -1 }).lean();
     const missingErrorCampaignIds = campaigns
       .filter((c) => Number(c.failed || 0) > 0 && !c.lastError)
       .map((c) => c._id);
@@ -600,7 +603,8 @@ exports.listCampaigns = async (req, res) => {
 
 exports.getCampaign = async (req, res) => {
   try {
-    const campaign = await WaCampaign.findOne({ _id: req.params.id, userId: req.clientId });
+    const campUid2 = new mongoose.Types.ObjectId(String(req.clientId));
+    const campaign = await WaCampaign.findOne({ _id: req.params.id, userId: campUid2 });
     if (!campaign) return fail(res, 'Campaign not found', 404);
     const messages = await WaMessage.find({ campaignId: campaign._id }).sort({ createdAt: -1 }).limit(500);
     return ok(res, { campaign, messages }, 'Campaign detail');
@@ -609,7 +613,8 @@ exports.getCampaign = async (req, res) => {
 
 exports.deleteCampaign = async (req, res) => {
   try {
-    const c = await WaCampaign.findOneAndDelete({ _id: req.params.id, userId: req.clientId });
+    const delUid = new mongoose.Types.ObjectId(String(req.clientId));
+    const c = await WaCampaign.findOneAndDelete({ _id: req.params.id, userId: delUid });
     if (!c) return fail(res, 'Campaign not found', 404);
     await WaMessage.deleteMany({ campaignId: c._id });
     return ok(res, null, 'Campaign deleted');
@@ -758,8 +763,9 @@ exports.assignConversation = async (req, res) => {
 // ── BOT FLOW ──────────────────────────────────────────────────────────────────
 exports.getFlow = async (req, res) => {
   try {
-    let flow = await WaBotFlow.findOne({ userId: req.clientId });
-    if (!flow) flow = await WaBotFlow.create({ userId: req.clientId, triggerKeyword: 'hi', nodes: [{ id: 'welcome', type: 'message', content: 'Hello! How can we help?', options: [], nextNodeId: '' }] });
+    const flowUid = new mongoose.Types.ObjectId(String(req.clientId));
+    let flow = await WaBotFlow.findOne({ userId: flowUid });
+    if (!flow) flow = await WaBotFlow.create({ userId: flowUid, triggerKeyword: 'hi', nodes: [{ id: 'welcome', type: 'message', content: 'Hello! How can we help?', options: [], nextNodeId: '' }] });
     return ok(res, { flow }, 'Bot flow');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
@@ -767,7 +773,8 @@ exports.getFlow = async (req, res) => {
 exports.saveFlow = async (req, res) => {
   try {
     const { triggerKeyword, nodes } = req.body;
-    const flow = await WaBotFlow.findOneAndUpdate({ userId: req.clientId }, { userId: req.clientId, triggerKeyword: (triggerKeyword || 'hi').toLowerCase().trim(), nodes: Array.isArray(nodes) ? nodes : [] }, { upsert: true, new: true });
+    const saveUid = new mongoose.Types.ObjectId(String(req.clientId));
+    const flow = await WaBotFlow.findOneAndUpdate({ userId: saveUid }, { userId: saveUid, triggerKeyword: (triggerKeyword || 'hi').toLowerCase().trim(), nodes: Array.isArray(nodes) ? nodes : [] }, { upsert: true, new: true });
     return ok(res, { flow }, 'Bot flow saved');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
