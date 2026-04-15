@@ -572,7 +572,7 @@ exports.createCampaign = async (req, res) => {
 exports.listCampaigns = async (req, res) => {
   try {
     const campUid = new mongoose.Types.ObjectId(String(req.clientId));
-    const campaigns = await WaCampaign.find({ userId: campUidId }).sort({ createdAt: -1 }).lean();
+    const campaigns = await WaCampaign.find({ userId: campUid }).sort({ createdAt: -1 }).lean();
     const missingErrorCampaignIds = campaigns
       .filter((c) => Number(c.failed || 0) > 0 && !c.lastError)
       .map((c) => c._id);
