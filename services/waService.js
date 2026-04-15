@@ -4,13 +4,7 @@ const Client = require('../models/Client');
 const apiVersion = () => process.env.WHATSAPP_API_VERSION || 'v19.0';
 
 async function getCreds(clientId) {
-  // Use env-level credentials if set (shared WhatsApp Business Account)
-  const envPhoneId = process.env.WHATSAPP_PHONE_ID;
-  const envToken = process.env.WHATSAPP_TOKEN;
-  if (envPhoneId && envToken) {
-    return { phoneNumberId: envPhoneId, token: envToken };
-  }
-  // Fallback: per-client credentials from DB
+  // Always use per-client credentials from DB
   const client = await Client.findById(clientId).select('+waAccessToken');
   if (!client?.waPhoneNumberId || !client?.waAccessToken) {
     const err = new Error('WhatsApp not connected. Add Phone Number ID and Access Token in Settings.');

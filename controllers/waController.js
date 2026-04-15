@@ -790,10 +790,12 @@ exports.receiveWebhook = async (req, res) => {
         const value = change.value;
         const phoneNumberId = value?.metadata?.phone_number_id;
         if (!phoneNumberId) continue;
-        const client = await Client.findOne({ waPhoneNumberId: phoneNumberId }).select('+waAccessToken');
-        if (!client) continue;
-        if (value.messages) await handleInbound(client, value);
-        if (value.statuses) await handleStatus(client, value);
+        // Find ALL clients with this phone number, process each
+        const clients = await Client.find({ waPhoneNumberId: phoneNumberId }).select('+waAccessToken');
+        for (const client of clients) {
+          if (value.messages) await handleInbound(client, value).catch(e => console.error('handleInbound error:', e.message));
+          if (value.statuses) await handleStatus(client, value).catch(e => console.error('handleStatus error:', e.message));
+        }
       }
     }
     return res.sendStatus(200);
