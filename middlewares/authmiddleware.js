@@ -37,6 +37,13 @@ const authMiddleware = async (req, res, next) => {
       // Find user based on userType
       let user;
       if (decoded.userType === 'client') {
+        if (decoded.isWorkspace) {
+          const Workspace = require('../models/Workspace');
+          const workspace = await Workspace.findById(decoded.id);
+          if (!workspace) return res.status(401).json({ success: false, message: 'Workspace not found' });
+          req.user = { id: workspace._id, userType: 'client', email: workspace.email, isWorkspace: true };
+          return next();
+        }
         user = await Client.findById(decoded.id).select('-password');
       } else if (decoded.userType === 'admin') {
         user = await Admin.findById(decoded.id).select('-password');
@@ -85,24 +92,28 @@ const authMiddleware = async (req, res, next) => {
 // Verify user token
 const verifyClientToken = async (req, res, next) => {
   try {
-    // Get token from header
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ success: false, message: 'No token provided' });
     }
     
     const token = authHeader.split(' ')[1];
-    
-    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // Find user by id
+
+    // Workspace token — not in Client collection, allow through
+    if (decoded.isWorkspace) {
+      const Workspace = require('../models/Workspace');
+      const workspace = await Workspace.findById(decoded.id);
+      if (!workspace) return res.status(401).json({ success: false, message: 'Workspace not found' });
+      req.client = { _id: workspace._id, email: workspace.email, name: workspace.name, businessName: workspace.businessName, isApproved: true, isprofileCompleted: true };
+      return next();
+    }
+
     const client = await Client.findById(decoded.id).select('-password');
     if (!client) {
       return res.status(401).json({ success: false, message: 'Invalid token' });
     }
     
-    // Add user to request object
     req.client = client;
     next();
   } catch (error) {
@@ -526,12 +537,21 @@ const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     if (decoded.userType === 'client') {
+      if (decoded.isWorkspace) {
+        const Workspace = require('../models/Workspace');
+        const workspace = await Workspace.findById(decoded.id);
+        if (!workspace) return res.status(401).json({ success: false, error: 'Workspace not found' });
+        req.clientId = String(workspace._id);
+        req.clientUserId = String(workspace._id);
+        req.user = { id: workspace._id, userType: 'client', email: workspace.email };
+        return next();
+      }
       const client = await Client.findById(decoded.id).select('-password');
       if (!client) {
         return res.status(401).json({ success: false, error: 'Client not found' });
       }
       req.clientId = String(client._id);
-      req.clientUserId = String(client.userId); // Store the client's userId for reference
+      req.clientUserId = String(client.userId);
       req.user = { id: client._id, userType: 'client', email: client.email };
       return next();
     }

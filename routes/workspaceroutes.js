@@ -16,5 +16,6 @@ router.put('/:id', verifyAdminToken, updateWorkspace);
 router.delete('/:id', verifyAdminToken, deleteWorkspace);
 router.get('/:id/clients', verifyAdminToken, getWorkspaceClients);
 router.post('/assign', verifyAdminToken, assignClient);
+router.get('/:id/token', verifyAdminToken, require('../controllers/workspaceController').getWorkspaceToken);
 
 module.exports = router;

@@ -621,6 +621,28 @@ const updateClientProfile = async (req, res) => {
 const getClientProfile = async (req, res) => {
   try {
     const clientId = req.user?.id || req.clientId;
+
+    // Workspace token — not in Client collection, return workspace data
+    if (req.user?.isWorkspace) {
+      const Workspace = require('../models/Workspace');
+      const workspace = await Workspace.findById(clientId);
+      if (workspace) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            _id: workspace._id,
+            name: workspace.name,
+            email: workspace.email,
+            businessName: workspace.businessName || workspace.name,
+            city: workspace.city || '',
+            isApproved: true,
+            isprofileCompleted: true,
+            businessLogoUrl: ''
+          }
+        });
+      }
+    }
+
     const client = await Client.findById(clientId).select('-password');
     if (!client) {
       return res.status(404).json({

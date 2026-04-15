@@ -129,6 +129,36 @@ exports.getWorkspaceClients = async (req, res) => {
     }
 };
 
+// Get token for workspace login (opens client dashboard)
+exports.getWorkspaceToken = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const jwt = require('jsonwebtoken');
+
+        const workspace = await Workspace.findById(id);
+        if (!workspace) {
+            return res.status(404).json({ success: false, message: 'Workspace not found' });
+        }
+
+        const token = jwt.sign(
+            {
+                id: workspace._id,
+                email: workspace.email,
+                userType: 'client',
+                isWorkspace: true,
+                adminAccess: true
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '1d' }
+        );
+
+        res.json({ success: true, token });
+    } catch (error) {
+        console.error('getWorkspaceToken error:', error);
+        res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+};
+
 // Assign client to workspace
 exports.assignClient = async (req, res) => {
     try {

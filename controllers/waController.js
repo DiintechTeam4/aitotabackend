@@ -50,6 +50,8 @@ function sanitizeSampleParams(raw, parameterFormat) {
 }
 
 async function getMetaWabaIdForClient(clientId) {
+  // Use env-level WABA ID if set
+  if (process.env.WHATSAPP_WABA_ID) return process.env.WHATSAPP_WABA_ID;
   const axios = require('axios');
   const client = await Client.findById(clientId).select('+waAccessToken');
   if (!client?.waPhoneNumberId || !client?.waAccessToken) return null;
@@ -173,9 +175,8 @@ exports.connectWhatsApp = async (req, res) => {
         timeout: 15000,
       });
     } catch (verifyErr) {
-      const metaError = verifyErr.response?.data?.error;
-      const msg = metaError?.message || verifyErr.message || 'Meta API validation failed';
-      return fail(res, `WhatsApp connection failed: ${msg}`, 400);
+      // Log warning but still save — token may be valid for sending even if profile fetch fails
+      console.warn('[WA_CONNECT] Meta validation warning:', verifyErr.response?.data?.error?.message || verifyErr.message);
     }
 
     const client = await Client.findById(req.clientId);
@@ -674,8 +675,9 @@ exports.sendCampaign = async (req, res) => {
 // ── ANALYTICS ─────────────────────────────────────────────────────────────────
 exports.analyticsOverview = async (req, res) => {
   try {
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
     const [agg] = await WaMessage.aggregate([
-      { $match: { userId: req.clientId, direction: 'outbound' } },
+      { $match: { userId: uid, direction: 'outbound' } },
       { $group: { _id: null, total: { $sum: 1 }, sent: { $sum: { $cond: [{ $eq: ['$status', 'sent'] }, 1, 0] } }, delivered: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, 1, 0] } }, read: { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } }, failed: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } } } },
     ]);
     const t = agg || { total: 0, sent: 0, delivered: 0, read: 0, failed: 0 };
@@ -686,16 +688,18 @@ exports.analyticsOverview = async (req, res) => {
 
 exports.analyticsCampaigns = async (req, res) => {
   try {
-    const campaigns = await WaCampaign.find({ userId: req.clientId }).sort({ createdAt: -1 }).limit(50).select('name status totalContacts sent delivered read failed createdAt');
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
+    const campaigns = await WaCampaign.find({ userId: uid }).sort({ createdAt: -1 }).limit(50).select('name status totalContacts sent delivered read failed createdAt');
     return ok(res, { campaigns }, 'Campaign stats');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
 
 exports.analyticsTimeline = async (req, res) => {
   try {
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
     const since = new Date(); since.setDate(since.getDate() - 30);
     const rows = await WaMessage.aggregate([
-      { $match: { userId: req.clientId, direction: 'outbound', createdAt: { $gte: since } } },
+      { $match: { userId: uid, direction: 'outbound', createdAt: { $gte: since } } },
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]);
