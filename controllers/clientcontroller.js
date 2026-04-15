@@ -875,20 +875,51 @@ const googleLogin = async (req, res) => {
       });
     }
 
+    const computeClientProfileCompleted = (clientDoc, profileDoc) => {
+      const flag = clientDoc?.isprofileCompleted === true || clientDoc?.isprofileCompleted === 'true';
+      const profileFlag = Boolean(profileDoc?.isProfileCompleted);
+      const hasClientFields = [
+        'businessName',
+        'mobileNo',
+        'address',
+        'city',
+        'pincode',
+        'gstNo',
+        'panNo',
+        'websiteUrl',
+        'businessLogoKey',
+        'businessLogoUrl',
+      ].some((k) => {
+        const v = clientDoc?.[k];
+        return v !== undefined && v !== null && String(v).trim() !== '';
+      });
+      return Boolean(flag || profileFlag || hasClientFields);
+    };
+
     // Step 2: If not human agent, check if email exists as client
     let client = await Client.findOne({ email: userEmail });
     if (client) {
       console.log('Client found:', client._id);
       // Existing client
       const token = generateToken(client._id);
-      let profileId = await Profile.findOne({clientId: client._id});
-      const isCompleted = client.isprofileCompleted === true || client.isprofileCompleted === 'true';
+      const profileDoc = await Profile.findOne({ clientId: client._id }).lean();
+      const isCompleted = computeClientProfileCompleted(client, profileDoc);
+
+      // Keep DB flag in sync for future fast checks.
+      try {
+        if (!!client.isprofileCompleted !== isCompleted) {
+          client.isprofileCompleted = isCompleted;
+          await client.save();
+        }
+      } catch (e) {
+        // non-fatal
+      }
       return res.status(200).json({
         success: true,
         message: isCompleted ? 'Login successful' : 'Profile incomplete',
         token,
         userType: "client",
-        profileId: profileId ? profileId._id : null,
+        profileId: profileDoc ? profileDoc._id : null,
         isprofileCompleted: isCompleted,
         id: client._id,
         email: client.email,
