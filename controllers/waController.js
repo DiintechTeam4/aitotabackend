@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const WaCampaign = require('../models/WaCampaign');
 const WaContact = require('../models/WaContact');
 const WaContactGroup = require('../models/WaContactGroup');
