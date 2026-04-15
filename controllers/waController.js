@@ -710,14 +710,16 @@ exports.analyticsTimeline = async (req, res) => {
 // ── INBOX ─────────────────────────────────────────────────────────────────────
 exports.listConversations = async (req, res) => {
   try {
-    const conversations = await WaConversation.find({ userId: req.clientId }).sort({ lastMessageAt: -1 });
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
+    const conversations = await WaConversation.find({ userId: uid }).sort({ lastMessageAt: -1 });
     return ok(res, { conversations }, 'Conversations');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
 
 exports.getMessages = async (req, res) => {
   try {
-    const conv = await WaConversation.findOne({ _id: req.params.id, userId: req.clientId });
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
+    const conv = await WaConversation.findOne({ _id: req.params.id, userId: uid });
     if (!conv) return fail(res, 'Conversation not found', 404);
     const messages = await WaMessage.find({ conversationId: conv._id }).sort({ createdAt: 1 });
     conv.unreadCount = 0; await conv.save();
@@ -729,7 +731,8 @@ exports.replyConversation = async (req, res) => {
   try {
     const { text } = req.body;
     if (!text) return fail(res, 'Message text required');
-    const conv = await WaConversation.findOne({ _id: req.params.id, userId: req.clientId });
+    const uid = new mongoose.Types.ObjectId(String(req.clientId));
+    const conv = await WaConversation.findOne({ _id: req.params.id, userId: uid });
     if (!conv) return fail(res, 'Conversation not found', 404);
     const phone = conv.customerPhone.replace(/\D/g, '');
     const msgDoc = await WaMessage.create({ userId: req.clientId, conversationId: conv._id, direction: 'outbound', from: 'agent', to: phone, body: text, type: 'text', status: 'pending' });
