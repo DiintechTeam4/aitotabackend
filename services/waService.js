@@ -59,13 +59,17 @@ async function resolveMetaTemplateForSend(clientId, templateName) {
   try {
     const { phoneNumberId, token } = await getCreds(clientId);
     const ver = apiVersion();
-    const { data: phoneData } = await axios.get(`https://graph.facebook.com/${ver}/${phoneNumberId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      params: { fields: 'whatsapp_business_account' },
-      timeout: 15000,
-    });
-    const waba = phoneData?.whatsapp_business_account;
-    const wabaId = waba?.id || waba;
+    // Use ENV WABA ID directly if set
+    let wabaId = process.env.WHATSAPP_WABA_ID;
+    if (!wabaId) {
+      const { data: phoneData } = await axios.get(`https://graph.facebook.com/${ver}/${phoneNumberId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { fields: 'whatsapp_business_account' },
+        timeout: 15000,
+      });
+      const waba = phoneData?.whatsapp_business_account;
+      wabaId = waba?.id || waba;
+    }
     if (!wabaId) return { metaName: wanted, languages: [] };
 
     const { data } = await axios.get(`https://graph.facebook.com/${ver}/${wabaId}/message_templates`, {
