@@ -12,8 +12,8 @@ const Profile = require("../models/Profile");
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // Generate JWT Token
-const generateToken = (id) => {
-  return jwt.sign({ id, userType: 'client' }, process.env.JWT_SECRET, {
+const generateToken = (id, extraFields = {}) => {
+  return jwt.sign({ id, userType: 'client', ...extraFields }, process.env.JWT_SECRET, {
     expiresIn: "7d",
   });
 };

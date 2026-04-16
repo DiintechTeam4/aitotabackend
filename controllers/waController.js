@@ -185,7 +185,7 @@ exports.connectWhatsApp = async (req, res) => {
     client.waPhoneNumberId = phoneId;
     client.waAccessToken = accessToken;
     await client.save();
-    return ok(res, null, 'WhatsApp connected');
+    return ok(res, { waPhoneNumberId: phoneId, connected: true, name: client.name, email: client.email, businessName: client.businessName }, 'WhatsApp connected');
   } catch (e) { return fail(res, e.message || 'Failed', 500); }
 };
 
