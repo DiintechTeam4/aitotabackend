@@ -87,4 +87,150 @@ router.post('/assign-czentrix', verifyAdminToken, assignCzentrixToAgent);
 // Campaign locks: which agents are locked due to running campaigns
 router.get('/campaign-locks', verifyAdminToken, adminCtrl.getCampaignLocks);
 
+// Import clients from external apps
+router.post('/import-external-clients', verifyAdminToken, async (req, res) => {
+  try {
+    const Client = require('../models/Client');
+    const { appSource, clients: externalClients } = req.body;
+    
+    if (!appSource || !['dialai', 'aivani', 'hellopaai'].includes(appSource)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid appSource is required (dialai, aivani, hellopaai)'
+      });
+    }
+    
+    if (!Array.isArray(externalClients) || externalClients.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Clients array is required'
+      });
+    }
+    
+    const importResults = {
+      imported: 0,
+      updated: 0,
+      skipped: 0,
+      errors: []
+    };
+    
+    for (const extClient of externalClients) {
+      try {
+        // Check if client already exists by email or externalId
+        let existingClient = null;
+        
+        if (extClient.externalId) {
+          existingClient = await Client.findOne({
+            $or: [
+              { externalId: extClient.externalId, appSource },
+              { email: extClient.email }
+            ]
+          });
+        } else {
+          existingClient = await Client.findOne({ email: extClient.email });
+        }
+        
+        if (existingClient) {
+          // Update existing client
+          await Client.findByIdAndUpdate(existingClient._id, {
+            name: extClient.name || existingClient.name,
+            businessName: extClient.businessName || existingClient.businessName,
+            mobileNo: extClient.mobileNo || existingClient.mobileNo,
+            address: extClient.address || existingClient.address,
+            city: extClient.city || existingClient.city,
+            pincode: extClient.pincode || existingClient.pincode,
+            websiteUrl: extClient.websiteUrl || existingClient.websiteUrl,
+            appSource: existingClient.appSource || appSource,
+            externalId: extClient.externalId || existingClient.externalId,
+            syncedAt: new Date(),
+            externalData: extClient.externalData || existingClient.externalData
+          });
+          importResults.updated++;
+        } else {
+          // Create new client
+          const newClient = new Client({
+            name: extClient.name,
+            email: extClient.email,
+            password: extClient.password || 'imported123',
+            businessName: extClient.businessName || extClient.name,
+            mobileNo: extClient.mobileNo || '0000000000',
+            address: extClient.address || '',
+            city: extClient.city || '',
+            pincode: extClient.pincode || '',
+            websiteUrl: extClient.websiteUrl || '',
+            gstNo: extClient.gstNo || undefined,
+            panNo: extClient.panNo || undefined,
+            appSource,
+            externalId: extClient.externalId,
+            syncedAt: new Date(),
+            externalData: extClient.externalData || null,
+            clientType: extClient.clientType || 'new',
+            isApproved: extClient.isApproved || false
+          });
+          
+          await newClient.save();
+          importResults.imported++;
+        }
+      } catch (error) {
+        console.error(`Error importing client ${extClient.email}:`, error);
+        importResults.errors.push({
+          email: extClient.email,
+          error: error.message
+        });
+        importResults.skipped++;
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Import completed: ${importResults.imported} imported, ${importResults.updated} updated, ${importResults.skipped} skipped`,
+      data: importResults
+    });
+    
+  } catch (error) {
+    console.error('Import external clients error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Get clients by app source
+router.get('/clients-by-source/:appSource', verifyAdminToken, async (req, res) => {
+  try {
+    const Client = require('../models/Client');
+    const { appSource } = req.params;
+    const { page = 1, limit = 50 } = req.query;
+    
+    const filter = appSource === 'all' ? {} : { appSource };
+    
+    const clients = await Client.find(filter)
+      .select('-password -waAccessToken')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .lean();
+    
+    const total = await Client.countDocuments(filter);
+    
+    res.json({
+      success: true,
+      data: clients,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get clients by source error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;

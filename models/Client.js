@@ -29,6 +29,26 @@ const ClientSchema = new mongoose.Schema({
     enum: ['Prime', 'demo', 'testing', 'new','owned','rejected'],
     default: 'new',
   },
+  // App source tracking
+  appSource: {
+    type: String,
+    enum: ['direct', 'dialai', 'aivani', 'hellopaai'],
+    default: 'direct',
+    index: true
+  },
+  externalId: {
+    type: String,
+    sparse: true,
+    index: true
+  },
+  syncedAt: {
+    type: Date,
+    default: null
+  },
+  externalData: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
   businessLogoKey: {
     type: String,
     required: function () {

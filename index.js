@@ -1237,10 +1237,9 @@ app.use('/api/v1/whatsai/webhook', waWebhookRoute);
 app.use('/api/v1/whatsai', waRoutes);
 app.use('/api/v1/workspaces', workspaceRoutes);
 
-// const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
-// app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);
-// // Also register without /api/v1 for compatibility
-// app.use('/whatsapp-template', whatsappTemplateRoutes);
+const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
+app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);
+app.use('/whatsapp-template', whatsappTemplateRoutes);
 
 // Public API endpoint for business details (no authentication required)
 app.get('/api/v1/public/business/:identifier', async (req, res) => {
