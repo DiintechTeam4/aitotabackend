@@ -109,6 +109,15 @@ const verifyClientToken = async (req, res, next) => {
       return next();
     }
 
+    // EndUser token — has clientId (Client.userId) field, find Client by userId
+    if (decoded.clientId) {
+      const client = await Client.findOne({ userId: decoded.clientId }).select('-password');
+      if (!client) return res.status(401).json({ success: false, message: 'Invalid token' });
+      req.client = client;
+      return next();
+    }
+
+    // Regular Client token
     const client = await Client.findById(decoded.id).select('-password');
     if (!client) {
       return res.status(401).json({ success: false, message: 'Invalid token' });
