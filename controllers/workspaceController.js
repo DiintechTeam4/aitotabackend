@@ -1,6 +1,7 @@
 const Workspace = require('../models/Workspace');
 const Client = require('../models/Client');
 const bcrypt = require('bcryptjs');
+const { getobject } = require('../utils/r2');
 
 // Create a new workspace
 exports.createWorkspace = async (req, res) => {
@@ -126,46 +127,51 @@ exports.getWorkspaceClients = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Workspace not found' });
         }
 
-        // Primary source of truth: explicit assignments
-        let clients = await Client.find({ workspaceId: id }).select('-password -waAccessToken');
+        const normalizedWorkspace = String(workspace.name || '')
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '');
 
-        // Fallback: Some legacy/external-import clients may not have workspaceId,
-        // but they do have `appSource`. We map common workspace names to appSource.
-        if (!clients || clients.length === 0) {
-            const wName = String(workspace.name || '').trim().toLowerCase();
-            const bName = String(workspace.businessName || '').trim().toLowerCase();
-            const key = wName || bName;
-
-            const map = {
-                hellopaai: 'hellopaai',
-                aivani: 'aivani',
-                dialai: 'dialai',
-                aitota: 'direct'
+        // Default business decision:
+        // - AiTota workspace should own legacy/unassigned clients
+        // - Other app workspaces should only show explicitly assigned clients
+        let query = { workspaceId: id };
+        if (normalizedWorkspace === 'aitota') {
+            query = {
+                $or: [
+                    { workspaceId: id },
+                    { workspaceId: null },
+                    { workspaceId: { $exists: false } }
+                ]
             };
-
-            const derivedSource = map[key] || map[wName.replace(/\s+/g, '')] || map[bName.replace(/\s+/g, '')] || null;
-
-            if (derivedSource) {
-                clients = await Client.find({ appSource: derivedSource }).select('-password -waAccessToken');
-            }
         }
 
-        // Final fallback: show same pool as Client Management so workspace "Users"
-        // tab never appears empty in legacy setups where workspace mapping was never done.
-        if (!clients || clients.length === 0) {
-            clients = await Client.find({}).select('-password -waAccessToken').sort({ createdAt: -1 });
-        }
+        const clients = await Client.find(query)
+            .select('-password -waAccessToken')
+            .sort({ createdAt: -1 });
 
         // De-dupe defensively (if in future we combine sources)
         const uniq = new Map();
         for (const c of clients || []) {
             uniq.set(String(c._id), c);
         }
-        clients = Array.from(uniq.values());
+        const dedupedClients = Array.from(uniq.values());
+        const clientsWithLogos = await Promise.all(
+            dedupedClients.map(async (clientObj) => {
+                try {
+                    // Always regenerate a fresh signed URL from key because
+                    // stored URLs can expire and break image rendering.
+                    if (clientObj.businessLogoKey) {
+                        clientObj.businessLogoUrl = await getobject(clientObj.businessLogoKey);
+                    }
+                } catch (_) {}
+                return clientObj;
+            })
+        );
         res.status(200).json({
             success: true,
-            data: clients,
-            count: clients.length
+            data: clientsWithLogos,
+            count: clientsWithLogos.length
         });
     } catch (error) {
         console.error('Get workspace clients error:', error);
