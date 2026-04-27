@@ -18,10 +18,14 @@ exports.createWorkspace = async (req, res) => {
             hashedPassword = await bcrypt.hash(password, salt);
         }
 
+        // Generate unique appId
+        const appId = 'APP-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+
         const workspace = await Workspace.create({
             name,
             email,
             password: hashedPassword,
+            appId,
             businessName,
             websiteUrl,
             city,

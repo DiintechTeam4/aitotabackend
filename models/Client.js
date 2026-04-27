@@ -26,7 +26,7 @@ const ClientSchema = new mongoose.Schema({
   },
   clientType:{
     type: String,
-    enum: ['Prime', 'demo', 'testing', 'new','owned','rejected'],
+    enum: ['prime', 'demo', 'testing', 'new', 'owned', 'rejected'],
     default: 'new',
   },
   // App source tracking

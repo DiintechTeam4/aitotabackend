@@ -984,7 +984,10 @@ const registerClient = async (req, res) => {
       address,
       city,
       pincode,
-      websiteUrl
+      websiteUrl,
+      workspaceId,
+      clientType,
+      businessLogoUrl: bodyLogoUrl
     } = req.body;
 
     // Check if client email already exists
@@ -1061,8 +1064,10 @@ const registerClient = async (req, res) => {
       city,
       pincode,
       websiteUrl,
+      workspaceId: workspaceId || null,
+      clientType: clientType || 'new',
       isprofileCompleted: true,
-      isApproved: isAdminCreating   // auto-approve only when admin creates
+      isApproved: isAdminCreating
     });
 
     // Initialize default credits (100) for new client
