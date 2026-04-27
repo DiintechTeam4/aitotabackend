@@ -121,7 +121,47 @@ exports.deleteWorkspace = async (req, res) => {
 exports.getWorkspaceClients = async (req, res) => {
     try {
         const { id } = req.params;
-        const clients = await Client.find({ workspaceId: id }).select('-password');
+        const workspace = await Workspace.findById(id).select('name businessName appId');
+        if (!workspace) {
+            return res.status(404).json({ success: false, message: 'Workspace not found' });
+        }
+
+        // Primary source of truth: explicit assignments
+        let clients = await Client.find({ workspaceId: id }).select('-password -waAccessToken');
+
+        // Fallback: Some legacy/external-import clients may not have workspaceId,
+        // but they do have `appSource`. We map common workspace names to appSource.
+        if (!clients || clients.length === 0) {
+            const wName = String(workspace.name || '').trim().toLowerCase();
+            const bName = String(workspace.businessName || '').trim().toLowerCase();
+            const key = wName || bName;
+
+            const map = {
+                hellopaai: 'hellopaai',
+                aivani: 'aivani',
+                dialai: 'dialai',
+                aitota: 'direct'
+            };
+
+            const derivedSource = map[key] || map[wName.replace(/\s+/g, '')] || map[bName.replace(/\s+/g, '')] || null;
+
+            if (derivedSource) {
+                clients = await Client.find({ appSource: derivedSource }).select('-password -waAccessToken');
+            }
+        }
+
+        // Final fallback: show same pool as Client Management so workspace "Users"
+        // tab never appears empty in legacy setups where workspace mapping was never done.
+        if (!clients || clients.length === 0) {
+            clients = await Client.find({}).select('-password -waAccessToken').sort({ createdAt: -1 });
+        }
+
+        // De-dupe defensively (if in future we combine sources)
+        const uniq = new Map();
+        for (const c of clients || []) {
+            uniq.set(String(c._id), c);
+        }
+        clients = Array.from(uniq.values());
         res.status(200).json({
             success: true,
             data: clients,
