@@ -687,8 +687,15 @@ const loginClient = async (req, res) => {
       });
     }
 
-    // Check if client exists
-    const client = await Client.findOne({ email: email.toLowerCase() });
+    // Check if client exists - prefer workspace-specific match
+    const workspaceId = req.body.workspaceId || null;
+    let client = workspaceId
+      ? await Client.findOne({ email: email.toLowerCase(), workspaceId })
+      : null;
+    // Fallback: find any client with this email (for direct/AiTota logins)
+    if (!client) {
+      client = await Client.findOne({ email: email.toLowerCase() });
+    }
     if (!client) {
       return res.status(401).json({ 
         success: false, 
@@ -990,8 +997,11 @@ const registerClient = async (req, res) => {
       businessLogoUrl: bodyLogoUrl
     } = req.body;
 
-    // Check if client email already exists
-    const existingClient = await Client.findOne({ email: email ? email.toLowerCase() : email });
+    // Check if client email already exists IN THE SAME WORKSPACE
+    const emailQuery = workspaceId
+      ? { email: email ? email.toLowerCase() : email, workspaceId }
+      : { email: email ? email.toLowerCase() : email, $or: [{ workspaceId: null }, { workspaceId: { $exists: false } }] };
+    const existingClient = await Client.findOne(emailQuery);
     if (existingClient) {
       return res.status(400).json({
         success: false,
@@ -999,14 +1009,17 @@ const registerClient = async (req, res) => {
       });
     }
 
-    // Check if client already exists with the same GST/PAN/MobileNo
+    // Check if client already exists with the same GST/PAN/MobileNo IN THE SAME WORKSPACE
     const orConditions = [];
     if (gstNo && String(gstNo).trim()) orConditions.push({ gstNo });
     if (panNo && String(panNo).trim()) orConditions.push({ panNo });
     if (mobileNo && String(mobileNo).trim()) orConditions.push({ mobileNo });
 
     if (orConditions.length > 0) {
-      const existingBusinessClient = await Client.findOne({ $or: orConditions });
+      const wsFilter = workspaceId
+        ? { workspaceId, $or: orConditions }
+        : { $and: [{ $or: [{ workspaceId: null }, { workspaceId: { $exists: false } }] }, { $or: orConditions }] };
+      const existingBusinessClient = await Client.findOne(wsFilter);
       if (existingBusinessClient) {
         return res.status(400).json({
           success: false,
@@ -1055,8 +1068,8 @@ const registerClient = async (req, res) => {
       email,
       password: hashedPassword,
       businessName,
-      businessLogoKey: resolvedLogoKey,
-      businessLogoUrl,
+      businessLogoKey: resolvedLogoKey || "",
+      businessLogoUrl: businessLogoUrl || "",
       gstNo,
       panNo,
       mobileNo,

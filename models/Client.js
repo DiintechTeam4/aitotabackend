@@ -8,7 +8,8 @@ const ClientSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, "Email is required"],
-    unique: true,
+    // Not globally unique - same email can exist in different workspaces
+    index: true,
   },
   password: {
     type: String,
@@ -51,24 +52,17 @@ const ClientSchema = new mongoose.Schema({
   },
   businessLogoKey: {
     type: String,
-    required: function () {
-      // Password is required only if not using Google auth
-      return !this.googleId;
-    },
+    default: "",
   },
   businessLogoUrl: {
     type: String,
-    required: function () {
-      // Password is required only if not using Google auth
-      return !this.googleId;
-    },
+    default: "",
   },
   gstNo: {
     type: String,
     required: function () {
       return !this.googleId;
     },
-    unique: true,
     sparse: true,
   },
   panNo: {
@@ -76,16 +70,13 @@ const ClientSchema = new mongoose.Schema({
     required: function () {
       return !this.googleId;
     },
-    unique: true,
     sparse: true,
   },
   mobileNo: {
     type: String,
     required: function () {
-      // Password is required only if not using Google auth
       return !this.googleId;
     },
-    unique: true,
     sparse: true
   },
   address: {

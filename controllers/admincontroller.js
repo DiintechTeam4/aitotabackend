@@ -293,19 +293,11 @@ const getClients = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Missing clientId' });
       }
 
-      // Only set provided fields
       const {
-        name,
-        businessName,
-        websiteUrl,
-        city,
-        pincode,
-        gstNo,
-        panNo,
-        aadharNo,
-        mobileNo,
-        address,
-        state,
+        name, businessName, websiteUrl, city, pincode,
+        gstNo, panNo, aadharNo, mobileNo, address, state,
+        businessLogoKey, businessLogoUrl,
+        clientType, dateOfBirth, profession
       } = req.body || {};
 
       const update = {};
@@ -320,6 +312,15 @@ const getClients = async (req, res) => {
       if (mobileNo !== undefined) update.mobileNo = mobileNo;
       if (address !== undefined) update.address = address;
       if (state !== undefined) update.state = state;
+      if (clientType !== undefined) update.clientType = clientType;
+      if (dateOfBirth !== undefined) update.dateOfBirth = dateOfBirth;
+      if (profession !== undefined) update.profession = profession;
+      // Preserve logo key - only update if a new key is provided (not a presigned URL)
+      if (businessLogoKey && String(businessLogoKey).trim() && !String(businessLogoKey).includes('?')) {
+        update.businessLogoKey = String(businessLogoKey).trim();
+        // Clear stored URL so it gets regenerated fresh on next fetch
+        update.businessLogoUrl = '';
+      }
 
       if (Object.keys(update).length === 0) {
         return res.status(400).json({ success: false, message: 'No fields to update' });

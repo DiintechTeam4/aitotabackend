@@ -132,19 +132,8 @@ exports.getWorkspaceClients = async (req, res) => {
             .toLowerCase()
             .replace(/\s+/g, '');
 
-        // Default business decision:
-        // - AiTota workspace should own legacy/unassigned clients
-        // - Other app workspaces should only show explicitly assigned clients
+        // Show only clients explicitly assigned to this workspace
         let query = { workspaceId: id };
-        if (normalizedWorkspace === 'aitota') {
-            query = {
-                $or: [
-                    { workspaceId: id },
-                    { workspaceId: null },
-                    { workspaceId: { $exists: false } }
-                ]
-            };
-        }
 
         const clients = await Client.find(query)
             .select('-password -waAccessToken')
@@ -159,12 +148,16 @@ exports.getWorkspaceClients = async (req, res) => {
         const clientsWithLogos = await Promise.all(
             dedupedClients.map(async (clientObj) => {
                 try {
-                    // Always regenerate a fresh signed URL from key because
-                    // stored URLs can expire and break image rendering.
-                    if (clientObj.businessLogoKey) {
-                        clientObj.businessLogoUrl = await getobject(clientObj.businessLogoKey);
+                    // Skip fake/placeholder keys that don't exist in R2
+                    const key = clientObj.businessLogoKey;
+                    if (key && !String(key).startsWith('external-logo-')) {
+                        clientObj.businessLogoUrl = await getobject(key);
+                    } else {
+                        clientObj.businessLogoUrl = '';
                     }
-                } catch (_) {}
+                } catch (_) {
+                    clientObj.businessLogoUrl = '';
+                }
                 return clientObj;
             })
         );
