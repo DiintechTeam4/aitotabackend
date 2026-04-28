@@ -126,7 +126,9 @@ const registerAdmin = async (req, res) => {
 const getClients = async (req, res) => {
     try {
       const minimal = String(req.query.minimal || '').toLowerCase() === '1' || String(req.query.minimal || '').toLowerCase() === 'true';
-      const clients = await Client.find()
+      // Only show direct clients (no workspace) in admin client tab
+      const baseFilter = { $or: [{ workspaceId: null }, { workspaceId: { $exists: false } }] };
+      const clients = await Client.find(baseFilter)
         .select(minimal
           ? '_id name businessName websiteUrl isApproved businessLogoUrl businessLogoKey'
           : '-password')
@@ -153,8 +155,9 @@ const getClients = async (req, res) => {
       const clientsWithLogos = await Promise.all(
         clients.map(async (clientObj) => {
           try {
-            if (clientObj.businessLogoKey) {
-              clientObj.businessLogoUrl = await getobject(clientObj.businessLogoKey);
+            const key = clientObj.businessLogoKey;
+            if (key && !String(key).startsWith('external-logo-')) {
+              clientObj.businessLogoUrl = await getobject(key);
             }
           } catch (e) {
             clientObj.businessLogoUrl = clientObj.businessLogoUrl || null;
