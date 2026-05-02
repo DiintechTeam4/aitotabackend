@@ -5,6 +5,19 @@ const User = require('../models/User');
 const HumanAgent = require('../models/HumanAgent');
 const Superadmin = require('../models/Superadmin');
 
+const handleJwtError = (error, res) => {
+  if (error.name === 'TokenExpiredError') {
+    return res.status(401).json({ success: false, message: 'Token expired. Please login again.', code: 'TOKEN_EXPIRED' });
+  }
+  if (error.name === 'JsonWebTokenError') {
+    return res.status(401).json({ success: false, message: 'Invalid token.', code: 'INVALID_TOKEN' });
+  }
+  if (error.name === 'NotBeforeError') {
+    return res.status(401).json({ success: false, message: 'Token not yet active.', code: 'TOKEN_NOT_ACTIVE' });
+  }
+  return res.status(401).json({ success: false, message: 'Authentication failed.', code: 'AUTH_FAILED' });
+};
+
 const authMiddleware = async (req, res, next) => {
   try {
     let token;
@@ -67,25 +80,11 @@ const authMiddleware = async (req, res, next) => {
 
       next();
     } catch (error) {
-      console.error('Token verification error:', error);
-      if (error.name === 'TokenExpiredError') {
-        return res.status(401).json({
-          success: false,
-          message: 'Token expired',
-          code: 'TOKEN_EXPIRED',
-        });
-      }
-      return res.status(401).json({
-        success: false,
-        message: 'Not authorized to access this route',
-      });
+      return handleJwtError(error, res);
     }
   } catch (error) {
     console.error('Auth middleware error:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-    });
+    return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 };
 
@@ -126,8 +125,7 @@ const verifyClientToken = async (req, res, next) => {
     req.client = client;
     next();
   } catch (error) {
-    console.error('Token verification error:', error);
-    return res.status(401).json({ success: false, message: 'Invalid token' });
+    return handleJwtError(error, res);
   }
 };
 
@@ -161,8 +159,7 @@ const verifyAdminToken = async (req, res, next) => {
     };
     next();
   } catch (error) {
-    console.error('Admin token verification error:', error);
-    return res.status(401).json({ success: false, message: 'Invalid token' });
+    return handleJwtError(error, res);
   }
 };
 // Verify admin token (optional - allows non-admin to proceed without req.admin)
@@ -218,8 +215,7 @@ const verifyUserToken = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
-    console.error('User token verification error:', error);
-    return res.status(401).json({ success: false, message: 'Invalid token' });
+    return handleJwtError(error, res);
   }
 };
 
@@ -243,8 +239,7 @@ const verifySuperadminToken = async (req, res, next) => {
         req.user = { id: superadmin._id, userType: 'superadmin', email: superadmin.email };
         next();
     } catch (error) {
-        console.error('Superadmin token verification error:', error);
-        return res.status(401).json({ success: false, message: 'Invalid token' });
+        return handleJwtError(error, res);
     }
 };
 
@@ -377,8 +372,7 @@ const verifyHumanAgentToken = async (req, res, next) => {
     };
     next();
   } catch (error) {
-    console.error('Human agent token verification error:', error);
-    return res.status(401).json({ success: false, message: 'Invalid token' });
+    return handleJwtError(error, res);
   }
 };
 
@@ -446,8 +440,7 @@ const verifyClientOrHumanAgentToken = async (req, res, next) => {
     });
     
   } catch (error) {
-    console.error('Client or Human Agent token verification error:', error);
-    return res.status(401).json({ success: false, message: 'Invalid token' });
+    return handleJwtError(error, res);
   }
 };
 
@@ -515,24 +508,9 @@ const verifyAgentOrClientToken = async (req, res, next) => {
     });
     
   } catch (error) {
-    console.error('Agent or Client token verification error:', error);
-    return res.status(401).json({ success: false, message: 'Invalid token' });
+    return handleJwtError(error, res);
   }
 };
-
-module.exports = { 
-  verifyClientToken, 
-  verifyAdminToken, 
-  verifyAdminTokenOnlyForRegister, 
-  verifyUserToken, 
-  authMiddleware, 
-  checkClientAccess, 
-  ensureUserBelongsToClient,
-  verifyHumanAgentToken,
-  verifyClientOrHumanAgentToken,
-  verifyAgentOrClientToken,
-  verifySuperadminToken
-}; 
 
 // Accepts either a client or admin token. If admin, requires a clientId in query/body/params.
 const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
@@ -566,7 +544,7 @@ const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
     }
 
     if (decoded.userType === 'admin') {
-      const candidateClientId = req.query.clientId || req.body.clientId || req.params.clientId;
+      const candidateClientId = req.query.clientId || (req.body && req.body.clientId) || req.params.clientId;
       if (candidateClientId) {
         const client = await Client.findById(candidateClientId).select('-password');
         if (!client) {
@@ -614,10 +592,21 @@ const verifyClientOrAdminAndExtractClientId = async (req, res, next) => {
 
     return res.status(401).json({ success: false, error: 'Invalid token type' });
   } catch (error) {
-    console.error('verifyClientOrAdminAndExtractClientId error:', error);
-    return res.status(401).json({ success: false, error: 'Invalid token' });
+    return handleJwtError(error, res);
   }
 };
 
-// Export appended separately to avoid breaking existing export object reference
-module.exports.verifyClientOrAdminAndExtractClientId = verifyClientOrAdminAndExtractClientId;
+module.exports = { 
+  verifyClientToken, 
+  verifyAdminToken, 
+  verifyAdminTokenOnlyForRegister, 
+  verifyUserToken, 
+  authMiddleware, 
+  checkClientAccess, 
+  ensureUserBelongsToClient,
+  verifyHumanAgentToken,
+  verifyClientOrHumanAgentToken,
+  verifyAgentOrClientToken,
+  verifySuperadminToken,
+  verifyClientOrAdminAndExtractClientId
+};

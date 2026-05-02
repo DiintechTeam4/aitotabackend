@@ -1236,6 +1236,7 @@ app.use('/api/v1/user-auth', endUserAuthRoutes);
 app.use('/api/v1/whatsai/webhook', waWebhookRoute);
 app.use('/api/v1/whatsai', waRoutes);
 app.use('/api/v1/workspaces', workspaceRoutes);
+app.use('/api/v1/lead-scraper', require('./routes/scraperRoutes'));
 
 const whatsappTemplateRoutes = require('./routes/whatsappTemplateRoutes');
 app.use('/api/v1/whatsapp-template', whatsappTemplateRoutes);
