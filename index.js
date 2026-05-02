@@ -1073,9 +1073,11 @@ app.get("/api/v1/logs", async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error("❌ [LOGS-API] Error fetching logs:", error.message);
-    res.status(500).json({
-      error: "Failed to fetch logs",
-      message: error.message,
+    const isDbError = error.name === 'MongoServerSelectionError' || error.name === 'MongoNetworkError';
+    res.status(isDbError ? 503 : 500).json({
+      error: isDbError ? "Database temporarily unavailable" : "Failed to fetch logs",
+      message: isDbError ? "MongoDB connection issue. Retrying..." : error.message,
+      retryable: isDbError,
       timestamp: new Date().toISOString(),
     });
   }
@@ -1732,10 +1734,12 @@ const PORT = process.env.PORT || 4000;
 
 connectDB().then(async () => {
     try {
-        const { fixStuckCalls, cleanupStaleActiveCalls, cleanupStuckCampaignsOnRestart } = require('./services/campaignCallingService');
+        const { fixStuckCalls, cleanupStaleActiveCalls, cleanupStuckCampaignsOnRestart, migrateMissedToCompleted, startAutomaticStatusUpdates } = require('./services/campaignCallingService');
+        await migrateMissedToCompleted();
         await fixStuckCalls();
         await cleanupStaleActiveCalls();
         await cleanupStuckCampaignsOnRestart();
+        startAutomaticStatusUpdates();
     } catch (error) {
         console.error('  ✗ Startup maintenance failed:', error.message);
     }

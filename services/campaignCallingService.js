@@ -783,6 +783,7 @@ function generateUniqueId() {
  */
 async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, runId = null, providedUniqueId = null, extraCustomParams = {}) {
   const uniqueId = providedUniqueId || generateUniqueId(); // Use provided uniqueId or generate new one
+  let providerName = 'czentrix';
   
   console.log(`📞 MAKING CALL: Contact=${contact?.phone}, AgentId=${agentId}, ApiKey=${!!apiKey}, ClientId=${clientId}`);
   
@@ -792,6 +793,7 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
     // Load agent to branch by provider
     const agent = await Agent.findById(agentId).lean();
     const provider = String(agent?.serviceProvider || '').toLowerCase();
+    providerName = provider || 'czentrix';
 
     // SANPBX provider flow
     if (provider === 'snapbx' || provider === 'sanpbx') {
@@ -807,7 +809,9 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
       const callTo = normalizedDigits.startsWith('0') ? normalizedDigits : `0${normalizedDigits}`;
 
       // 1) Get API token (access token in header) with circuit breaker and retry
-      const tokenUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken';
+      const sanpbxBase = (agent?.sanpbxBaseUrl || 'https://clouduat28.sansoftwares.com').replace(/\/$/, '');
+      const tokenUrl = `${sanpbxBase}/pbxadmin/sanpbxapi/gentoken`;
+      const dialUrl = `${sanpbxBase}/pbxadmin/sanpbxapi/dialcall`;
       let tokenResp;
       let retryCount = 0;
       const maxRetries = 3;
@@ -836,7 +840,6 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
       }
 
       // 2) Dial call (apitoken in header) with circuit breaker and retry
-      const dialUrl = 'https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall';
       const dialBody = { appid: 2, call_to: callTo, caller_id: callerId, custom_field: { uniqueid: uniqueId, name: contact.name , runId, ...(extraCustomParams || {}) } };
       let response;
       retryCount = 0;
@@ -935,14 +938,16 @@ async function makeSingleCall(contact, agentId, apiKey, campaignId, clientId, ru
     };
 
   } catch (error) {
-    console.error('❌ CALL FAILED:', error?.response?.status, error?.response?.data || error?.message);    
+    const errStatus = error?.response?.status ?? 'NO_HTTP_STATUS';
+    const errData = error?.response?.data || error?.message || String(error);
+    console.error('❌ CALL FAILED:', errStatus, errData);
     return {
       success: false,
       uniqueId, // Return uniqueId even for failed calls
       error: error.message,
       status: error?.response?.status || null,
       responseData: error?.response?.data || null,
-      provider: 'czentrix',
+      provider: providerName,
       contact,
       timestamp: new Date()
     };
@@ -2402,26 +2407,8 @@ async function migrateMissedToCompleted() {
   }
 }
 
-// Start background services on load
-
-// Run migrations first, then fix stuck calls, then start automatic updates
-migrateMissedToCompleted().then(() => {
-  return fixStuckCalls();
-}).then(() => {
-  // Run campaign validation fix
-  const { exec } = require('child_process');
-  return new Promise((resolve) => {
-    exec('node scripts/fixCampaignValidation.js', (error, stdout, stderr) => {
-      if (error) {
-        console.log('⚠️ Campaign validation fix failed:', error.message);
-      } else {
-      }
-      resolve();
-    });
-  });
-}).then(() => {
-  startAutomaticStatusUpdates();
-});
+// Background services are started explicitly from index.js after DB connects
+// Do NOT auto-run DB operations on module load
 
 
 module.exports = {

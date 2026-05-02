@@ -417,19 +417,32 @@ exports.makeSingleCall = async (req, res) => {
         const uniqueId = generateUniqueId();
 
         // 1) Generate API token (send access token in header)
-        const tokenUrl = `https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/gentoken`;
-        const tokenResp = await axios.post(
-          tokenUrl,
-          { access_key: accessKey },
-          { headers: { Accesstoken: accessToken } }
-        );
+        const sanpbxBase = (agent.sanpbxBaseUrl || 'https://clouduat28.sansoftwares.com').replace(/\/$/, '');
+        const tokenUrl = `${sanpbxBase}/pbxadmin/sanpbxapi/gentoken`;
+        let tokenResp;
+        try {
+          tokenResp = await axios.post(
+            tokenUrl,
+            { access_key: accessKey },
+            { headers: { Accesstoken: accessToken }, timeout: 10000 }
+          );
+        } catch (tokenErr) {
+          const errDetail = tokenErr?.response?.data || tokenErr?.message || 'Network error';
+          console.error('SANPBX gentoken failed:', errDetail);
+          return res.status(502).json({
+            success: false,
+            error: 'SANPBX_TOKEN_FAILED',
+            message: `SANPBX token generation failed: ${typeof errDetail === 'string' ? errDetail : JSON.stringify(errDetail)}`,
+            hint: 'Check accessToken, accessKey credentials and SANPBX server availability'
+          });
+        }
         const sanToken = tokenResp?.data?.Apitoken;
         if (!sanToken) {
-          return res.status(502).json({ success: false, error: 'SANPBX_TOKEN_FAILED', data: tokenResp?.data || null });
+          return res.status(502).json({ success: false, error: 'SANPBX_TOKEN_FAILED', data: tokenResp?.data || null, hint: 'Apitoken missing in response' });
         }
 
         // 2) Dial call (send API token in header)
-        const dialUrl = `https://clouduat28.sansoftwares.com/pbxadmin/sanpbxapi/dialcall`;
+        const dialUrl = `${sanpbxBase}/pbxadmin/sanpbxapi/dialcall`;
         const dialBody = {
           appid: 2,
           call_to: callTo,
@@ -443,7 +456,7 @@ exports.makeSingleCall = async (req, res) => {
         const dialResp = await axios.post(
           dialUrl,
           dialBody,
-          { headers: { Apitoken: sanToken } }
+          { headers: { Apitoken: sanToken }, timeout: 15000 }
         );
         // Log to MakecallLoginLog with initial ringing status
         try {

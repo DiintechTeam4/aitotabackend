@@ -118,6 +118,7 @@ const agentSchema = new mongoose.Schema({
   accessToken: { type: String },
   accessKey: { type: String },
   appId: { type: String },
+  sanpbxBaseUrl: { type: String, default: 'https://clouduat28.sansoftwares.com' }, // SANPBX server URL (UAT or Production)
 
   // UI customization
   uiImage: { type: String }, // base64 image for agent avatar/logo

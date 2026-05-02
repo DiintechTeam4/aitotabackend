@@ -5009,6 +5009,23 @@ router.post('/calls/single', extractClientId, async (req, res) => {
     }
 
     const durationMs = Date.now() - _startTs;
+    if (!result?.success) {
+      const normalizedError = result?.error || 'CALL_INITIATION_FAILED';
+      log('response.failed', {
+        durationMs,
+        error: normalizedError,
+        provider: result?.provider || null,
+        status: result?.status || null
+      });
+      return res.status(result?.status || 502).json({
+        success: false,
+        error: normalizedError,
+        provider: result?.provider || null,
+        details: result?.responseData || null,
+        data: result
+      });
+    }
+
     log('response.success', { durationMs });
     return res.status(200).json({ success: true, data: result });
   } catch (error) {
