@@ -132,8 +132,19 @@ exports.getWorkspaceClients = async (req, res) => {
             .toLowerCase()
             .replace(/\s+/g, '');
 
-        // Show only clients explicitly assigned to this workspace
-        let query = { workspaceId: id };
+        const isAitotaWorkspace = normalizedWorkspace === 'aitota';
+
+        // AiTota app: show workspace-assigned clients + platform direct clients (no workspace yet).
+        // Other apps: only clients explicitly assigned to that workspace.
+        const query = isAitotaWorkspace
+            ? {
+                $or: [
+                    { workspaceId: id },
+                    { workspaceId: null },
+                    { workspaceId: { $exists: false } },
+                ],
+            }
+            : { workspaceId: id };
 
         const clients = await Client.find(query)
             .select('-password -waAccessToken')
